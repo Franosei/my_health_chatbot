@@ -417,8 +417,9 @@ FodyWeavers.xsd
 *.msm
 *.msp
 #backend/
-app_ui/
+#app_ui/
 pages/
 
 chat_history.json
 Home.py
+app_ui/app.py

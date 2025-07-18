@@ -1,0 +1,64 @@
+/* app_ui/static/styles.css */
+
+/* Global base font */
+body {
+    font-family: "Segoe UI", sans-serif;
+}
+
+/* Style chat bubble containers */
+.custom-chat-bubble {
+    background-color: #f0f0f0;
+    padding: 12px;
+    border-radius: 10px;
+    margin-bottom: 10px;
+    font-size: 15px;
+    line-height: 1.5;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    word-wrap: break-word;
+}
+
+/* Optional: highlight user and assistant differently */
+.user-bubble {
+    background-color: #e8f0fe;
+}
+
+.assistant-bubble {
+    background-color: #b5dedba2;
+}
+
+.timestamp {
+    font-size: 12px;
+    color: gray;
+    margin-top: 6px;
+}
+
+/* Animated "thinking..." dot spinner */
+.dot-flashing {
+    position: relative;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #888;
+    color: #888;
+    animation: dotFlashing 1s infinite linear alternate;
+    animation-delay: 0.5s;
+}
+
+@keyframes dotFlashing {
+    0% { background-color: #ccc; }
+    50% { background-color: #999; }
+    100% { background-color: #ccc; }
+}
+
+
+h1 {
+    font-size: 32px;
+    font-weight: 700;
+    margin-bottom: 0.3em;
+}
+
+button {
+    font-size: 18px !important;
+    padding: 10px 20px !important;
+    border-radius: 8px !important;
+}
