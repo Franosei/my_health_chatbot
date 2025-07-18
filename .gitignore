@@ -416,3 +416,9 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+backend/
+app_ui/
+pages/
+
+chat_history.json
+Home.py
