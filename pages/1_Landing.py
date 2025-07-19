@@ -22,7 +22,7 @@ def inject_custom_css(css_path: str):
 # ---------------------
 # Streamlit Page Setup
 # ---------------------
-st.set_page_config(page_title="Welcome to My Health Chatbot", layout="centered")
+st.set_page_config(page_title="Welcome to My Health Checks", layout="centered")
 
 inject_custom_css(CUSTOM_STYLE_PATH)
 
@@ -33,7 +33,7 @@ st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
 
 st.image(ASSISTANT_AVATAR, width=130)
 
-st.markdown("<h1 style='margin-top: 10px;'>My Health Chatbot</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='margin-top: 10px;'>My Health Checks</h1>", unsafe_allow_html=True)
 
 st.markdown("""
 <p style='font-size: 18px; margin-top: 10px;'>

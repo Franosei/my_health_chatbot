@@ -44,10 +44,10 @@ def inject_custom_css(css_path: str):
 # ---------------------
 # Streamlit Page Setup
 # ---------------------
-st.set_page_config(page_title="My Health Chatbot", layout="centered")
+st.set_page_config(page_title="My Health Checks", layout="centered")
 inject_custom_css(CUSTOM_STYLE_PATH)
 
-st.title("My Health Chatbot")
+st.title("My Health Checks")
 st.caption("Ask your health questions based on uploaded medical records or real-time PubMed research.")
 
 # ---------------------
