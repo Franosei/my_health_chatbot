@@ -48,7 +48,7 @@ st.set_page_config(page_title="My Health Checks", layout="centered")
 inject_custom_css(CUSTOM_STYLE_PATH)
 
 st.title("My Health Checks")
-st.caption("Ask your health questions based on uploaded medical records or real-time PubMed research.")
+st.caption("Ask your health questions based on uploaded medical records or health-related issues.\n Please note that errors may occur, so always verify the information with a qualified healthcare professional.") 
 
 # ---------------------
 # Session State Init
