@@ -6,6 +6,7 @@ from backend.pubmed_search import PubMedCentralSearcher
 from backend.anonymizer import DocumentAnonymizer
 from backend.utils import extract_text_from_pdf
 from backend.summarizer import LLMHelper
+from backend.moderation_ml import ModerationEnsemble
 
 from typing import List, Optional, Generator, Union
 import os
@@ -28,6 +29,7 @@ class RAGEngine:
         self.pubmed = PubMedCentralSearcher()
         self.anonymizer = DocumentAnonymizer()
         self.llm = LLMHelper()
+        self.moderation = ModerationEnsemble()
 
     def ingest_documents(self) -> None:
         """
@@ -90,6 +92,15 @@ class RAGEngine:
         Returns:
             str or Generator: Final answer or streamable chunks.
         """
+        blocked, category, safe_msg, details = self.moderation.decide(question)
+        if blocked:
+            if stream:
+                # Return a one-shot generator so your Streamlit loop can iterate safely
+                def _blocked_once():
+                    yield safe_msg
+                return _blocked_once()
+            return safe_msg
+        
         # Step 1: Search memory embeddings
         matches = self.memory.search(question)
         if matches:
