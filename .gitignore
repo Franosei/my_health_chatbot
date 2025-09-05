@@ -422,5 +422,4 @@ FodyWeavers.xsd
 
 chat_history.json
 #Home.py
-app_ui/app.py
 app_ui/landing.py

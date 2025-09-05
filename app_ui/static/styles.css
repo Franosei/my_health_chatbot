@@ -19,7 +19,7 @@ body {
 
 /* Optional: highlight user and assistant differently */
 .user-bubble {
-    background-color: #e8f0fe;
+    background-color: #212223;
 }
 
 .assistant-bubble {
@@ -28,7 +28,7 @@ body {
 
 .timestamp {
     font-size: 12px;
-    color: gray;
+    color: rgb(236, 230, 230);
     margin-top: 6px;
 }
 
