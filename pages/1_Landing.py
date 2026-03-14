@@ -47,7 +47,7 @@ st.markdown(
     <div class="hero-shell login-hero">
         <div class="hero-copy">
             <div class="eyebrow-pill">Clinical-grade health intelligence</div>
-            <h1>Client-ready health conversations with evidence, continuity, and traceability.</h1>
+            <h1>Health conversations with evidence, continuity, and traceability.</h1>
             <p>
                 Designed for individuals, caregivers, and care teams who need polished answers,
                 clickable PubMed citations, and a session that resumes exactly where it left off.

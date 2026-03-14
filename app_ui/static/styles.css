@@ -84,6 +84,17 @@ p, li, label, div[data-testid="stMarkdownContainer"] {
     line-height: 1.2 !important;
 }
 
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] li,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"],
+[data-testid="stSidebar"] .stCaption {
+    color: #f2fbf8 !important;
+}
+
 p, li {
     margin-top: 0;
     margin-bottom: 0.35rem;
@@ -143,6 +154,36 @@ a:hover {
     border: 1px solid rgba(22, 59, 71, 0.12);
     background: #ffffff;
     font-size: 14px !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+    background: #f7fbfa !important;
+    border: 1px solid rgba(22, 59, 71, 0.2) !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {
+    color: var(--navy) !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] small,
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] span,
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] div {
+    color: var(--navy) !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {
+    background: #e6f5f1 !important;
+    color: var(--navy) !important;
+    border: 1px solid rgba(22, 59, 71, 0.2) !important;
+    box-shadow: none !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] svg {
+    fill: var(--teal) !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] {
+    color: #f2fbf8 !important;
 }
 
 .surface-card,
