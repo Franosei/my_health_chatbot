@@ -1,14 +1,13 @@
-# backend/query_expander.py
+import os
+from typing import List
 
 import openai
-from typing import List
 from dotenv import load_dotenv
-import os
 
 
 class QueryExpander:
     """
-    Uses an LLM to rewrite a user's long or complex question into 3–5 targeted PubMed search phrases.
+    Uses an LLM to turn a user's question into retrieval-friendly PubMed search phrases.
     """
 
     def __init__(self, model: str = "gpt-4o-mini"):
@@ -21,18 +20,12 @@ class QueryExpander:
 
     def expand(self, user_question: str) -> List[str]:
         """
-        Generates 3–5 focused PubMed-style search topics from a user question.
-
-        Args:
-            user_question (str): The user's health-related natural language question.
-
-        Returns:
-            List[str]: A list of search-optimized queries.
+        Generates focused PubMed search topics from a user question.
         """
         prompt = (
-            "You are a biomedical research assistant. A user asks a health-related question, "
-            "but we want to search PubMed Central using more focused search queries. "
-            "Generate 3 distinct and precise PubMed search terms that could return relevant articles.\n\n"
+            "You are helping a clinical evidence platform search PubMed Central. "
+            "Generate exactly 3 short, precise search queries that capture the most useful "
+            "condition, population, treatment, diagnostic, or outcome concepts in the user's request.\n\n"
             f"User question: {user_question}\n\n"
             "Search queries:"
         )
@@ -40,23 +33,21 @@ class QueryExpander:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.2,
         )
 
         content = response.choices[0].message.content.strip()
         queries = self._parse_response(content)
-        return queries
+        return queries or [user_question]
 
     def _parse_response(self, text: str) -> List[str]:
         """
-        Parses numbered or bullet list of search queries from LLM output.
-        Cleans up quotes and special characters to avoid malformed PubMed queries.
+        Parses numbered or bullet lists from LLM output and removes noisy characters.
         """
         lines = text.strip().split("\n")
         cleaned = []
         for line in lines:
-            line = line.strip().lstrip("-•0123456789.").strip()
-            # Remove quotation marks or markdown symbols
+            line = line.strip().lstrip("-*0123456789.").strip()
             line = line.replace('"', "").replace("**", "").strip()
             if line:
                 cleaned.append(line)

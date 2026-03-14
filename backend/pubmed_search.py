@@ -1,3 +1,5 @@
+import html
+import re
 import requests
 from typing import List, Dict
 from xml.etree import ElementTree as ET
@@ -12,15 +14,16 @@ class PubMedCentralSearcher:
     SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
     FULLTEXT_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
 
-    def search_articles(self, query: str, max_results: int = 3) -> List[str]:
+    def search_article_records(self, query: str, max_results: int = 3) -> List[Dict[str, str]]:
         """
-        Searches for PMC open-access article IDs using a query string.
-        Returns an empty list on failure instead of raising errors.
+        Searches Europe PMC for open-access article metadata.
+        Returns normalized records that are easier to display in the UI and cite in answers.
         """
         params = {
             "query": query + " OPEN_ACCESS:Y",
             "format": "json",
-            "pageSize": max_results
+            "pageSize": max_results,
+            "resultType": "core",
         }
 
         try:
@@ -28,14 +31,29 @@ class PubMedCentralSearcher:
             response.raise_for_status()
             data = response.json()
 
-            pmc_ids = [
-                item["pmcid"]
-                for item in data.get("resultList", {}).get("result", [])
-                if "pmcid" in item
-            ]
+            records = []
+            for item in data.get("resultList", {}).get("result", []):
+                pmcid = item.get("pmcid")
+                if not pmcid:
+                    continue
+
+                journal = item.get("journalTitle") or item.get("journalInfo", {}).get("journal", {}).get("title", "")
+                records.append(
+                    {
+                        "pmcid": pmcid,
+                        "title": item.get("title", "Untitled article"),
+                        "journal": journal,
+                        "year": self._extract_year(item),
+                        "authors": item.get("authorString", ""),
+                        "url": f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/",
+                        "query": query,
+                        "abstract": self._clean_abstract(item.get("abstractText", "")),
+                    }
+                )
+
             print("PubMed Query:", query)
-            print("PMC IDs:", pmc_ids)
-            return pmc_ids
+            print("PMC IDs:", [record["pmcid"] for record in records])
+            return records
 
         except requests.exceptions.RequestException as e:
             print(f"PubMed API request failed: {e}")
@@ -44,6 +62,13 @@ class PubMedCentralSearcher:
         except Exception as e:
             print(f"PubMed JSON parse error: {e}")
             return []
+
+    def search_articles(self, query: str, max_results: int = 3) -> List[str]:
+        """
+        Searches for PMC open-access article IDs using a query string.
+        Returns an empty list on failure instead of raising errors.
+        """
+        return [record["pmcid"] for record in self.search_article_records(query, max_results=max_results)]
 
     def fetch_article_sections(self, pmcid: str) -> Dict[str, str]:
         """
@@ -95,3 +120,22 @@ class PubMedCentralSearcher:
             print(f"Unexpected error processing {pmcid}: {e}")
 
         return sections
+
+    @staticmethod
+    def _extract_year(item: Dict) -> str:
+        for field in ("pubYear", "firstPublicationDate", "electronicPublicationDate", "firstIndexDate"):
+            value = item.get(field)
+            if not value:
+                continue
+            value = str(value)
+            if len(value) >= 4:
+                return value[:4]
+        return ""
+
+    @staticmethod
+    def _clean_abstract(value: str) -> str:
+        if not value:
+            return ""
+        cleaned = re.sub(r"<[^>]+>", " ", value)
+        cleaned = html.unescape(cleaned)
+        return " ".join(cleaned.split())

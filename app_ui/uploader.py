@@ -1,31 +1,36 @@
-# frontend/uploader.py
+from pathlib import Path
+from typing import List
 
 import streamlit as st
-import os
-import shutil
-from pathlib import Path
+
+from backend.user_store import UserStore
 
 
-def upload_documents():
+def upload_documents(current_user: str) -> List[Path]:
     """
-    Streamlit file uploader for medical PDFs. 
-    Saves them to the embedding directory (e.g., sample_data/).
+    Saves uploaded PDFs into a user-specific directory and returns the stored paths.
     """
-    st.subheader("Upload Medical Documents")
     uploaded_files = st.file_uploader(
-        label="Upload PDFs (e.g. doctor's report, lab results, etc.)",
+        label="Upload PDFs such as lab reports, discharge notes, or specialist letters",
         type=["pdf"],
-        accept_multiple_files=True
+        accept_multiple_files=True,
     )
 
-    if uploaded_files:
-        save_dir = Path("sample_data")
-        save_dir.mkdir(exist_ok=True)
+    if not uploaded_files:
+        return []
 
-        for uploaded_file in uploaded_files:
-            file_path = save_dir / uploaded_file.name
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+    if not st.button("Securely save documents", type="primary"):
+        return []
 
-        st.success(f"{len(uploaded_files)} document(s) uploaded successfully.")
-        st.rerun()  # Force refresh to reinitialize RAG with new docs
+    save_dir = UserStore.get_upload_dir(current_user)
+    saved_paths = []
+
+    for uploaded_file in uploaded_files:
+        file_path = save_dir / uploaded_file.name
+        with open(file_path, "wb") as file:
+            file.write(uploaded_file.getbuffer())
+        UserStore.add_upload(current_user, uploaded_file.name, stored_path=str(file_path))
+        saved_paths.append(file_path)
+
+    st.success(f"Saved {len(saved_paths)} document(s) to this user's secure workspace.")
+    return saved_paths

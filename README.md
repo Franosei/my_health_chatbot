@@ -1,150 +1,141 @@
 # My Health Chatbot
 
-**My Health Chatbot** is an AI-powered assistant guided by **Dr. Charlotte**, built to help users ask health-related questions and receive scientifically grounded answers from PubMed Central.
+My Health Chatbot is a Streamlit-based health research assistant designed as a client-facing application rather than a prototype. Users can create an account, return with the same login, continue previous chats, upload personal documents, inspect traceable sources, export an audit snapshot, and clear saved chat history when needed.
 
-This tool supports both the general public and health professionals by leveraging real-time biomedical research and large language models (LLMs) to generate personalized, accurate responses.
+## What the app does
 
----
+- Client-facing landing page and chat workspace
+- Persistent user accounts with login continuity
+- Saved chat history per user, plus a `Delete chat` action
+- Per-user document uploads and retrieval-ready personal context
+- Live multi-source retrieval for every question
+- LLM synthesis across retrieved evidence instead of single-source answers
+- Clickable source links and trace information for responses
+- Exportable audit snapshot for conversations, uploads, and traces
 
-## Features
+## Retrieval and answer flow
 
-- Real-time access to biomedical literature from PubMed Central (PMC)
-- Natural language question answering
-- Summarization using Large Language Models (LLMs)
-- Retrieval-Augmented Generation (RAG) pipeline
-- Dr. Charlotte as your AI health companion
+For each question, the app combines multiple evidence paths instead of relying on one case-specific rule:
 
----
+1. The user signs in and can upload health documents.
+2. Uploaded documents are processed into personal context for that specific user.
+3. The question can be expanded into retrieval-friendly variants.
+4. The app searches live sources including official guidance pages and Europe PMC / PubMed content.
+5. Retrieved evidence is ranked with OpenAI embeddings.
+6. The LLM synthesizes the evidence into a readable answer with traceable sources.
+7. The chat, source trace, and audit record are saved to the user profile for future sessions.
 
-## Example Questions
+## Sources used
 
-- What are the current treatments for hypertension?
-- Is metformin safe for elderly patients?
-- What does recent research say about probiotics and gut health?
-- Are there new therapies for chronic kidney disease?
+- Europe PMC / PubMed for research evidence
+- NHS for live patient-facing health guidance
+- MedlinePlus for live patient-facing health guidance
+- User-uploaded records for personal context within that account
 
----
+## Core stack
 
-## How It Works
+- Frontend: Streamlit
+- LLM and embeddings: OpenAI API
+- Retrieval: Europe PMC, NHS, MedlinePlus
+- Document parsing: PyMuPDF
+- Local persistence: JSON user store plus per-user upload folders
 
-1. The user submits a health question.
-2. The system reformulates the question into a PubMed-compatible search query.
-3. Relevant open-access articles are retrieved using the Entrez API.
-4. Extracted sections are summarized using an LLM.
-5. The chatbot responds with a concise, evidence-based summary (optionally with sources).
+## Requirements
 
----
+- Python 3.11 or 3.12 recommended
+- OpenAI API key
 
-## Tech Stack
+Python 3.14 is not recommended for this project because some NLP-related packages can behave inconsistently there.
 
-| Component     | Technology                    |
-|---------------|-------------------------------|
-| Frontend      | Streamlit                     |
-| Backend       | Python                        |
-| Retrieval     | Entrez API (PubMed Central)   |
-| Language Model| OpenAI (or custom)            |
-| Architecture  | Retrieval-Augmented Generation (RAG) |
+## Quick start
 
----
+From the repo root in PowerShell:
 
-## Setup Instructions
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/my_health_chatbot.git
-cd my_health_chatbot
-
-# Create a virtual environment
-python -m venv venv
-
-# Activate the virtual environment
-# On Windows
-venv\Scripts\activate
-
-# On macOS/Linux
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the Streamlit app
-python -m streamlit run Home.py --logger.level error
-
-```
----
-
-## Project Structure
-
-```
-my_health_chatbot/
-│
-├── app_ui/ # Static assets, uploader, styles
-│ ├── static/
-│ ├── init.py
-│ ├── app.py
-│ ├── landing.py
-│ └── uploader.py
-│
-├── backend/ # RAG pipeline and utils
-│ ├── init.py
-│ ├── anonymizer.py
-│ ├── memory_store.py
-│ ├── pubmed_search.py
-│ ├── query_expander.py
-│ ├── rag_system.py
-│ ├── summarizer.py
-│ ├── test_pubmed_search.py
-│ ├── test_rag_engine.py
-│ ├── test_summarizer.py
-│ └── utils.py
-│
-├── pages/ # Streamlit multipage files
-│ ├── 1_Landing.py
-│ └── 2_Chatbot.py
-│
-├── sample_data/ # Sample data for testing
-│
-├── chat_history.json # Saved conversation history
-├── .env # Optional environment variables
-├── .gitignore # Git ignore file
-├── Home.py # Main entry point that redirects to Landing
-├── LICENSE
-├── README.md
-└── requirements.txt # Python dependencies
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -3.12 -m pip install --upgrade pip
+py -3.12 -m pip install -r requirements.txt
+Copy-Item .env.example .env
+notepad .env
 ```
 
----
+Add your OpenAI key to `.env`:
 
-## Key Features
-
-- **Streamlit UI** with file upload and multipage support
-- **PubMed integration** with query expansion and LLM summarization
-- **Memory and history** for continuous context in chat
-- **Testing suite** for RAG modules
-- **Easily extendable** backend structure
-
----
-
-## Setup Instructions
-
-```bash
-# Clone repository
-git clone https://github.com/your_username/my_health_chatbot.git
-cd my_health_chatbot
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the app
-streamlit run Home.py
-
+```env
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
----
 
-## Environment Variables
+Start the app:
 
-Create a .env file with your API keys and other secrets, such as:
-OPENAI_API_KEY=your_openai_key
+```powershell
+py -3.12 -m streamlit run Home.py
+```
 
----
+If PowerShell blocks activation:
 
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+## Data persistence
+
+The app stores user-specific information locally:
+
+- `users.json`: users, hashed passwords, profiles, chat history, traces, audit events
+- `data/uploads/<username>/`: uploaded files for each signed-in user
+
+Using the same login restores the same chat history and uploaded context.
+
+## Project structure
+
+```text
+app_ui/
+  static/
+    assistant.png
+    styles.css
+    user.png
+  theme.py
+  uploader.py
+backend/
+  anonymizer.py
+  memory_store.py
+  moderation_ml.py
+  official_guidance.py
+  pubmed_search.py
+  query_expander.py
+  rag_system.py
+  summarizer.py
+  user_store.py
+pages/
+  1_Landing.py
+  2_Chatbot.py
+Home.py
+requirements.txt
+.env.example
+```
+
+## Troubleshooting
+
+### `OPENAI_API_KEY not found in environment variables`
+
+Create `.env` from `.env.example`, add your real key, and start Streamlit from the project root.
+
+### spaCy or Pydantic errors on Python 3.14
+
+The app no longer requires spaCy to run. If spaCy is installed and causes import issues, use Python 3.11 or 3.12 for the cleanest setup.
+
+### Styling changes do not appear immediately
+
+Refresh the browser, or restart Streamlit:
+
+```powershell
+py -3.12 -m streamlit run Home.py
+```
+
+## Important note
+
+This application is for evidence review, health education, and question support. It is not a substitute for emergency care, diagnosis, or a clinician's judgment.

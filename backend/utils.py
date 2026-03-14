@@ -1,7 +1,6 @@
 # backend/utils.py
 
 from pathlib import Path
-from typing import List
 import fitz  # PyMuPDF
 
 
@@ -23,3 +22,13 @@ def extract_text_from_pdf(file_path: Path) -> str:
         for page in doc:
             text += page.get_text()
     return text
+
+
+def build_excerpt(text: str, max_chars: int = 320) -> str:
+    """
+    Builds a compact excerpt suitable for citation drawers and audit traces.
+    """
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3].rstrip() + "..."

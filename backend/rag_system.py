@@ -1,140 +1,483 @@
-# backend/rag_system.py
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from uuid import uuid4
+import re
 
-from backend.query_expander import QueryExpander
-from backend.memory_store import MemoryStore
-from backend.pubmed_search import PubMedCentralSearcher
+import numpy as np
+
 from backend.anonymizer import DocumentAnonymizer
-from backend.utils import extract_text_from_pdf
-from backend.summarizer import LLMHelper
+from backend.memory_store import MemoryStore
 from backend.moderation_ml import ModerationEnsemble
-
-from typing import List, Optional, Generator, Union
-import os
+from backend.official_guidance import OfficialGuidanceEngine
+from backend.pubmed_search import PubMedCentralSearcher
+from backend.query_expander import QueryExpander
+from backend.summarizer import LLMHelper
+from backend.user_store import UserStore
+from backend.utils import build_excerpt, extract_text_from_pdf
 
 
 class RAGEngine:
     """
-    Core class for question-answering using uploaded documents,
-    PubMed literature, and long-term memory search.
+    Retrieval-augmented engine that combines user context, PubMed evidence, and
+    audit metadata for a professional clinical chat experience.
     """
 
-    def __init__(self, embedding_dir: str = "sample_data"):
-        """
-        Initializes the RAG engine with all components including the
-        document anonymizer, embedding memory, PubMed search, and LLM wrapper.
-        """
-        self.embedding_dir = embedding_dir
+    def __init__(self, embedding_dir: str = "data/uploads"):
+        self.embedding_dir = Path(embedding_dir)
         self.query_expander = QueryExpander()
         self.memory = MemoryStore()
         self.pubmed = PubMedCentralSearcher()
         self.anonymizer = DocumentAnonymizer()
         self.llm = LLMHelper()
         self.moderation = ModerationEnsemble()
+        self.official_guidance = OfficialGuidanceEngine()
+        self._primed_users: set[str] = set()
 
-    def ingest_documents(self) -> None:
+    def restore_user_context(self, user: Optional[str]) -> None:
         """
-        Loads uploaded documents, strips sensitive information, summarizes them,
-        and stores their embeddings into memory.
-        Additionally, generates PubMed search queries based on summaries and stores literature.
+        Restores persisted user document summaries into memory once per session.
         """
-        for filename in os.listdir(self.embedding_dir):
-            if filename.endswith(".pdf"):
-                path = os.path.join(self.embedding_dir, filename)
-                raw_text = extract_text_from_pdf(path)
-                anonymized = self.anonymizer.anonymize(raw_text)
+        if not user:
+            return
 
-                # Summarize and embed user health history
-                summary = self.llm.summarize_user_health_record(anonymized)
-                self.memory.add_entry(summary, {"type": "user_summary", "source": filename})
+        normalized_user = user.strip().lower()
+        if normalized_user in self._primed_users:
+            return
 
-                # Generate PubMed queries based on user records
-                search_terms = self.query_expander.expand(summary)
-                for q in search_terms:
-                    self._search_and_store_pubmed(q)
+        for summary_record in UserStore.get_document_summaries(normalized_user):
+            summary_text = summary_record.get("summary", "").strip()
+            if not summary_text:
+                continue
 
-    def _search_and_store_pubmed(self, query: str) -> None:
+            filename = summary_record.get("file", "uploaded document")
+            self.memory.add_entry(
+                text=summary_text,
+                metadata={
+                    "type": "user_summary",
+                    "source": filename,
+                    "title": f"User-uploaded record: {filename}",
+                    "section": "document summary",
+                    "stored_path": summary_record.get("stored_path", ""),
+                    "entry_key": f"{normalized_user}:upload:{filename}",
+                },
+                user=normalized_user,
+                entry_key=f"{normalized_user}:upload:{filename}",
+            )
+
+        self._primed_users.add(normalized_user)
+
+    def ingest_documents(
+        self,
+        user: Optional[str] = None,
+        file_paths: Optional[List[Path]] = None,
+    ) -> List[Dict]:
         """
-        Internal method to search PubMed and store resulting articles into memory.
-
-        Args:
-            query (str): A search-friendly PubMed query.
+        Loads uploaded documents, anonymizes them, summarizes them, and persists
+        a retrieval-friendly document summary per user.
         """
-        print(f"PubMed Search Query: {query}")
-        pmcids = self.pubmed.search_articles(query)
-        print(f"PMC IDs Found: {pmcids}")
+        normalized_user = user.strip().lower() if user else None
+        documents = [Path(path) for path in (file_paths or self._default_document_paths(normalized_user))]
+        indexed_documents = []
+        known_uploads = {
+            item.get("file")
+            for item in UserStore.get_uploads(normalized_user)
+        } if normalized_user else set()
 
-        for pmcid in pmcids:
-            print(f"Fetching full text for {pmcid}")
-            sections = self.pubmed.fetch_article_sections(pmcid)
-            for section, text in sections.items():
-                if text:
-                    self.memory.add_entry(text, {
-                        "type": "pubmed",
-                        "pmcid": pmcid,
-                        "section": section
-                    })
+        for path in documents:
+            if not path.exists() or path.suffix.lower() != ".pdf":
+                continue
+
+            raw_text = extract_text_from_pdf(path)
+            anonymized = self.anonymizer.anonymize(raw_text)
+            summary = self.llm.summarize_user_health_record(anonymized)
+
+            memory_key = f"{normalized_user or 'global'}:upload:{path.name}"
+            self.memory.add_entry(
+                text=summary,
+                metadata={
+                    "type": "user_summary",
+                    "source": path.name,
+                    "title": f"User-uploaded record: {path.name}",
+                    "section": "document summary",
+                    "stored_path": str(path),
+                    "entry_key": memory_key,
+                },
+                user=normalized_user,
+                entry_key=memory_key,
+            )
+
+            if normalized_user:
+                if path.name not in known_uploads:
+                    UserStore.add_upload(normalized_user, path.name, stored_path=str(path))
+                    known_uploads.add(path.name)
+                UserStore.save_document_summary(
+                    normalized_user,
+                    path.name,
+                    summary,
+                    stored_path=str(path),
+                )
+
+            indexed_documents.append(
+                {
+                    "file": path.name,
+                    "stored_path": str(path),
+                    "summary": summary,
+                }
+            )
+
+        if normalized_user and indexed_documents:
+            self._primed_users.add(normalized_user)
+
+        return indexed_documents
 
     def handle_user_question(
         self,
         question: str,
         chat_history: Optional[List[dict]] = None,
-        stream: bool = False
-    ) -> Union[str, Generator[str, None, None]]:
+        stream: bool = False,
+        user: Optional[str] = None,
+    ) -> Dict:
         """
-        Responds to user queries using relevant memory and literature,
-        while incorporating chat history for follow-up continuity.
-
-        Args:
-            question (str): The health-related user input.
-            chat_history (Optional[List[dict]]): List of prior user-assistant messages.
-            stream (bool): Whether to stream LLM output.
-
-        Returns:
-            str or Generator: Final answer or streamable chunks.
+        Responds to a user query with a structured payload that includes answer markdown,
+        clickable sources, personal context traceability, and audit metadata.
         """
+        del stream
+        normalized_user = user.strip().lower() if user else None
+        self.restore_user_context(normalized_user)
+
         blocked, category, safe_msg, details = self.moderation.decide(question)
         if blocked:
-            if stream:
-                # Return a one-shot generator so your Streamlit loop can iterate safely
-                def _blocked_once():
-                    yield safe_msg
-                return _blocked_once()
-            return safe_msg
-        
-        # Step 1: Search memory embeddings
-        matches = self.memory.search(question)
-        if matches:
-            context = "\n\n".join([m[0]["text"] for m in matches])
-            return self.llm.answer_question(
-                question=question,
-                context=context,
-                chat_history=chat_history,
-                stream=stream
+            trace_id = f"trace-{uuid4().hex[:12]}"
+            trace = {
+                "trace_id": trace_id,
+                "created_at": self._utc_now(),
+                "question": question,
+                "answer_preview": safe_msg[:280],
+                "sources": [],
+                "retrieval_mode": "moderation_block",
+                "moderation_category": category,
+                "moderation_details": details,
+            }
+            if normalized_user:
+                UserStore.save_interaction_trace(normalized_user, trace)
+            return {
+                "answer_markdown": safe_msg,
+                "answer_text": safe_msg,
+                "sources": [],
+                "personal_context": [],
+                "trace": trace,
+            }
+
+        user_profile = UserStore.get_user_profile(normalized_user) if normalized_user else {}
+        expanded_queries = self._build_search_queries(question)
+        official_sources: List[Dict] = []
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            official_future = executor.submit(self.official_guidance.search, expanded_queries)
+            pubmed_future = executor.submit(self._retrieve_pubmed_for_queries, expanded_queries, normalized_user)
+            try:
+                official_sources = official_future.result()
+            except Exception as exc:
+                print(f"Official source search failed: {exc}")
+                official_sources = []
+            pubmed_future.result()
+
+        matches = self.memory.search(query=question, user=normalized_user)
+        personal_context, pubmed_matches = self._split_matches(matches)
+        pubmed_sources = self._build_source_briefings(pubmed_matches)
+        combined_sources = self._rank_sources(question, self._combine_sources(pubmed_sources, official_sources))
+        retrieval_mode = "live_multi_source"
+
+        if not combined_sources:
+            limited_answer = self._build_limited_evidence_response(personal_context)
+            trace_id = f"trace-{uuid4().hex[:12]}"
+            trace = {
+                "trace_id": trace_id,
+                "created_at": self._utc_now(),
+                "question": question,
+                "answer_preview": limited_answer[:280],
+                "sources": [],
+                "personal_context": personal_context,
+                "retrieval_mode": retrieval_mode,
+                "expanded_queries": expanded_queries,
+                "model": self.llm.model,
+            }
+            if normalized_user:
+                UserStore.save_interaction_trace(normalized_user, trace)
+            return {
+                "answer_markdown": limited_answer,
+                "answer_text": limited_answer,
+                "sources": [],
+                "personal_context": personal_context,
+                "trace": trace,
+            }
+
+        personal_context_text = self._build_personal_context_text(personal_context)
+        evidence_context = "\n\n".join(source["snippet"] for source in combined_sources)
+        full_context = (
+            f"Personal context:\n{personal_context_text}\n\nBiomedical evidence:\n{evidence_context}"
+            if personal_context_text
+            else evidence_context
+        )
+
+        raw_answer = self.llm.answer_question(
+            question=question,
+            context=full_context,
+            chat_history=chat_history,
+            stream=False,
+            user_profile=user_profile,
+            source_briefings=combined_sources,
+        )
+        answer_markdown = self._link_citations(raw_answer, combined_sources)
+
+        trace_id = f"trace-{uuid4().hex[:12]}"
+        trace = {
+            "trace_id": trace_id,
+            "created_at": self._utc_now(),
+            "question": question,
+            "answer_preview": raw_answer[:280],
+            "sources": combined_sources,
+            "personal_context": personal_context,
+            "retrieval_mode": retrieval_mode,
+            "expanded_queries": expanded_queries,
+            "memory_match_count": len(matches),
+            "model": self.llm.model,
+        }
+        if normalized_user:
+            UserStore.save_interaction_trace(normalized_user, trace)
+
+        return {
+            "answer_markdown": answer_markdown,
+            "answer_text": raw_answer,
+            "sources": combined_sources,
+            "personal_context": personal_context,
+            "trace": trace,
+        }
+
+    def _default_document_paths(self, user: Optional[str]) -> List[Path]:
+        if user:
+            upload_dir = UserStore.get_upload_dir(user)
+            return sorted(upload_dir.glob("*.pdf"))
+        if not self.embedding_dir.exists():
+            return []
+        return sorted(self.embedding_dir.glob("*.pdf"))
+
+    def _retrieve_pubmed_for_queries(self, queries: List[str], user: Optional[str]) -> None:
+        for query in queries:
+            article_records = self.pubmed.search_article_records(query, max_results=3)
+            for record in article_records:
+                sections = self.pubmed.fetch_article_sections(record["pmcid"])
+                for section_name, text in sections.items():
+                    if not text:
+                        continue
+
+                    entry_key = f"{user or 'global'}:pmc:{record['pmcid']}:{section_name}"
+                    self.memory.add_entry(
+                        text=text,
+                        metadata={
+                            "type": "pubmed",
+                            "source_type": "pubmed_literature",
+                            "pmcid": record["pmcid"],
+                            "section": section_name,
+                            "title": record.get("title", "Untitled article"),
+                            "journal": record.get("journal", ""),
+                            "year": record.get("year", ""),
+                            "authors": record.get("authors", ""),
+                            "url": record.get("url", ""),
+                            "query": query,
+                            "entry_key": entry_key,
+                        },
+                        user=user,
+                        entry_key=entry_key,
+                    )
+
+                abstract_text = record.get("abstract", "")
+                if abstract_text:
+                    entry_key = f"{user or 'global'}:pmc:{record['pmcid']}:abstract"
+                    self.memory.add_entry(
+                        text=abstract_text,
+                        metadata={
+                            "type": "pubmed",
+                            "source_type": "pubmed_literature",
+                            "pmcid": record["pmcid"],
+                            "section": "abstract",
+                            "title": record.get("title", "Untitled article"),
+                            "journal": record.get("journal", ""),
+                            "year": record.get("year", ""),
+                            "authors": record.get("authors", ""),
+                            "url": record.get("url", ""),
+                            "query": query,
+                            "entry_key": entry_key,
+                        },
+                        user=user,
+                        entry_key=entry_key,
+                    )
+
+    def _split_matches(self, matches: List[Tuple[Dict, float]]) -> Tuple[List[Dict], List[Tuple[Dict, float]]]:
+        personal_context = []
+        pubmed_matches = []
+
+        for entry, score in matches:
+            metadata = entry.get("metadata", {})
+            if metadata.get("type") == "user_summary":
+                personal_context.append(
+                    {
+                        "title": metadata.get("title", metadata.get("source", "Uploaded document")),
+                        "source": metadata.get("source", ""),
+                        "snippet": build_excerpt(entry.get("text", "")),
+                        "score": round(score, 3),
+                    }
+                )
+            elif metadata.get("type") == "pubmed":
+                pubmed_matches.append((entry, score))
+
+        return personal_context[:2], pubmed_matches[:4]
+
+    def _build_source_briefings(self, matches: List[Tuple[Dict, float]]) -> List[Dict]:
+        sources = []
+        seen = set()
+
+        for entry, score in matches:
+            metadata = entry.get("metadata", {})
+            key = (metadata.get("pmcid"), metadata.get("section"))
+            if key in seen:
+                continue
+            seen.add(key)
+            source_id = f"S{len(sources) + 1}"
+            sources.append(
+                {
+                    "source_id": source_id,
+                    "pmcid": metadata.get("pmcid", ""),
+                    "title": metadata.get("title", "Untitled article"),
+                    "journal": metadata.get("journal", ""),
+                    "year": metadata.get("year", ""),
+                    "authors": metadata.get("authors", ""),
+                    "section": metadata.get("section", "retrieved text").replace("_", " ").title(),
+                    "url": metadata.get("url", ""),
+                    "query": metadata.get("query", ""),
+                    "similarity": round(score, 3),
+                    "snippet": build_excerpt(entry.get("text", "")),
+                    "detail_snippet": build_excerpt(entry.get("text", ""), max_chars=800),
+                    "source_type": metadata.get("source_type", "pubmed_literature"),
+                    "provider": "Europe PMC / PubMed Central",
+                }
             )
 
-        # Step 2: No memory match — perform PubMed search
-        expanded_queries = self.query_expander.expand(question)
-        retrieved_sections = []
+        return sources
 
-        for q in expanded_queries:
-            pmcids = self.pubmed.search_articles(q)
-            for pmcid in pmcids:
-                sections = self.pubmed.fetch_article_sections(pmcid)
-                for sec_name, text in sections.items():
-                    if text:
-                        self.memory.add_entry(
-                            text,
-                            {"type": "pubmed", "pmcid": pmcid, "section": sec_name}
-                        )
-                        retrieved_sections.append(text)
+    @staticmethod
+    def _combine_sources(pubmed_sources: List[Dict], official_sources: List[Dict]) -> List[Dict]:
+        combined = []
+        seen = set()
 
-        if not retrieved_sections:
-            return "I couldn't find relevant biomedical literature at the moment."
+        for source in [*official_sources, *pubmed_sources]:
+            key = source.get("url") or f"{source.get('title')}::{source.get('section')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            combined.append(dict(source))
 
-        combined_context = "\n\n".join(retrieved_sections[:3])
-        return self.llm.answer_question(
-            question=question,
-            context=combined_context,
-            chat_history=chat_history,
-            stream=stream
+        for index, source in enumerate(combined, start=1):
+            source["source_id"] = f"S{index}"
+        return combined
+
+    def _rank_sources(self, question: str, sources: List[Dict], top_k: int = 6) -> List[Dict]:
+        if not sources:
+            return []
+
+        query_vector = self.memory._embed_text(question)
+        scored_sources = []
+        for source in sources:
+            source_text = " ".join(
+                part
+                for part in (
+                    source.get("title", ""),
+                    source.get("section", ""),
+                    source.get("detail_snippet", ""),
+                    source.get("snippet", ""),
+                    source.get("query", ""),
+                )
+                if part
+            )
+            source_vector = self.memory._embed_text(source_text)
+            score = float(np.dot(query_vector, source_vector))
+            payload = dict(source)
+            payload["relevance"] = round(score, 3)
+            scored_sources.append(payload)
+
+        scored_sources.sort(key=lambda item: item.get("relevance", 0.0), reverse=True)
+        ranked = scored_sources[:top_k]
+        for index, source in enumerate(ranked, start=1):
+            source["source_id"] = f"S{index}"
+        return ranked
+
+    def _build_search_queries(self, question: str) -> List[str]:
+        queries = [question]
+        try:
+            queries.extend(self.query_expander.expand(question))
+        except Exception as exc:
+            print(f"Query expansion fallback: {exc}")
+        return list(dict.fromkeys(query for query in queries if query))
+
+    @staticmethod
+    def _build_personal_context_text(personal_context: List[Dict]) -> str:
+        if not personal_context:
+            return ""
+
+        return "\n".join(
+            f"- {item['title']}: {item['snippet']}"
+            for item in personal_context
         )
+
+    @staticmethod
+    def _link_citations(answer_text: str, sources: List[Dict]) -> str:
+        source_map = {
+            source["source_id"]: source.get("url")
+            for source in sources
+            if source.get("source_id")
+        }
+
+        def replace_match(match: re.Match) -> str:
+            source_id = match.group(1)
+            url = source_map.get(source_id)
+            if not url:
+                return f"`[{source_id}]`"
+            return f"[{source_id}]({url})"
+
+        linked_answer = re.sub(r"\[(S\d+)\]", replace_match, answer_text)
+        if sources and linked_answer == answer_text:
+            fallback_links = []
+            for source in sources:
+                source_id = source.get("source_id", "Source")
+                url = source.get("url")
+                if url:
+                    fallback_links.append(f"[{source_id}]({url})")
+                else:
+                    fallback_links.append(f"`[{source_id}]`")
+            linked_answer += "\n\n**Sources used:** " + ", ".join(fallback_links)
+        return linked_answer
+
+    @staticmethod
+    def _build_limited_evidence_response(personal_context: List[Dict]) -> str:
+        personal_note = ""
+        if personal_context:
+            personal_note = (
+                "\n\n## Available Personal Context\n"
+                + "\n".join(f"- {item['title']}: {item['snippet']}" for item in personal_context)
+            )
+
+        return (
+            "## Clinical Takeaway\n"
+            "I could not retrieve reliable PubMed Central evidence for this question right now, "
+            "so I do not want to overstate an answer.\n\n"
+            "## Recommended Next Step\n"
+            "Please try rephrasing the question, narrowing it to a condition, treatment, or population, "
+            "or ask a clinician if you need a decision that affects immediate care."
+            + personal_note
+        )
+
+    @staticmethod
+    def _utc_now() -> str:
+        return datetime.now(timezone.utc).isoformat()
