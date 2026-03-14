@@ -337,43 +337,71 @@ if active_question:
         render_message_meta(user_entry)
 
     with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
-        with st.spinner("Reviewing your context, retrieving the literature, and composing an evidence-backed answer..."):
-            try:
-                payload = rag_engine.handle_user_question(
-                    question=active_question,
-                    chat_history=st.session_state.chat_history,
-                    user=current_user,
-                )
-                assistant_entry = {
-                    "role": "assistant",
-                    "content": payload["answer_markdown"],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "sources": payload.get("sources", []),
-                    "trace_id": payload.get("trace", {}).get("trace_id"),
-                    "metadata": {
-                        "personal_context": payload.get("personal_context", []),
-                        "trace": payload.get("trace", {}),
-                    },
-                }
-                st.markdown(assistant_entry["content"])
-                render_message_meta(assistant_entry)
-                render_source_trace(assistant_entry)
-                st.session_state.chat_history.append(assistant_entry)
-                UserStore.append_chat(current_user, assistant_entry)
-            except Exception as exc:
-                error_message = (
-                    "## Response unavailable\n"
-                    f"I ran into an issue while building the answer: `{exc}`.\n\n"
-                    "Please try again, or narrow the question if the request is very broad."
-                )
-                assistant_entry = {
-                    "role": "assistant",
-                    "content": error_message,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "sources": [],
-                    "metadata": {},
-                }
-                st.markdown(error_message)
-                render_message_meta(assistant_entry)
-                st.session_state.chat_history.append(assistant_entry)
-                UserStore.append_chat(current_user, assistant_entry)
+        progress_panel = (
+            st.status("Starting evidence review...", expanded=True)
+            if hasattr(st, "status")
+            else None
+        )
+        answer_placeholder = st.empty()
+
+        try:
+            payload = None
+            streamed_answer_parts: list[str] = []
+            for event in rag_engine.stream_user_question_events(
+                question=active_question,
+                chat_history=st.session_state.chat_history,
+                user=current_user,
+            ):
+                event_type = event.get("type")
+                if event_type == "status":
+                    message = event.get("message", "Working...")
+                    if progress_panel:
+                        progress_panel.write(message)
+                        progress_panel.update(label=message, state="running")
+                elif event_type == "token":
+                    streamed_answer_parts.append(event.get("delta", ""))
+                    answer_placeholder.markdown("".join(streamed_answer_parts).strip() + "▌")
+                elif event_type == "final":
+                    payload = event.get("payload")
+
+            if not payload:
+                raise RuntimeError("The answer pipeline did not return a payload.")
+
+            if progress_panel:
+                progress_panel.update(label="Evidence review complete", state="complete", expanded=False)
+
+            assistant_entry = {
+                "role": "assistant",
+                "content": payload["answer_markdown"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "sources": payload.get("sources", []),
+                "trace_id": payload.get("trace", {}).get("trace_id"),
+                "metadata": {
+                    "personal_context": payload.get("personal_context", []),
+                    "trace": payload.get("trace", {}),
+                },
+            }
+            answer_placeholder.markdown(assistant_entry["content"])
+            render_message_meta(assistant_entry)
+            render_source_trace(assistant_entry)
+            st.session_state.chat_history.append(assistant_entry)
+            UserStore.append_chat(current_user, assistant_entry)
+        except Exception as exc:
+            if progress_panel:
+                progress_panel.update(label="Response unavailable", state="error", expanded=True)
+            error_message = (
+                "## Response unavailable\n"
+                f"I ran into an issue while building the answer: `{exc}`.\n\n"
+                "Please try again, or narrow the question if the request is very broad."
+            )
+            assistant_entry = {
+                "role": "assistant",
+                "content": error_message,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "sources": [],
+                "metadata": {},
+            }
+            answer_placeholder.markdown(error_message)
+            render_message_meta(assistant_entry)
+            st.session_state.chat_history.append(assistant_entry)
+            UserStore.append_chat(current_user, assistant_entry)

@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Generator, List, Optional, Tuple
 from uuid import uuid4
 import re
 
@@ -144,30 +144,80 @@ class RAGEngine:
         clickable sources, personal context traceability, and audit metadata.
         """
         del stream
+        bundle = self._prepare_answer_bundle(question=question, user=user)
+        if bundle["kind"] == "final":
+            return bundle["payload"]
+
+        raw_answer = self.llm.answer_question(
+            question=question,
+            context=bundle["full_context"],
+            chat_history=chat_history,
+            stream=False,
+            user_profile=bundle["user_profile"],
+            source_briefings=bundle["combined_sources"],
+        )
+        return self._finalize_answer_payload(question=question, raw_answer=raw_answer, bundle=bundle)
+
+    def stream_user_question_events(
+        self,
+        question: str,
+        chat_history: Optional[List[dict]] = None,
+        user: Optional[str] = None,
+    ) -> Generator[Dict, None, None]:
+        """
+        Streams retrieval progress events and final answer tokens so the UI can
+        show live search status followed by incremental generation.
+        """
+        yield {
+            "type": "status",
+            "message": "Searching live guidance, Europe PMC, and your saved context...",
+        }
+        bundle = self._prepare_answer_bundle(question=question, user=user)
+        if bundle["kind"] == "final":
+            yield {"type": "final", "payload": bundle["payload"]}
+            return
+
+        yield {
+            "type": "status",
+            "message": "Composing the answer from the retrieved evidence...",
+        }
+        streamed_chunks: List[str] = []
+        for chunk in self.llm.answer_question(
+            question=question,
+            context=bundle["full_context"],
+            chat_history=chat_history,
+            stream=True,
+            user_profile=bundle["user_profile"],
+            source_briefings=bundle["combined_sources"],
+        ):
+            streamed_chunks.append(chunk)
+            yield {"type": "token", "delta": chunk}
+
+        raw_answer = "".join(streamed_chunks).strip()
+        yield {
+            "type": "final",
+            "payload": self._finalize_answer_payload(
+                question=question,
+                raw_answer=raw_answer,
+                bundle=bundle,
+            ),
+        }
+
+    def _prepare_answer_bundle(self, question: str, user: Optional[str] = None) -> Dict:
         normalized_user = user.strip().lower() if user else None
         self.restore_user_context(normalized_user)
 
         blocked, category, safe_msg, details = self.moderation.decide(question)
         if blocked:
-            trace_id = f"trace-{uuid4().hex[:12]}"
-            trace = {
-                "trace_id": trace_id,
-                "created_at": self._utc_now(),
-                "question": question,
-                "answer_preview": safe_msg[:280],
-                "sources": [],
-                "retrieval_mode": "moderation_block",
-                "moderation_category": category,
-                "moderation_details": details,
-            }
-            if normalized_user:
-                UserStore.save_interaction_trace(normalized_user, trace)
             return {
-                "answer_markdown": safe_msg,
-                "answer_text": safe_msg,
-                "sources": [],
-                "personal_context": [],
-                "trace": trace,
+                "kind": "final",
+                "payload": self._build_moderation_payload(
+                    question=question,
+                    normalized_user=normalized_user,
+                    safe_msg=safe_msg,
+                    category=category,
+                    details=details,
+                ),
             }
 
         user_profile = UserStore.get_user_profile(normalized_user) if normalized_user else {}
@@ -182,7 +232,10 @@ class RAGEngine:
             except Exception as exc:
                 print(f"Official source search failed: {exc}")
                 official_sources = []
-            pubmed_future.result()
+            try:
+                pubmed_future.result()
+            except Exception as exc:
+                print(f"PubMed retrieval failed: {exc}")
 
         matches = self.memory.search(query=question, user=normalized_user)
         personal_context, pubmed_matches = self._split_matches(matches)
@@ -191,27 +244,15 @@ class RAGEngine:
         retrieval_mode = "live_multi_source"
 
         if not combined_sources:
-            limited_answer = self._build_limited_evidence_response(personal_context)
-            trace_id = f"trace-{uuid4().hex[:12]}"
-            trace = {
-                "trace_id": trace_id,
-                "created_at": self._utc_now(),
-                "question": question,
-                "answer_preview": limited_answer[:280],
-                "sources": [],
-                "personal_context": personal_context,
-                "retrieval_mode": retrieval_mode,
-                "expanded_queries": expanded_queries,
-                "model": self.llm.model,
-            }
-            if normalized_user:
-                UserStore.save_interaction_trace(normalized_user, trace)
             return {
-                "answer_markdown": limited_answer,
-                "answer_text": limited_answer,
-                "sources": [],
-                "personal_context": personal_context,
-                "trace": trace,
+                "kind": "final",
+                "payload": self._build_limited_payload(
+                    question=question,
+                    normalized_user=normalized_user,
+                    personal_context=personal_context,
+                    retrieval_mode=retrieval_mode,
+                    expanded_queries=expanded_queries,
+                ),
             }
 
         personal_context_text = self._build_personal_context_text(personal_context)
@@ -221,38 +262,100 @@ class RAGEngine:
             if personal_context_text
             else evidence_context
         )
+        return {
+            "kind": "answer",
+            "normalized_user": normalized_user,
+            "user_profile": user_profile,
+            "combined_sources": combined_sources,
+            "personal_context": personal_context,
+            "expanded_queries": expanded_queries,
+            "matches": matches,
+            "retrieval_mode": retrieval_mode,
+            "full_context": full_context,
+        }
 
-        raw_answer = self.llm.answer_question(
-            question=question,
-            context=full_context,
-            chat_history=chat_history,
-            stream=False,
-            user_profile=user_profile,
-            source_briefings=combined_sources,
-        )
-        answer_markdown = self._link_citations(raw_answer, combined_sources)
+    def _build_moderation_payload(
+        self,
+        question: str,
+        normalized_user: Optional[str],
+        safe_msg: str,
+        category: str,
+        details: Dict,
+    ) -> Dict:
+        trace_id = f"trace-{uuid4().hex[:12]}"
+        trace = {
+            "trace_id": trace_id,
+            "created_at": self._utc_now(),
+            "question": question,
+            "answer_preview": safe_msg[:280],
+            "sources": [],
+            "retrieval_mode": "moderation_block",
+            "moderation_category": category,
+            "moderation_details": details,
+        }
+        if normalized_user:
+            UserStore.save_interaction_trace(normalized_user, trace)
+        return {
+            "answer_markdown": safe_msg,
+            "answer_text": safe_msg,
+            "sources": [],
+            "personal_context": [],
+            "trace": trace,
+        }
 
+    def _build_limited_payload(
+        self,
+        question: str,
+        normalized_user: Optional[str],
+        personal_context: List[Dict],
+        retrieval_mode: str,
+        expanded_queries: List[str],
+    ) -> Dict:
+        limited_answer = self._build_limited_evidence_response(personal_context)
+        trace_id = f"trace-{uuid4().hex[:12]}"
+        trace = {
+            "trace_id": trace_id,
+            "created_at": self._utc_now(),
+            "question": question,
+            "answer_preview": limited_answer[:280],
+            "sources": [],
+            "personal_context": personal_context,
+            "retrieval_mode": retrieval_mode,
+            "expanded_queries": expanded_queries,
+            "model": self.llm.model,
+        }
+        if normalized_user:
+            UserStore.save_interaction_trace(normalized_user, trace)
+        return {
+            "answer_markdown": limited_answer,
+            "answer_text": limited_answer,
+            "sources": [],
+            "personal_context": personal_context,
+            "trace": trace,
+        }
+
+    def _finalize_answer_payload(self, question: str, raw_answer: str, bundle: Dict) -> Dict:
+        answer_markdown = self._link_citations(raw_answer, bundle["combined_sources"])
         trace_id = f"trace-{uuid4().hex[:12]}"
         trace = {
             "trace_id": trace_id,
             "created_at": self._utc_now(),
             "question": question,
             "answer_preview": raw_answer[:280],
-            "sources": combined_sources,
-            "personal_context": personal_context,
-            "retrieval_mode": retrieval_mode,
-            "expanded_queries": expanded_queries,
-            "memory_match_count": len(matches),
+            "sources": bundle["combined_sources"],
+            "personal_context": bundle["personal_context"],
+            "retrieval_mode": bundle["retrieval_mode"],
+            "expanded_queries": bundle["expanded_queries"],
+            "memory_match_count": len(bundle["matches"]),
             "model": self.llm.model,
         }
-        if normalized_user:
-            UserStore.save_interaction_trace(normalized_user, trace)
-
+        if bundle["normalized_user"]:
+            UserStore.save_interaction_trace(bundle["normalized_user"], trace)
         return {
             "answer_markdown": answer_markdown,
             "answer_text": raw_answer,
-            "sources": combined_sources,
-            "personal_context": personal_context,
+            "sources": bundle["combined_sources"],
+            "personal_context": bundle["personal_context"],
             "trace": trace,
         }
 
@@ -470,7 +573,7 @@ class RAGEngine:
 
         return (
             "## Clinical Takeaway\n"
-            "I could not retrieve reliable PubMed Central evidence for this question right now, "
+            "I could not retrieve enough reliable live evidence for this question right now, "
             "so I do not want to overstate an answer.\n\n"
             "## Recommended Next Step\n"
             "Please try rephrasing the question, narrowing it to a condition, treatment, or population, "
