@@ -1,6 +1,6 @@
 # My Health Chatbot
 
-My Health Chatbot is a Streamlit-based health research assistant designed as a client-facing application rather than a prototype. Users can create an account, return with the same login, continue previous chats, upload personal documents, inspect traceable sources, export an audit snapshot, and clear saved chat history when needed.
+My Health Chatbot is a Streamlit-based health research assistant designed as a expert/no expert facing application rather than a prototype. Users can create an account, return with the same login, continue previous chats, upload personal documents, inspect traceable sources, export an audit snapshot, and clear saved chat history when needed.
 
 ## What the app does
 

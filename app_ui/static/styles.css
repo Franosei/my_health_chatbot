@@ -280,6 +280,7 @@ a:hover {
     border-radius: var(--radius-lg);
     padding: 0.8rem 0.85rem;
     min-height: 100%;
+    margin-bottom: 0.9rem;
 }
 
 .feature-card h3,
