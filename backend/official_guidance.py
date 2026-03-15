@@ -19,10 +19,19 @@ class OfficialGuidanceEngine:
     MEDLINEPLUS_SEARCH_URL = "https://wsearch.nlm.nih.gov/ws/query"
     USER_AGENT = "MyHealthChatbot/1.0 (+https://www.nhs.uk/ https://medlineplus.gov/)"
 
-    def search(self, queries: str | List[str], per_source_limit: int = 2) -> List[Dict]:
+    def __init__(self) -> None:
+        self.search_cache: Dict[tuple, List[Dict]] = {}
+        self.page_cache: Dict[str, str] = {}
+
+    def search(self, queries: str | List[str], per_source_limit: int = 1) -> List[Dict]:
         normalized_queries = self._normalize_queries(queries)
         if not normalized_queries:
             return []
+
+        cache_key = (tuple(normalized_queries), per_source_limit)
+        cached = self.search_cache.get(cache_key)
+        if cached is not None:
+            return [dict(source) for source in cached]
 
         futures = []
         with ThreadPoolExecutor(max_workers=max(2, len(normalized_queries) * 2)) as executor:
@@ -38,7 +47,9 @@ class OfficialGuidanceEngine:
                 print(f"OfficialGuidanceEngine search fallback: {exc}")
 
         deduped = self._dedupe_and_number(collected)
-        return self._enrich_with_page_content(deduped)
+        enriched = self._enrich_with_page_content(deduped)
+        self.search_cache[cache_key] = [dict(source) for source in enriched]
+        return enriched
 
     @staticmethod
     def _normalize_queries(queries: str | List[str]) -> List[str]:
@@ -62,7 +73,7 @@ class OfficialGuidanceEngine:
             self.NHS_SEARCH_URL,
             params={"q": query},
             headers={"User-Agent": self.USER_AGENT},
-            timeout=10,
+            timeout=6,
         )
         response.raise_for_status()
 
@@ -105,7 +116,7 @@ class OfficialGuidanceEngine:
             self.MEDLINEPLUS_SEARCH_URL,
             params={"db": "healthTopics", "term": query, "retmax": limit},
             headers={"User-Agent": self.USER_AGENT},
-            timeout=10,
+            timeout=6,
         )
         response.raise_for_status()
 
@@ -193,15 +204,23 @@ class OfficialGuidanceEngine:
             enriched["detail_snippet"] = source.get("snippet", "")
             return enriched
 
+        cache_key = f"{url}::{source.get('query', '')}"
+        cached_excerpt = self.page_cache.get(cache_key)
+        if cached_excerpt is not None:
+            enriched["detail_snippet"] = cached_excerpt
+            return enriched
+
         try:
             response = requests.get(
                 url,
                 headers={"User-Agent": self.USER_AGENT},
-                timeout=10,
+                timeout=6,
             )
             response.raise_for_status()
             paragraph_excerpt = self._extract_relevant_paragraphs(response.text, source.get("query", ""))
-            enriched["detail_snippet"] = paragraph_excerpt or source.get("snippet", "")
+            detail_snippet = paragraph_excerpt or source.get("snippet", "")
+            enriched["detail_snippet"] = detail_snippet
+            self.page_cache[cache_key] = detail_snippet
         except Exception as exc:
             print(f"OfficialGuidanceEngine source fetch failed for {url}: {exc}")
             enriched["detail_snippet"] = source.get("snippet", "")

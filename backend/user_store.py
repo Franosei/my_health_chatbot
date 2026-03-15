@@ -66,18 +66,33 @@ def _default_profile(username: str, display_name: Optional[str] = None) -> Dict[
     }
 
 
+def _default_longitudinal_memory() -> Dict[str, Optional[str]]:
+    return {
+        "summary": "",
+        "updated_at": None,
+        "source": "",
+    }
+
+
 def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized = dict(record)
     profile = dict(normalized.get("profile", {}))
     display_name = normalized.get("display_name") or profile.get("display_name") or username
+    longitudinal_memory = normalized.get("longitudinal_memory", {})
+    if not isinstance(longitudinal_memory, dict):
+        longitudinal_memory = {"summary": str(longitudinal_memory or "").strip()}
 
     default_profile = _default_profile(username, display_name)
     for key, value in default_profile.items():
         profile.setdefault(key, value)
+    default_memory = _default_longitudinal_memory()
+    for key, value in default_memory.items():
+        longitudinal_memory.setdefault(key, value)
 
     normalized["username"] = normalized.get("username", username)
     normalized["display_name"] = display_name
     normalized["profile"] = profile
+    normalized["longitudinal_memory"] = longitudinal_memory
     normalized.setdefault("created_at", _utc_now())
     normalized.setdefault("last_login", None)
     normalized.setdefault("conversation", [])
@@ -327,6 +342,7 @@ class UserStore:
                 "uploads": [],
                 "doc_summaries": [],
                 "traces": [],
+                "longitudinal_memory": _default_longitudinal_memory(),
             },
         )
         _append_audit(user_record, "account_created", "Account created")
@@ -397,6 +413,45 @@ class UserStore:
         upload_dir = UPLOAD_ROOT / key
         upload_dir.mkdir(parents=True, exist_ok=True)
         return upload_dir
+
+    @staticmethod
+    def get_longitudinal_memory(username: str) -> Dict:
+        user = _get_user_record(username)
+        if not user:
+            return _default_longitudinal_memory()
+        memory = deepcopy(user.get("longitudinal_memory", {}))
+        default_memory = _default_longitudinal_memory()
+        for key, value in default_memory.items():
+            memory.setdefault(key, value)
+        return memory
+
+    @staticmethod
+    def save_longitudinal_memory(
+        username: str,
+        summary: str,
+        source: str = "conversation",
+        metadata: Optional[Dict] = None,
+    ) -> None:
+        user = _get_user_record(username)
+        if not user:
+            return
+
+        cleaned_summary = (summary or "").strip()
+        memory = user.setdefault("longitudinal_memory", _default_longitudinal_memory())
+        previous_summary = (memory.get("summary") or "").strip()
+        if cleaned_summary == previous_summary:
+            return
+
+        memory["summary"] = cleaned_summary
+        memory["updated_at"] = _utc_now()
+        memory["source"] = source
+        _append_audit(
+            user,
+            "longitudinal_memory_updated",
+            f"Longitudinal memory refreshed from {source}",
+            metadata=metadata or {"summary_length": len(cleaned_summary)},
+        )
+        _save_user_record(username, user)
 
     @staticmethod
     def get_chat_history(username: str) -> List[Dict]:

@@ -7,6 +7,7 @@ My Health Chatbot is a Streamlit-based health research assistant designed as a e
 - Client-facing landing page and chat workspace
 - Persistent user accounts with login continuity
 - Saved chat history per user, plus a `Delete chat` action
+- Longitudinal patient memory so prior conditions, treatments, risks, and follow-up details persist across sessions
 - Per-user document uploads and retrieval-ready personal context
 - Live multi-source retrieval for every question
 - LLM synthesis across retrieved evidence instead of single-source answers
@@ -23,7 +24,8 @@ For each question, the app combines multiple evidence paths instead of relying o
 4. The app searches live sources including official guidance pages and Europe PMC / PubMed content.
 5. Retrieved evidence is ranked with OpenAI embeddings.
 6. The LLM synthesizes the evidence into a readable answer with traceable sources.
-7. The chat, source trace, and audit record are saved to the user profile for future sessions.
+7. The app refreshes a longitudinal patient memory from durable patient-specific facts in chats and uploaded records.
+8. The chat, source trace, audit record, and longitudinal memory are saved to the user profile for future sessions.
 
 ## Sources used
 
@@ -88,6 +90,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 The app stores user-specific information locally:
 
 - `users.json`: users, hashed passwords, profiles, chat history, traces, audit events
+- `users.json`: users, hashed passwords, profiles, chat history, traces, audit events, and longitudinal patient memory
 - `data/uploads/<username>/`: uploaded files for each signed-in user
 
 Using the same login restores the same chat history and uploaded context.

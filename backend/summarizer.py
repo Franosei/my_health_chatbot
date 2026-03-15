@@ -27,6 +27,7 @@ class LLMHelper:
         stream: bool = False,
         user_profile: Optional[dict] = None,
         source_briefings: Optional[list[dict]] = None,
+        longitudinal_memory: Optional[str] = None,
     ) -> str | Generator[str, None, None]:
         """
         Creates a professional, domain-aware response using the supplied evidence dossier.
@@ -49,7 +50,9 @@ class LLMHelper:
                     "7. Synthesize across sources rather than copying any single source.\n"
                     "8. For symptom triage, diagnosis, or initial workup questions, prioritize trusted official guidance "
                     "and use literature to add nuance or detail.\n"
-                    "9. Keep the tone appropriate for a premium, client-facing digital health application."
+                    "9. Use longitudinal patient memory when it is relevant to the current question, but do not let it "
+                    "override current evidence or the user's latest message.\n"
+                    "10. Keep the tone appropriate for a premium, client-facing digital health application."
                 ),
             }
         ]
@@ -59,6 +62,7 @@ class LLMHelper:
                 "role": "user",
                 "content": (
                     f"User profile:\n{self._render_profile_summary(user_profile)}\n\n"
+                    f"Longitudinal patient memory:\n{self._render_longitudinal_memory(longitudinal_memory)}\n\n"
                     f"Recent conversation:\n{self._render_chat_history(chat_history)}\n\n"
                     f"Evidence dossier:\n{self._render_evidence_dossier(source_briefings, context)}\n\n"
                     f"Current question:\n{question}\n\n"
@@ -75,6 +79,61 @@ class LLMHelper:
         )
 
         return self._stream_response(messages) if stream else self._complete_response(messages)
+
+    def refresh_longitudinal_memory(
+        self,
+        existing_memory: str,
+        new_information: str,
+        user_profile: Optional[dict] = None,
+        source_label: str = "conversation",
+    ) -> str:
+        """
+        Merges new patient-specific facts into a durable longitudinal memory summary.
+        Generic education, hypotheticals, and unsupported assistant inferences should
+        not be written into the memory.
+        """
+        cleaned_new_information = (new_information or "").strip()
+        if not cleaned_new_information:
+            return (existing_memory or "").strip()
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You maintain a longitudinal patient memory for a health assistant. "
+                    "Update the memory using only durable patient-specific facts that are explicitly stated "
+                    "in the supplied new information or clearly present in provided record summaries.\n\n"
+                    "Rules:\n"
+                    "1. Keep existing confirmed facts unless the new information clearly supersedes them.\n"
+                    "2. Do not add generic medical education, hypothetical examples, or assistant speculation.\n"
+                    "3. If the new information is not about the specific patient, leave the memory unchanged.\n"
+                    "4. Keep the output concise, de-duplicated, and clinically useful.\n"
+                    "5. Use the exact headings below.\n"
+                    "6. If a section has no reliable facts, write `None noted`.\n"
+                    "7. If there is no durable patient-specific information at all, return the existing memory unchanged.\n"
+                    "8. Never invent medications, diagnoses, allergies, dates, or test results."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"User profile:\n{self._render_profile_summary(user_profile)}\n\n"
+                    f"Existing longitudinal memory:\n{self._render_longitudinal_memory(existing_memory)}\n\n"
+                    f"New information source: {source_label}\n"
+                    f"New information:\n{cleaned_new_information}\n\n"
+                    "Return the refreshed longitudinal memory using exactly this structure:\n"
+                    "Patient Summary:\n"
+                    "Conditions and history:\n"
+                    "Current treatments and medicines:\n"
+                    "Recent symptoms or active concerns:\n"
+                    "Investigations or notable results:\n"
+                    "Risks, allergies, or safety flags:\n"
+                    "Care plan and follow-up:\n"
+                    "Open questions or uncertainties:\n"
+                ),
+            },
+        ]
+        return self._complete_response(messages)
 
     def summarize_user_health_record(self, record_text: str) -> str:
         """
@@ -149,6 +208,11 @@ class LLMHelper:
             if value:
                 fragments.append(f"{field.replace('_', ' ').title()}: {value}")
         return "\n".join(fragments) if fragments else "No additional user profile available."
+
+    @staticmethod
+    def _render_longitudinal_memory(longitudinal_memory: Optional[str]) -> str:
+        cleaned = (longitudinal_memory or "").strip()
+        return cleaned or "No durable patient-specific memory recorded yet."
 
     @staticmethod
     def _render_evidence_dossier(source_briefings: Optional[list[dict]], fallback_context: str) -> str:

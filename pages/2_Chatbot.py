@@ -1,3 +1,4 @@
+import html
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,9 +39,10 @@ def render_message_meta(message: dict) -> None:
 def render_source_trace(message: dict) -> None:
     sources = message.get("sources", [])
     personal_context = message.get("metadata", {}).get("personal_context", [])
+    longitudinal_memory = message.get("metadata", {}).get("longitudinal_memory", "")
     trace = message.get("metadata", {}).get("trace", {})
 
-    if not sources and not personal_context and not trace:
+    if not sources and not personal_context and not longitudinal_memory and not trace:
         return
 
     trace_title_parts = []
@@ -48,6 +50,8 @@ def render_source_trace(message: dict) -> None:
         trace_title_parts.append(f"{len(sources)} literature source(s)")
     if personal_context:
         trace_title_parts.append(f"{len(personal_context)} personal context item(s)")
+    if longitudinal_memory:
+        trace_title_parts.append("longitudinal memory")
     if trace.get("trace_id"):
         trace_title_parts.append(trace["trace_id"])
 
@@ -95,6 +99,19 @@ def render_source_trace(message: dict) -> None:
                     """,
                     unsafe_allow_html=True,
                 )
+
+        if longitudinal_memory:
+            memory_html = html.escape(longitudinal_memory).replace("\n", "<br />")
+            st.markdown("#### Longitudinal memory considered")
+            st.markdown(
+                f"""
+                <div class="context-card">
+                    <strong>Persistent patient memory</strong>
+                    <p>{memory_html}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         if trace:
             st.markdown("#### Audit trace")
@@ -378,10 +395,21 @@ if active_question:
                 "trace_id": payload.get("trace", {}).get("trace_id"),
                 "metadata": {
                     "personal_context": payload.get("personal_context", []),
+                    "longitudinal_memory": payload.get("longitudinal_memory", ""),
                     "trace": payload.get("trace", {}),
                 },
             }
             answer_placeholder.markdown(assistant_entry["content"])
+            try:
+                refreshed_memory = rag_engine.refresh_longitudinal_memory_from_turn(
+                    user=current_user,
+                    user_message=active_question,
+                    personal_context=payload.get("personal_context", []),
+                )
+                if refreshed_memory:
+                    assistant_entry["metadata"]["longitudinal_memory"] = refreshed_memory
+            except Exception as exc:
+                print(f"Longitudinal memory refresh failed: {exc}")
             render_message_meta(assistant_entry)
             render_source_trace(assistant_entry)
             st.session_state.chat_history.append(assistant_entry)

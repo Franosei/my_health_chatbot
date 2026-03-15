@@ -17,16 +17,22 @@ class QueryExpander:
             raise ValueError("OPENAI_API_KEY not found in environment variables.")
         self.client = openai.OpenAI(api_key=api_key)
         self.model = model
+        self.cache: dict[str, List[str]] = {}
 
     def expand(self, user_question: str) -> List[str]:
         """
         Generates focused PubMed search topics from a user question.
         """
+        normalized_question = " ".join((user_question or "").split()).strip()
+        cached = self.cache.get(normalized_question)
+        if cached is not None:
+            return cached
+
         prompt = (
             "You are helping a clinical evidence platform search PubMed Central. "
-            "Generate exactly 3 short, precise search queries that capture the most useful "
+            "Generate exactly 2 short, precise search queries that capture the most useful "
             "condition, population, treatment, diagnostic, or outcome concepts in the user's request.\n\n"
-            f"User question: {user_question}\n\n"
+            f"User question: {normalized_question}\n\n"
             "Search queries:"
         )
 
@@ -37,8 +43,9 @@ class QueryExpander:
         )
 
         content = response.choices[0].message.content.strip()
-        queries = self._parse_response(content)
-        return queries or [user_question]
+        queries = self._parse_response(content) or [normalized_question]
+        self.cache[normalized_question] = queries
+        return queries
 
     def _parse_response(self, text: str) -> List[str]:
         """

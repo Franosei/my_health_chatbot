@@ -14,11 +14,20 @@ class PubMedCentralSearcher:
     SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
     FULLTEXT_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
 
+    def __init__(self) -> None:
+        self.search_cache: Dict[str, List[Dict[str, str]]] = {}
+        self.section_cache: Dict[str, Dict[str, str]] = {}
+
     def search_article_records(self, query: str, max_results: int = 3) -> List[Dict[str, str]]:
         """
         Searches Europe PMC for open-access article metadata.
         Returns normalized records that are easier to display in the UI and cite in answers.
         """
+        cache_key = f"{query}::{max_results}"
+        cached = self.search_cache.get(cache_key)
+        if cached is not None:
+            return [dict(record) for record in cached]
+
         params = {
             "query": query + " OPEN_ACCESS:Y",
             "format": "json",
@@ -27,7 +36,7 @@ class PubMedCentralSearcher:
         }
 
         try:
-            response = requests.get(self.SEARCH_URL, params=params, timeout=10)
+            response = requests.get(self.SEARCH_URL, params=params, timeout=6)
             response.raise_for_status()
             data = response.json()
 
@@ -53,6 +62,7 @@ class PubMedCentralSearcher:
 
             print("PubMed Query:", query)
             print("PMC IDs:", [record["pmcid"] for record in records])
+            self.search_cache[cache_key] = [dict(record) for record in records]
             return records
 
         except requests.exceptions.RequestException as e:
@@ -74,6 +84,10 @@ class PubMedCentralSearcher:
         """
         Retrieves full-text XML from PMC and extracts relevant sections.
         """
+        cached = self.section_cache.get(pmcid)
+        if cached is not None:
+            return dict(cached)
+
         url = self.FULLTEXT_URL.format(pmcid=pmcid)
         sections = {
             "abstract": "", "introduction": "", "discussion": "", "conclusion": ""
@@ -90,7 +104,7 @@ class PubMedCentralSearcher:
             return "".join(elem.itertext()).strip()
 
         try:
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=6)
             response.raise_for_status()
             root = ET.fromstring(response.content)
 
@@ -119,6 +133,7 @@ class PubMedCentralSearcher:
         except Exception as e:
             print(f"Unexpected error processing {pmcid}: {e}")
 
+        self.section_cache[pmcid] = dict(sections)
         return sections
 
     @staticmethod

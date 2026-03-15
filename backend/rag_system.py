@@ -46,15 +46,17 @@ class RAGEngine:
         if normalized_user in self._primed_users:
             return
 
+        pending_entries = []
         for summary_record in UserStore.get_document_summaries(normalized_user):
             summary_text = summary_record.get("summary", "").strip()
             if not summary_text:
                 continue
 
             filename = summary_record.get("file", "uploaded document")
-            self.memory.add_entry(
-                text=summary_text,
-                metadata={
+            pending_entries.append(
+                {
+                    "text": summary_text,
+                    "metadata": {
                     "type": "user_summary",
                     "source": filename,
                     "title": f"User-uploaded record: {filename}",
@@ -62,10 +64,12 @@ class RAGEngine:
                     "stored_path": summary_record.get("stored_path", ""),
                     "entry_key": f"{normalized_user}:upload:{filename}",
                 },
-                user=normalized_user,
-                entry_key=f"{normalized_user}:upload:{filename}",
+                    "user": normalized_user,
+                    "entry_key": f"{normalized_user}:upload:{filename}",
+                }
             )
 
+        self.memory.add_entries(pending_entries)
         self._primed_users.add(normalized_user)
 
     def ingest_documents(
@@ -128,6 +132,10 @@ class RAGEngine:
             )
 
         if normalized_user and indexed_documents:
+            self.refresh_longitudinal_memory_from_documents(
+                user=normalized_user,
+                indexed_documents=indexed_documents,
+            )
             self._primed_users.add(normalized_user)
 
         return indexed_documents
@@ -155,6 +163,7 @@ class RAGEngine:
             stream=False,
             user_profile=bundle["user_profile"],
             source_briefings=bundle["combined_sources"],
+            longitudinal_memory=bundle["longitudinal_memory_summary"],
         )
         return self._finalize_answer_payload(question=question, raw_answer=raw_answer, bundle=bundle)
 
@@ -189,6 +198,7 @@ class RAGEngine:
             stream=True,
             user_profile=bundle["user_profile"],
             source_briefings=bundle["combined_sources"],
+            longitudinal_memory=bundle["longitudinal_memory_summary"],
         ):
             streamed_chunks.append(chunk)
             yield {"type": "token", "delta": chunk}
@@ -206,6 +216,8 @@ class RAGEngine:
     def _prepare_answer_bundle(self, question: str, user: Optional[str] = None) -> Dict:
         normalized_user = user.strip().lower() if user else None
         self.restore_user_context(normalized_user)
+        longitudinal_memory = UserStore.get_longitudinal_memory(normalized_user) if normalized_user else {}
+        longitudinal_memory_summary = (longitudinal_memory.get("summary") or "").strip()
 
         blocked, category, safe_msg, details = self.moderation.decide(question)
         if blocked:
@@ -268,6 +280,7 @@ class RAGEngine:
             "user_profile": user_profile,
             "combined_sources": combined_sources,
             "personal_context": personal_context,
+            "longitudinal_memory_summary": longitudinal_memory_summary,
             "expanded_queries": expanded_queries,
             "matches": matches,
             "retrieval_mode": retrieval_mode,
@@ -356,8 +369,79 @@ class RAGEngine:
             "answer_text": raw_answer,
             "sources": bundle["combined_sources"],
             "personal_context": bundle["personal_context"],
+            "longitudinal_memory": bundle["longitudinal_memory_summary"],
             "trace": trace,
         }
+
+    def refresh_longitudinal_memory_from_turn(
+        self,
+        user: Optional[str],
+        user_message: str,
+        personal_context: Optional[List[Dict]] = None,
+    ) -> str:
+        normalized_user = user.strip().lower() if user else None
+        if not normalized_user:
+            return ""
+
+        new_information = self._build_longitudinal_memory_turn_input(
+            user_message=user_message,
+            personal_context=personal_context or [],
+        )
+        return self._refresh_longitudinal_memory(
+            user=normalized_user,
+            new_information=new_information,
+            source_label="conversation",
+        )
+
+    def refresh_longitudinal_memory_from_documents(
+        self,
+        user: Optional[str],
+        indexed_documents: List[Dict],
+    ) -> str:
+        normalized_user = user.strip().lower() if user else None
+        if not normalized_user or not indexed_documents:
+            return ""
+
+        new_information = "\n\n".join(
+            f"{item.get('file', 'Document')}:\n{item.get('summary', '').strip()}"
+            for item in indexed_documents
+            if item.get("summary", "").strip()
+        )
+        return self._refresh_longitudinal_memory(
+            user=normalized_user,
+            new_information=new_information,
+            source_label="uploaded documents",
+        )
+
+    def _refresh_longitudinal_memory(
+        self,
+        user: str,
+        new_information: str,
+        source_label: str,
+    ) -> str:
+        cleaned_information = (new_information or "").strip()
+        if not cleaned_information:
+            return ""
+
+        existing_memory = UserStore.get_longitudinal_memory(user)
+        existing_summary = (existing_memory.get("summary") or "").strip()
+        updated_summary = self.llm.refresh_longitudinal_memory(
+            existing_memory=existing_summary,
+            new_information=cleaned_information,
+            user_profile=UserStore.get_user_profile(user),
+            source_label=source_label,
+        )
+        normalized_summary = self._normalize_longitudinal_memory_summary(updated_summary)
+        UserStore.save_longitudinal_memory(
+            user,
+            normalized_summary,
+            source=source_label,
+            metadata={
+                "input_length": len(cleaned_information),
+                "summary_length": len(normalized_summary),
+            },
+        )
+        return normalized_summary
 
     def _default_document_paths(self, user: Optional[str]) -> List[Path]:
         if user:
@@ -368,55 +452,87 @@ class RAGEngine:
         return sorted(self.embedding_dir.glob("*.pdf"))
 
     def _retrieve_pubmed_for_queries(self, queries: List[str], user: Optional[str]) -> None:
-        for query in queries:
-            article_records = self.pubmed.search_article_records(query, max_results=3)
-            for record in article_records:
-                sections = self.pubmed.fetch_article_sections(record["pmcid"])
-                for section_name, text in sections.items():
-                    if not text:
-                        continue
+        pending_entries = []
+        article_batches: List[Tuple[str, List[Dict[str, str]]]] = []
 
-                    entry_key = f"{user or 'global'}:pmc:{record['pmcid']}:{section_name}"
-                    self.memory.add_entry(
-                        text=text,
-                        metadata={
-                            "type": "pubmed",
-                            "source_type": "pubmed_literature",
-                            "pmcid": record["pmcid"],
-                            "section": section_name,
-                            "title": record.get("title", "Untitled article"),
-                            "journal": record.get("journal", ""),
-                            "year": record.get("year", ""),
-                            "authors": record.get("authors", ""),
-                            "url": record.get("url", ""),
-                            "query": query,
+        with ThreadPoolExecutor(max_workers=min(3, max(1, len(queries)))) as executor:
+            query_futures = {
+                executor.submit(self.pubmed.search_article_records, query, 2): query
+                for query in queries
+            }
+            for future, query in query_futures.items():
+                try:
+                    article_batches.append((query, future.result()))
+                except Exception as exc:
+                    print(f"PubMed search failed for '{query}': {exc}")
+
+        article_records: List[Tuple[str, Dict[str, str]]] = []
+        for query, records in article_batches:
+            for record in records:
+                article_records.append((query, record))
+
+        with ThreadPoolExecutor(max_workers=min(6, max(1, len(article_records)))) as executor:
+            section_futures = {
+                executor.submit(self.pubmed.fetch_article_sections, record["pmcid"]): (query, record)
+                for query, record in article_records
+            }
+            for future, payload in section_futures.items():
+                query, record = payload
+                try:
+                    sections = future.result()
+                except Exception as exc:
+                    print(f"PubMed full-text fetch failed for {record.get('pmcid', '')}: {exc}")
+                    sections = {}
+
+                best_section_name, best_section_text = self._select_best_pubmed_section(sections)
+                if best_section_text:
+                    entry_key = f"{user or 'global'}:pmc:{record['pmcid']}:{best_section_name}"
+                    pending_entries.append(
+                        {
+                            "text": best_section_text,
+                            "metadata": {
+                                "type": "pubmed",
+                                "source_type": "pubmed_literature",
+                                "pmcid": record["pmcid"],
+                                "section": best_section_name,
+                                "title": record.get("title", "Untitled article"),
+                                "journal": record.get("journal", ""),
+                                "year": record.get("year", ""),
+                                "authors": record.get("authors", ""),
+                                "url": record.get("url", ""),
+                                "query": query,
+                                "entry_key": entry_key,
+                            },
+                            "user": user,
                             "entry_key": entry_key,
-                        },
-                        user=user,
-                        entry_key=entry_key,
+                        }
                     )
 
                 abstract_text = record.get("abstract", "")
                 if abstract_text:
                     entry_key = f"{user or 'global'}:pmc:{record['pmcid']}:abstract"
-                    self.memory.add_entry(
-                        text=abstract_text,
-                        metadata={
-                            "type": "pubmed",
-                            "source_type": "pubmed_literature",
-                            "pmcid": record["pmcid"],
-                            "section": "abstract",
-                            "title": record.get("title", "Untitled article"),
-                            "journal": record.get("journal", ""),
-                            "year": record.get("year", ""),
-                            "authors": record.get("authors", ""),
-                            "url": record.get("url", ""),
-                            "query": query,
+                    pending_entries.append(
+                        {
+                            "text": abstract_text,
+                            "metadata": {
+                                "type": "pubmed",
+                                "source_type": "pubmed_literature",
+                                "pmcid": record["pmcid"],
+                                "section": "abstract",
+                                "title": record.get("title", "Untitled article"),
+                                "journal": record.get("journal", ""),
+                                "year": record.get("year", ""),
+                                "authors": record.get("authors", ""),
+                                "url": record.get("url", ""),
+                                "query": query,
+                                "entry_key": entry_key,
+                            },
+                            "user": user,
                             "entry_key": entry_key,
-                        },
-                        user=user,
-                        entry_key=entry_key,
+                        }
                     )
+
+        self.memory.add_entries(pending_entries)
 
     def _split_matches(self, matches: List[Tuple[Dict, float]]) -> Tuple[List[Dict], List[Tuple[Dict, float]]]:
         personal_context = []
@@ -491,20 +607,26 @@ class RAGEngine:
             return []
 
         query_vector = self.memory._embed_text(question)
-        scored_sources = []
-        for source in sources:
-            source_text = " ".join(
-                part
-                for part in (
-                    source.get("title", ""),
-                    source.get("section", ""),
-                    source.get("detail_snippet", ""),
-                    source.get("snippet", ""),
-                    source.get("query", ""),
+        source_texts = [
+            (
+                " ".join(
+                    part
+                    for part in (
+                        source.get("title", ""),
+                        source.get("section", ""),
+                        source.get("detail_snippet", ""),
+                        source.get("snippet", ""),
+                        source.get("query", ""),
+                    )
+                    if part
                 )
-                if part
+                or source.get("title", "Retrieved source")
             )
-            source_vector = self.memory._embed_text(source_text)
+            for source in sources
+        ]
+        source_vectors = self.memory._embed_texts(source_texts)
+        scored_sources = []
+        for source, source_vector in zip(sources, source_vectors):
             score = float(np.dot(query_vector, source_vector))
             payload = dict(source)
             payload["relevance"] = round(score, 3)
@@ -522,7 +644,43 @@ class RAGEngine:
             queries.extend(self.query_expander.expand(question))
         except Exception as exc:
             print(f"Query expansion fallback: {exc}")
-        return list(dict.fromkeys(query for query in queries if query))
+        return list(dict.fromkeys(query for query in queries if query))[:3]
+
+    @staticmethod
+    def _build_longitudinal_memory_turn_input(
+        user_message: str,
+        personal_context: List[Dict],
+    ) -> str:
+        parts = []
+        cleaned_message = (user_message or "").strip()
+        if cleaned_message:
+            parts.append(f"Latest user message:\n{cleaned_message}")
+
+        if personal_context:
+            context_lines = [
+                f"- {item.get('title', item.get('source', 'Context'))}: {item.get('snippet', '').strip()}"
+                for item in personal_context
+                if item.get("snippet", "").strip()
+            ]
+            if context_lines:
+                parts.append("Relevant patient-specific context already on file:\n" + "\n".join(context_lines))
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _select_best_pubmed_section(sections: Dict[str, str]) -> Tuple[str, str]:
+        for key in ("discussion", "conclusion", "introduction"):
+            text = (sections.get(key) or "").strip()
+            if text:
+                return key, text
+        return "", ""
+
+    @staticmethod
+    def _normalize_longitudinal_memory_summary(summary: str) -> str:
+        cleaned = " ".join((summary or "").split()).strip()
+        if cleaned.lower() == "no durable patient-specific memory recorded yet.":
+            return ""
+        return summary.strip()
 
     @staticmethod
     def _build_personal_context_text(personal_context: List[Dict]) -> str:

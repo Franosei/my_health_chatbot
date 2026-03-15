@@ -40,11 +40,50 @@ class MemoryStore:
         if stable_key and stable_key in self.entry_keys:
             return
 
-        embedding = self._embed_text(text)
-        payload = {"text": text, "embedding": embedding, "metadata": metadata, "user": user}
-        self.entries.append(payload)
-        if stable_key:
-            self.entry_keys.add(stable_key)
+        self.add_entries(
+            [
+                {
+                    "text": text,
+                    "metadata": metadata,
+                    "user": user,
+                    "entry_key": stable_key,
+                }
+            ]
+        )
+
+    def add_entries(self, items: List[Dict]) -> None:
+        pending = []
+
+        for item in items:
+            stable_key = item.get("entry_key") or item.get("metadata", {}).get("entry_key")
+            if stable_key and stable_key in self.entry_keys:
+                continue
+            text = (item.get("text") or "").strip()
+            if not text:
+                continue
+            pending.append(
+                {
+                    "text": text,
+                    "metadata": item.get("metadata", {}),
+                    "user": item.get("user"),
+                    "entry_key": stable_key,
+                }
+            )
+
+        if not pending:
+            return
+
+        embeddings = self._embed_texts([item["text"] for item in pending])
+        for item, embedding in zip(pending, embeddings):
+            payload = {
+                "text": item["text"],
+                "embedding": embedding,
+                "metadata": item["metadata"],
+                "user": item["user"],
+            }
+            self.entries.append(payload)
+            if item["entry_key"]:
+                self.entry_keys.add(item["entry_key"])
 
     def search(
         self,
@@ -78,17 +117,36 @@ class MemoryStore:
         self.embedding_cache.clear()
 
     def _embed_text(self, text: str) -> np.ndarray:
-        key = text.strip()
-        cached = self.embedding_cache.get(key)
-        if cached is not None:
-            return cached
+        return self._embed_texts([text])[0]
 
-        response = self.client.embeddings.create(
-            model=self.embedding_model,
-            input=key,
-        )
-        vector = np.array(response.data[0].embedding, dtype=np.float32)
-        norm = np.linalg.norm(vector)
-        normalized = vector if norm == 0 else vector / norm
-        self.embedding_cache[key] = normalized
-        return normalized
+    def _embed_texts(self, texts: List[str]) -> List[np.ndarray]:
+        if not texts:
+            return []
+
+        cleaned_texts = [text.strip() for text in texts]
+        results: List[Optional[np.ndarray]] = [None] * len(cleaned_texts)
+        missing_texts = []
+        missing_positions = []
+
+        for index, text in enumerate(cleaned_texts):
+            cached = self.embedding_cache.get(text)
+            if cached is not None:
+                results[index] = cached
+            else:
+                missing_texts.append(text)
+                missing_positions.append(index)
+
+        if missing_texts:
+            response = self.client.embeddings.create(
+                model=self.embedding_model,
+                input=missing_texts,
+            )
+            for index, data in enumerate(response.data):
+                vector = np.array(data.embedding, dtype=np.float32)
+                norm = np.linalg.norm(vector)
+                normalized = vector if norm == 0 else vector / norm
+                text = missing_texts[index]
+                self.embedding_cache[text] = normalized
+                results[missing_positions[index]] = normalized
+
+        return [vector for vector in results if vector is not None]
