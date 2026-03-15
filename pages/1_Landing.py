@@ -161,7 +161,7 @@ def render_consent_page() -> None:
                 <div>
                     <strong>Third-party services used</strong>
                     <ul>
-                        <li><strong>OpenAI GPT-4o-mini</strong> — used to generate AI responses. Queries are sent as anonymised text; no user account data is transmitted. Subject to Anthropic's data-processing terms.</li>
+                        <li><strong>OpenAI GPT-4o-mini</strong> — used to generate AI responses. Queries are sent as anonymised text; no user account data is transmitted. Subject to OpenAI's data-processing terms.</li>
                         <li><strong>PubMed / NCBI (US National Library of Medicine)</strong> — used to retrieve published medical literature citations. Only search queries are sent; no personal data is transmitted.</li>
                         <li><strong>No other third-party processors</strong> receive your personal or health data.</li>
                     </ul>
