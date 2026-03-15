@@ -10,6 +10,9 @@ PyMuPDF
 # Retrieval and semantic search
 numpy
 
+# Optional persistent cloud user store
+psycopg[binary]
+
 # Safety / moderation
 detoxify
 

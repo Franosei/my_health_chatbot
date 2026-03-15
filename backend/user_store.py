@@ -4,23 +4,44 @@ import os
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Protocol
 from uuid import uuid4
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DATA_DIR = Path("data")
 UPLOAD_ROOT = DATA_DIR / "uploads"
 USER_DB_PATH = Path("users.json")
+USER_TABLE_NAME = "app_user_store"
+_USER_BACKEND = None
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _ensure_db() -> None:
+def _ensure_upload_root() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
-    if not USER_DB_PATH.exists():
-        USER_DB_PATH.write_text(json.dumps({"users": {}}, indent=2), encoding="utf-8")
+
+
+def _get_setting(name: str, default: str = "") -> str:
+    value = os.getenv(name)
+    if value:
+        return value
+
+    try:
+        import streamlit as st
+
+        secret_value = st.secrets.get(name)
+        if secret_value:
+            return str(secret_value)
+    except Exception:
+        pass
+
+    return default
 
 
 def _normalize_message(message: Dict) -> Dict:
@@ -48,11 +69,7 @@ def _default_profile(username: str, display_name: Optional[str] = None) -> Dict[
 def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized = dict(record)
     profile = dict(normalized.get("profile", {}))
-    display_name = (
-        normalized.get("display_name")
-        or profile.get("display_name")
-        or username
-    )
+    display_name = normalized.get("display_name") or profile.get("display_name") or username
 
     default_profile = _default_profile(username, display_name)
     for key, value in default_profile.items():
@@ -93,33 +110,6 @@ def _normalize_user_record(username: str, record: Dict) -> Dict:
     return normalized
 
 
-def _load_db() -> Dict:
-    _ensure_db()
-    with open(USER_DB_PATH, "r", encoding="utf-8") as file:
-        db = json.load(file)
-
-    if "users" not in db or not isinstance(db["users"], dict):
-        db = {"users": {}}
-
-    changed = False
-    normalized_users = {}
-    for key, record in db["users"].items():
-        normalized_record = _normalize_user_record(key, record)
-        normalized_users[key] = normalized_record
-        if normalized_record != record:
-            changed = True
-
-    db["users"] = normalized_users
-    if changed:
-        _save_db(db)
-    return db
-
-
-def _save_db(db: Dict) -> None:
-    with open(USER_DB_PATH, "w", encoding="utf-8") as file:
-        json.dump(db, file, indent=2)
-
-
 def _hash_password(password: str, salt: Optional[str] = None) -> Dict[str, str]:
     if salt is None:
         salt = os.urandom(16).hex()
@@ -150,8 +140,152 @@ def _append_audit(
     )
 
 
+class _UserBackend(Protocol):
+    def get_user(self, username: str) -> Optional[Dict]:
+        ...
+
+    def save_user(self, username: str, record: Dict) -> None:
+        ...
+
+
+class _LocalJSONUserBackend:
+    def __init__(self) -> None:
+        _ensure_upload_root()
+        if not USER_DB_PATH.exists():
+            USER_DB_PATH.write_text(json.dumps({"users": {}}, indent=2), encoding="utf-8")
+
+    def _load_all_users(self) -> Dict[str, Dict]:
+        with open(USER_DB_PATH, "r", encoding="utf-8") as file:
+            db = json.load(file)
+
+        users = db.get("users", {})
+        if not isinstance(users, dict):
+            users = {}
+
+        changed = False
+        normalized_users = {}
+        for key, record in users.items():
+            normalized_record = _normalize_user_record(key, record)
+            normalized_users[key] = normalized_record
+            if normalized_record != record:
+                changed = True
+
+        if changed:
+            self._save_all_users(normalized_users)
+
+        return normalized_users
+
+    @staticmethod
+    def _save_all_users(users: Dict[str, Dict]) -> None:
+        with open(USER_DB_PATH, "w", encoding="utf-8") as file:
+            json.dump({"users": users}, file, indent=2)
+
+    def get_user(self, username: str) -> Optional[Dict]:
+        return self._load_all_users().get(username)
+
+    def save_user(self, username: str, record: Dict) -> None:
+        users = self._load_all_users()
+        users[username] = _normalize_user_record(username, record)
+        self._save_all_users(users)
+
+
+class _PostgresUserBackend:
+    def __init__(self, database_url: str) -> None:
+        self.database_url = database_url
+        self._ready = False
+        _ensure_upload_root()
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise RuntimeError(
+                "DATABASE_URL is set, but psycopg is not installed. "
+                "Add `psycopg[binary]` to requirements.txt."
+            ) from exc
+
+        return psycopg.connect(self.database_url)
+
+    def _ensure_ready(self) -> None:
+        if self._ready:
+            return
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {USER_TABLE_NAME} (
+                        username TEXT PRIMARY KEY,
+                        payload TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            conn.commit()
+
+        self._ready = True
+
+    def get_user(self, username: str) -> Optional[Dict]:
+        self._ensure_ready()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT payload FROM {USER_TABLE_NAME} WHERE username = %s",
+                    (username,),
+                )
+                row = cur.fetchone()
+
+        if not row:
+            return None
+
+        payload = row[0]
+        record = json.loads(payload) if isinstance(payload, str) else payload
+        normalized = _normalize_user_record(username, record)
+        if normalized != record:
+            self.save_user(username, normalized)
+        return normalized
+
+    def save_user(self, username: str, record: Dict) -> None:
+        self._ensure_ready()
+        payload = json.dumps(_normalize_user_record(username, record))
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {USER_TABLE_NAME} (username, payload, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (username)
+                    DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
+                    """,
+                    (username, payload),
+                )
+            conn.commit()
+
+
+def _get_backend() -> _UserBackend:
+    global _USER_BACKEND
+    if _USER_BACKEND is None:
+        database_url = _get_setting("DATABASE_URL")
+        _USER_BACKEND = _PostgresUserBackend(database_url) if database_url else _LocalJSONUserBackend()
+    return _USER_BACKEND
+
+
+def _get_user_record(username: str) -> Optional[Dict]:
+    key = username.strip().lower()
+    if not key:
+        return None
+    return _get_backend().get_user(key)
+
+
+def _save_user_record(username: str, record: Dict) -> None:
+    key = username.strip().lower()
+    if not key:
+        return
+    _get_backend().save_user(key, _normalize_user_record(key, record))
+
+
 class UserStore:
-    """Persistent local store for user profiles, conversations, uploads, and audit traces."""
+    """Persistent store for user profiles, conversations, uploads, and audit traces."""
 
     @staticmethod
     def create_user(
@@ -163,9 +297,8 @@ class UserStore:
         role: str = "Individual",
         organization: str = "",
     ) -> bool:
-        db = _load_db()
         key = username.strip().lower()
-        if not key or key in db["users"] or len(password) < 8:
+        if not key or _get_user_record(key) or len(password) < 8:
             return False
 
         pwh = _hash_password(password)
@@ -197,15 +330,12 @@ class UserStore:
             },
         )
         _append_audit(user_record, "account_created", "Account created")
-        db["users"][key] = user_record
-        _save_db(db)
+        _save_user_record(key, user_record)
         return True
 
     @staticmethod
     def authenticate(username: str, password: str) -> bool:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return False
 
@@ -214,20 +344,16 @@ class UserStore:
 
     @staticmethod
     def update_last_login(username: str) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
         user["last_login"] = _utc_now()
         _append_audit(user, "login", "User logged in")
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def get_user_profile(username: str) -> Dict:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return {}
 
@@ -239,12 +365,11 @@ class UserStore:
 
     @staticmethod
     def update_profile(username: str, updates: Dict[str, str]) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
 
+        key = username.strip().lower()
         profile = user.setdefault("profile", _default_profile(key))
         allowed_keys = {
             "display_name",
@@ -263,10 +388,11 @@ class UserStore:
         if "display_name" in applied_updates and applied_updates["display_name"]:
             user["display_name"] = applied_updates["display_name"]
         _append_audit(user, "profile_updated", "Profile details updated", metadata=applied_updates)
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def get_upload_dir(username: str) -> Path:
+        _ensure_upload_root()
         key = username.strip().lower()
         upload_dir = UPLOAD_ROOT / key
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -274,38 +400,31 @@ class UserStore:
 
     @staticmethod
     def get_chat_history(username: str) -> List[Dict]:
-        db = _load_db()
-        key = username.strip().lower()
-        return deepcopy(db["users"].get(key, {}).get("conversation", []))
+        user = _get_user_record(username)
+        return deepcopy(user.get("conversation", [])) if user else []
 
     @staticmethod
     def set_chat_history(username: str, history: List[Dict]) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
         user["conversation"] = [_normalize_message(message) for message in history]
         _append_audit(user, "conversation_replaced", "Conversation history replaced")
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def clear_chat_history(username: str) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
         user["conversation"] = []
         user["active_conversation_id"] = f"conv-{uuid4().hex[:12]}"
         _append_audit(user, "conversation_cleared", "Conversation history cleared")
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def append_chat(username: str, message: Dict) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
         normalized_message = _normalize_message(message)
@@ -320,13 +439,11 @@ class UserStore:
                 "source_count": len(normalized_message.get("sources", [])),
             },
         )
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def add_upload(username: str, upload_name: str, stored_path: Optional[str] = None) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
 
@@ -352,7 +469,7 @@ class UserStore:
             f"Uploaded {upload_name}",
             metadata={"file": upload_name, "stored_path": stored_path or ""},
         )
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def save_document_summary(
@@ -361,9 +478,7 @@ class UserStore:
         summary: str,
         stored_path: Optional[str] = None,
     ) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
 
@@ -392,25 +507,21 @@ class UserStore:
             f"Indexed upload {filename}",
             metadata={"file": filename},
         )
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def get_document_summaries(username: str) -> List[Dict]:
-        db = _load_db()
-        key = username.strip().lower()
-        return deepcopy(db["users"].get(key, {}).get("doc_summaries", []))
+        user = _get_user_record(username)
+        return deepcopy(user.get("doc_summaries", [])) if user else []
 
     @staticmethod
     def get_uploads(username: str) -> List[Dict]:
-        db = _load_db()
-        key = username.strip().lower()
-        return deepcopy(db["users"].get(key, {}).get("uploads", []))
+        user = _get_user_record(username)
+        return deepcopy(user.get("uploads", [])) if user else []
 
     @staticmethod
     def save_interaction_trace(username: str, trace: Dict) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
 
@@ -429,13 +540,12 @@ class UserStore:
             trace_id=trace_payload["trace_id"],
             metadata={"source_count": len(trace_payload.get("sources", []))},
         )
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def get_interaction_traces(username: str, limit: Optional[int] = 25) -> List[Dict]:
-        db = _load_db()
-        key = username.strip().lower()
-        traces = deepcopy(db["users"].get(key, {}).get("traces", []))
+        user = _get_user_record(username)
+        traces = deepcopy(user.get("traces", [])) if user else []
         traces.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         if limit is None:
             return traces
@@ -449,19 +559,16 @@ class UserStore:
         trace_id: Optional[str] = None,
         metadata: Optional[Dict] = None,
     ) -> None:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return
         _append_audit(user, event, details, trace_id=trace_id, metadata=metadata)
-        _save_db(db)
+        _save_user_record(username, user)
 
     @staticmethod
     def get_audit(username: str, limit: Optional[int] = 50) -> List[Dict]:
-        db = _load_db()
-        key = username.strip().lower()
-        audit = deepcopy(db["users"].get(key, {}).get("audit", []))
+        user = _get_user_record(username)
+        audit = deepcopy(user.get("audit", [])) if user else []
         audit.sort(key=lambda item: item.get("time", ""), reverse=True)
         if limit is None:
             return audit
@@ -469,9 +576,7 @@ class UserStore:
 
     @staticmethod
     def export_user_snapshot(username: str) -> Dict:
-        db = _load_db()
-        key = username.strip().lower()
-        user = db["users"].get(key)
+        user = _get_user_record(username)
         if not user:
             return {}
 

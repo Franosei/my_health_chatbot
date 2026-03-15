@@ -44,6 +44,7 @@ For each question, the app combines multiple evidence paths instead of relying o
 
 - Python 3.11 or 3.12 recommended
 - OpenAI API key
+- `DATABASE_URL` for hosted deployments where account persistence matters
 
 Python 3.14 is not recommended for this project because some NLP-related packages can behave inconsistently there.
 
@@ -67,6 +68,7 @@ OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+DATABASE_URL=
 ```
 
 Start the app:
@@ -89,6 +91,25 @@ The app stores user-specific information locally:
 - `data/uploads/<username>/`: uploaded files for each signed-in user
 
 Using the same login restores the same chat history and uploaded context.
+
+If `DATABASE_URL` is set, the app uses a PostgreSQL-backed user store instead of `users.json`. This is the recommended mode for Streamlit-hosted deployments because accounts, chat history, traces, and document summaries survive app restarts and browser refreshes.
+
+## Deployment note for Streamlit
+
+For local development, the default JSON store is fine. For a deployed Streamlit link, use a real database:
+
+1. Create a hosted PostgreSQL database such as Supabase, Neon, Azure Database for PostgreSQL, or another managed Postgres service.
+2. Add `DATABASE_URL` to your Streamlit app secrets.
+3. Redeploy or restart the app.
+
+Example:
+
+```toml
+OPENAI_API_KEY="your_openai_api_key_here"
+DATABASE_URL="postgresql://username:password@host:5432/database?sslmode=require"
+```
+
+With that in place, users can create an account once and sign back in later with the same credentials. Their profile, chat history, audit trail, traces, and document summaries will still be there.
 
 ## Project structure
 
@@ -123,6 +144,10 @@ requirements.txt
 ### `OPENAI_API_KEY not found in environment variables`
 
 Create `.env` from `.env.example`, add your real key, and start Streamlit from the project root.
+
+### Accounts disappear on the hosted Streamlit app
+
+Set `DATABASE_URL` in Streamlit secrets so the app uses PostgreSQL for user persistence instead of the local `users.json` file.
 
 ### spaCy or Pydantic errors on Python 3.14
 
