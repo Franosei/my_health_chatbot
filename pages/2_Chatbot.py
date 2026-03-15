@@ -142,7 +142,7 @@ def queue_prompt(prompt: str) -> None:
 
 
 st.set_page_config(
-    page_title="My Health Checks Workspace",
+    page_title="Dr. Charlotte — Workspace",
     page_icon=":material/monitor_heart:",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -150,8 +150,8 @@ st.set_page_config(
 inject_custom_css()
 
 current_user = st.session_state.get("current_user")
-if not current_user:
-    st.warning("Please sign in to continue.")
+if not current_user or not st.session_state.get("consent_given"):
+    st.warning("Please review the privacy notice and sign in to continue.")
     st.switch_page("pages/1_Landing.py")
 
 if "rag_engine" not in st.session_state:
@@ -292,7 +292,7 @@ with top_left:
     st.markdown(
         f"""
         <div class="workspace-hero">
-            <div class="feature-eyebrow">Professional workspace</div>
+            <div class="feature-eyebrow">Dr. Charlotte — Professional Workspace</div>
             <h1>{user_profile.get('display_name', current_user)}, your evidence-backed health assistant is ready.</h1>
             <p>
                 Ask for personal health explanations, clinician-style evidence summaries, or literature-backed follow-up questions.

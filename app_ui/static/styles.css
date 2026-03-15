@@ -508,6 +508,227 @@ a:hover {
     background: linear-gradient(135deg, rgba(31, 122, 114, 0.16) 0%, rgba(22, 59, 71, 0.14) 100%);
 }
 
+/* ── Dr. Charlotte brand hero (on landing page post-consent) ── */
+.brand-hero-title {
+    font-family: "Source Serif 4", serif !important;
+    font-size: 2.6rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.03em !important;
+    color: #f8fbfa !important;
+    line-height: 1.05 !important;
+    margin: 0.2rem 0 0.15rem !important;
+}
+
+.brand-hero-tagline {
+    font-size: 1.05rem !important;
+    font-weight: 500 !important;
+    color: rgba(248, 251, 250, 0.9) !important;
+    margin-bottom: 0.4rem !important;
+}
+
+/* ── Consent page shell ── */
+.consent-shell {
+    text-align: center;
+    padding: 1.4rem 1rem 0.9rem;
+    margin-bottom: 0.6rem;
+}
+
+.consent-brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.15rem;
+    margin-bottom: 0.55rem;
+}
+
+.consent-brand-icon {
+    width: 3.2rem;
+    height: 3.2rem;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #1f7a72 0%, #163b47 100%);
+    color: #ffffff;
+    font-size: 1.5rem;
+    font-weight: 900;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 8px 24px rgba(31, 122, 114, 0.35);
+    margin-bottom: 0.35rem;
+}
+
+.consent-brand-name {
+    font-family: "Source Serif 4", serif;
+    font-size: 3rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--navy);
+    line-height: 1.0;
+}
+
+.consent-brand-sub {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--teal);
+    letter-spacing: 0.01em;
+    margin-top: 0.1rem;
+}
+
+.consent-intro {
+    max-width: 860px;
+    margin: 0 auto 1.1rem !important;
+    text-align: center;
+    font-size: 14px !important;
+    color: var(--text-soft) !important;
+    line-height: 1.55 !important;
+}
+
+/* ── Consent cards ── */
+.consent-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    padding: 1rem 1.05rem;
+    margin-bottom: 0.85rem;
+}
+
+.consent-card-wide {
+    width: 100%;
+}
+
+.consent-card-icon {
+    font-size: 1.3rem;
+    margin-bottom: 0.3rem;
+}
+
+.consent-card h3 {
+    margin: 0 0 0.5rem !important;
+    font-size: 1rem !important;
+    color: var(--navy) !important;
+}
+
+.consent-card ul {
+    margin: 0;
+    padding-left: 1.2rem;
+    line-height: 1.65;
+}
+
+.consent-card ul li {
+    font-size: 13.5px !important;
+    color: var(--text) !important;
+    margin-bottom: 0.3rem !important;
+    line-height: 1.55 !important;
+}
+
+.consent-card p {
+    font-size: 13.5px !important;
+    color: var(--text-soft) !important;
+    line-height: 1.55 !important;
+}
+
+.consent-highlight {
+    background: rgba(31, 122, 114, 0.07);
+    border-left: 3px solid var(--teal);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 0.55rem 0.75rem;
+    margin-top: 0.7rem;
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.55;
+}
+
+/* ── Password requirements in consent page ── */
+.consent-pw-card {
+    background: linear-gradient(135deg, #f7fdfb 0%, #f0faf6 100%);
+    border-color: rgba(31, 122, 114, 0.2);
+}
+
+.pw-req-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.45rem;
+    margin-top: 0.55rem;
+}
+
+.pw-req-item {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: var(--radius-sm);
+    background: rgba(31, 122, 114, 0.08);
+    border: 1px solid rgba(31, 122, 114, 0.14);
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.4;
+}
+
+/* ── Accept box ── */
+.consent-accept-box {
+    background: linear-gradient(135deg, #f7fdfb 0%, #edf9f4 100%);
+    border: 2px solid rgba(31, 122, 114, 0.28);
+    border-radius: var(--radius-lg);
+    padding: 1rem 1.1rem;
+    margin-bottom: 0.8rem;
+}
+
+.consent-accept-box strong {
+    font-size: 14px;
+    color: var(--navy);
+}
+
+.consent-accept-box ul {
+    margin: 0.5rem 0 0.5rem;
+    padding-left: 1.2rem;
+}
+
+.consent-accept-box ul li {
+    font-size: 13.5px !important;
+    color: var(--text) !important;
+    margin-bottom: 0.25rem !important;
+    line-height: 1.5 !important;
+}
+
+/* ── Password requirements box (in signup form) ── */
+.pw-requirements-box {
+    background: linear-gradient(135deg, #f5fdf9 0%, #edf8f3 100%);
+    border: 1px solid rgba(31, 122, 114, 0.22);
+    border-radius: var(--radius-md);
+    padding: 0.65rem 0.75rem;
+    margin: 0.3rem 0 0.5rem;
+}
+
+.pw-req-header {
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--teal);
+    margin-bottom: 0.4rem;
+    letter-spacing: 0.01em;
+}
+
+.pw-req-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    margin-bottom: 0.25rem;
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.4;
+}
+
+.pw-req-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    min-width: 1.25rem;
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--teal);
+    padding-top: 0.05rem;
+}
+
+/* ── Responsive ── */
 @media (max-width: 900px) {
     .hero-shell,
     .workspace-hero {
