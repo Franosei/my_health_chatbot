@@ -274,6 +274,7 @@ class RAGEngine:
         )
         if illustration:
             payload["image_url"] = illustration.image_url
+            payload["image_bytes"] = illustration.image_bytes  # bytes when gpt-image-1, None otherwise
             payload["image_caption"] = illustration.caption
         if video_result:
             payload["video_url"] = video_result.video_url
@@ -366,9 +367,17 @@ class RAGEngine:
         if policy_decision and policy_decision.escalation_banner:
             answer_markdown = policy_decision.escalation_banner + answer_markdown
 
-        # Append disclaimer
+        # Append disclaimer only if the LLM hasn't already included equivalent text
         if policy_decision and policy_decision.disclaimer:
-            answer_markdown = answer_markdown + policy_decision.disclaimer
+            _disc_marker = "Dr. Charlotte provides evidence-based"
+            _clinical_marker = "This summary is for clinical decision-support"
+            _edu_marker = "This information is for educational purposes"
+            already_present = any(
+                m in answer_markdown
+                for m in (_disc_marker, _clinical_marker, _edu_marker)
+            )
+            if not already_present:
+                answer_markdown = answer_markdown + policy_decision.disclaimer
 
         # Append vulnerability notice near top if applicable
         if policy_decision and policy_decision.vulnerability_notice:

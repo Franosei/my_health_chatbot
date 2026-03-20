@@ -1,53 +1,67 @@
 """
-Medical illustration generator using GPT-4o image generation (DALL-E 3).
-Detects when a question would benefit from a visual and generates an appropriate
+Medical illustration generator using GPT image generation.
+Detects when a question would genuinely benefit from a visual and generates a
 safe, clinical-style illustration inline in the chat.
 """
 from __future__ import annotations
+
+import base64
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Illustration trigger keywords ──────────────────────────────────────────────
-_ILLUSTRATION_PATTERNS = [
-    # Exercises and movements
-    re.compile(
-        r"\b(show|demonstrate|illustration|diagram|picture|image|visual|how to do|"
-        r"how to perform|how to apply|what does .{0,20} look like|"
-        r"can you show|draw|sketch)\b",
-        re.IGNORECASE,
-    ),
-    # Physical therapy / exercise positions
-    re.compile(
-        r"\b(exercise|stretch|pose|posture|position|movement|technique|"
-        r"plank|squat|lunge|deadlift|push.?up|sit.?up|crunch|bridge|"
-        r"yoga|pilates|physiotherapy|rehab|RICE|bandage|splint|sling|"
-        r"massage|manipulation|mobilisation|mobilization)\b",
-        re.IGNORECASE,
-    ),
-    # Anatomy and medical diagrams
-    re.compile(
-        r"\b(anatomy|anatomical|cross.section|diagram of|structure of|"
-        r"where is the|location of|nerve|muscle|tendon|ligament|bone|joint|"
-        r"organ|heart|lung|kidney|liver|spine|vertebra|pelvis|shoulder|knee|"
-        r"hip|ankle|wrist|elbow)\b.{0,60}\b(diagram|structure|anatomy|look like|located)\b",
-        re.IGNORECASE,
-    ),
-    # First aid and procedures
-    re.compile(
-        r"\b(first aid|CPR|heimlich|recovery position|pressure|wound|"
-        r"bandaging|dressing|injection|epipen|inhaler technique|"
-        r"blood pressure cuff|peak flow)\b.{0,30}\b(how|technique|position|apply|use)\b",
-        re.IGNORECASE,
-    ),
-]
 
-# Safety keywords that should not appear in generated images
+_VISUAL_REQUEST_PATTERN = re.compile(
+    r"\b(show|illustration|diagram|picture|image|visual|draw|sketch|"
+    r"picture form|image form|with pictures|with diagrams|"
+    r"what does .{0,30} look like|can you show)\b",
+    re.IGNORECASE,
+)
+
+_PROCEDURAL_REQUEST_PATTERN = re.compile(
+    r"\b(how to do|how to perform|how to apply|how do i|how should i|"
+    r"step[-\s]?by[-\s]?step|proper technique|correct form|demonstrate)\b",
+    re.IGNORECASE,
+)
+
+_EXERCISE_SUBJECT_PATTERN = re.compile(
+    r"\b(exercises?|stretche?s?|poses?|postures?|positions?|movements?|techniques?|"
+    r"planks?|squats?|lunges?|deadlifts?|push.?ups?|sit.?ups?|crunches?|bridges?|"
+    r"yoga|pilates|physiotherapy|rehab)\b",
+    re.IGNORECASE,
+)
+
+_ANATOMY_SUBJECT_PATTERN = re.compile(
+    r"\b(anatomy|anatomical|cross.section|structure of|location of|"
+    r"nerve|muscle|tendon|ligament|bone|joint|organ|heart|lung|kidney|"
+    r"liver|spine|vertebra|pelvis|shoulder|knee|hip|ankle|wrist|elbow)\b",
+    re.IGNORECASE,
+)
+
+_PROCEDURAL_SUBJECT_PATTERN = re.compile(
+    r"\b(first aid|cpr|heimlich|recovery position|bandages?|splints?|slings?|"
+    r"bandaging|dressing|injection|epipen|inhaler technique|blood pressure cuff|"
+    r"peak flow|rice)\b",
+    re.IGNORECASE,
+)
+
+_ANATOMY_LOOKUP_PATTERN = re.compile(
+    r"\b(diagram of|where is|location of|structure of|anatomy of|look like|located)\b",
+    re.IGNORECASE,
+)
+
+_NON_VISUAL_INFO_PATTERN = re.compile(
+    r"\b(symptoms?|causes?|diagnosis|diagnostic|treatment|treatments|medication|"
+    r"medications|dose|doses|side effects?|summary|summarize|explain|"
+    r"urgent|emergency|when should|should i)\b",
+    re.IGNORECASE,
+)
+
 _UNSAFE_TOPICS = re.compile(
     r"\b(blood|wound|injury|trauma|gore|violent|nude|naked|explicit)\b",
     re.IGNORECASE,
@@ -60,11 +74,12 @@ class IllustrationResult:
     prompt_used: str
     caption: str
     generated: bool = True
+    image_bytes: Optional[bytes] = field(default=None, repr=False)
 
 
 class ImageGenerator:
     """
-    Generates clinical-style illustrations via GPT-4o / DALL-E 3.
+    Generates clinical-style illustrations via OpenAI image generation.
     Call detect_illustration_need() first, then generate_illustration() if True.
     """
 
@@ -77,15 +92,19 @@ class ImageGenerator:
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment variables.")
         from openai import OpenAI
+
         self.client = OpenAI(api_key=api_key)
 
-    def detect_illustration_need(self, question: str) -> bool:
+    @staticmethod
+    def detect_illustration_need(question: str) -> bool:
         """
-        Returns True if the question is likely to benefit from a visual illustration.
-        Uses fast regex — no LLM call needed.
+        Returns True only when the user explicitly asks for a visual.
         """
         text = (question or "").strip()
-        return any(pattern.search(text) for pattern in _ILLUSTRATION_PATTERNS)
+        if not text or _UNSAFE_TOPICS.search(text):
+            return False
+
+        return bool(_VISUAL_REQUEST_PATTERN.search(text))
 
     def generate_illustration(
         self,
@@ -100,7 +119,6 @@ class ImageGenerator:
         if not question:
             return None
 
-        # Build a safe, clinical illustration prompt
         prompt = self._build_prompt(question, context_answer)
         if not prompt:
             return None
@@ -113,28 +131,37 @@ class ImageGenerator:
                 quality=self.IMAGE_QUALITY,
                 n=1,
             )
-            image_url = response.data[0].url
+            item = response.data[0]
             caption = self._build_caption(question)
-            return IllustrationResult(
-                image_url=image_url,
-                prompt_used=prompt,
-                caption=caption,
-            )
+
+            if item.url:
+                return IllustrationResult(
+                    image_url=item.url,
+                    prompt_used=prompt,
+                    caption=caption,
+                )
+            if item.b64_json:
+                return IllustrationResult(
+                    image_url="",
+                    prompt_used=prompt,
+                    caption=caption,
+                    image_bytes=base64.b64decode(item.b64_json),
+                )
+            print("ImageGenerator: response contained neither url nor b64_json.")
+            return None
         except Exception as exc:
-            print(f"ImageGenerator: generation failed — {exc}")
+            print(f"ImageGenerator: generation failed - {exc}")
             return None
 
     def _build_prompt(self, question: str, answer_context: str) -> str:
         """
-        Constructs a safe, clinically-appropriate DALL-E prompt.
-        Sanitises the question and enforces medical illustration style.
+        Constructs a safe, clinically appropriate image prompt.
         """
-        # Extract the core topic from the question
+        del answer_context
         topic = self._extract_topic(question)
         if not topic:
             return ""
 
-        # Base style: clean medical illustration, no graphic content
         style = (
             "Clean medical education illustration, vector art style, "
             "white background, anatomically accurate, no blood or wounds, "
@@ -142,47 +169,81 @@ class ImageGenerator:
             "Professional diagram style, labelled if appropriate."
         )
 
-        # Route to the right kind of illustration
         q_lower = question.lower()
 
-        if any(w in q_lower for w in ("exercise", "stretch", "pose", "plank", "squat",
-                                       "yoga", "pilates", "movement", "technique", "rehab")):
+        if any(
+            word in q_lower
+            for word in (
+                "exercise",
+                "stretch",
+                "pose",
+                "plank",
+                "squat",
+                "yoga",
+                "pilates",
+                "movement",
+                "technique",
+                "rehab",
+            )
+        ):
             return (
                 f"Clear step-by-step exercise illustration showing {topic}. "
                 f"Show correct body positioning and form with a simple human figure. "
                 f"{style}"
             )
 
-        if any(w in q_lower for w in ("anatomy", "anatomical", "diagram", "structure",
-                                       "muscle", "bone", "joint", "nerve", "organ")):
+        if any(
+            word in q_lower
+            for word in (
+                "anatomy",
+                "anatomical",
+                "diagram",
+                "structure",
+                "muscle",
+                "bone",
+                "joint",
+                "nerve",
+                "organ",
+            )
+        ):
             return (
                 f"Medical anatomy diagram of {topic}. "
                 f"Educational illustration with clear labels. "
                 f"{style}"
             )
 
-        if any(w in q_lower for w in ("first aid", "cpr", "recovery position",
-                                       "heimlich", "bandage", "dressing", "injection")):
+        if any(
+            word in q_lower
+            for word in (
+                "first aid",
+                "cpr",
+                "recovery position",
+                "heimlich",
+                "bandage",
+                "dressing",
+                "injection",
+                "sling",
+                "splint",
+            )
+        ):
             return (
                 f"Medical first aid illustration showing {topic}. "
                 f"Step-by-step instructional diagram. "
                 f"{style}"
             )
 
-        if any(w in q_lower for w in ("posture", "position", "rice", "sling", "splint")):
+        if any(word in q_lower for word in ("posture", "position", "rice")):
             return (
                 f"Medical illustration showing correct {topic}. "
                 f"Clear instructional diagram with positioning guide. "
                 f"{style}"
             )
 
-        # Generic fallback
         return f"Medical education illustration showing {topic}. {style}"
 
     @staticmethod
     def _extract_topic(question: str) -> str:
         """Extract the core illustration subject from the question."""
-        # Remove common question prefixes
         cleaned = re.sub(
             r"^(show me|can you show|demonstrate|draw|illustrate|"
             r"what does|how to do|how to perform|how to apply|"
@@ -192,21 +253,24 @@ class ImageGenerator:
             flags=re.IGNORECASE,
         ).strip()
 
-        # Remove trailing question marks and filler
         cleaned = re.sub(r"\?+$", "", cleaned).strip()
         cleaned = re.sub(r"\b(please|for me|to me|me|a|an|the)\b", "", cleaned).strip()
-        cleaned = " ".join(cleaned.split())  # normalise whitespace
+        cleaned = " ".join(cleaned.split())
 
-        # Safety check — avoid generating anything inappropriate
         if _UNSAFE_TOPICS.search(cleaned):
             return ""
 
-        return cleaned[:200]  # cap prompt topic length
+        return cleaned[:200]
 
     @staticmethod
     def _build_caption(question: str) -> str:
         """Builds a short descriptive caption for the generated image."""
-        cleaned = re.sub(r"^(show me|can you|please|how to|what does)", "", question, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(
+            r"^(show me|can you|please|how to|what does)",
+            "",
+            question,
+            flags=re.IGNORECASE,
+        ).strip()
         cleaned = re.sub(r"\?+$", "", cleaned).strip()
         cleaned = cleaned[:80].capitalize()
         return f"Illustration: {cleaned}" if cleaned else "Generated illustration"

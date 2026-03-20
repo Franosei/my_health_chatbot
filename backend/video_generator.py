@@ -72,8 +72,9 @@ class VideoGenerator:
 
     # ── Detection ──────────────────────────────────────────────────────────────
 
-    def detect_video_request(self, question: str) -> bool:
-        """Returns True if the user is explicitly requesting a video."""
+    @staticmethod
+    def detect_video_request(question: str) -> bool:
+        """Returns True only if the user explicitly requests a video or animation."""
         text = (question or "").strip()
         return any(p.search(text) for p in _VIDEO_PATTERNS)
 
@@ -167,9 +168,11 @@ class VideoGenerator:
 
         q_lower = question.lower()
 
-        if any(w in q_lower for w in ("exercise", "stretch", "rehab", "physio",
-                                       "movement", "technique", "plank", "squat",
-                                       "yoga", "pilates", "mobilisation", "mobilization")):
+        if any(w in q_lower for w in ("exercise", "exercises", "stretch", "stretches",
+                                       "rehab", "physio", "movement", "technique",
+                                       "plank", "squat", "yoga", "pilates",
+                                       "mobilisation", "mobilization", "back pain",
+                                       "neck pain", "shoulder pain", "knee pain")):
             return (
                 f"Short demonstration video showing correct technique for {topic}. "
                 f"Human figure demonstrating the movement from start to finish. "

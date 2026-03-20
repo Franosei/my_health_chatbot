@@ -3,6 +3,7 @@ openai
 python-dotenv
 streamlit
 requests
+streamlit-mic-recorder
 
 # Document ingestion
 PyMuPDF

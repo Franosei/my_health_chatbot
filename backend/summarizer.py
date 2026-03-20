@@ -67,7 +67,9 @@ class LLMHelper:
                     "then use Tier 2/3 to add nuance.\n"
                     "9. Use longitudinal patient memory when relevant, but do not override current evidence.\n"
                     "10. Label evidence confidence when sources conflict or are limited.\n"
-                    "11. Keep the tone appropriate for a premium, clinical-grade health application."
+                    "11. Keep the tone appropriate for a premium, clinical-grade health application.\n"
+                    "12. Do NOT add a disclaimer, safety note, or 'this is not medical advice' footer — "
+                    "one will be appended automatically."
                 ),
             }
         ]

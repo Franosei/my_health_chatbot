@@ -157,7 +157,6 @@ DEFAULT_SECTION_HEADINGS = [
     "## What This Means In Practice",
     "## Evidence Snapshot",
     "## Recommended Next Step",
-    "## Safety Note",
 ]
 
 

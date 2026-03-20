@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import html
 import json
 from datetime import datetime, timezone
@@ -9,6 +11,7 @@ from app_ui.theme import format_timestamp, inject_custom_css
 from app_ui.uploader import upload_documents
 from backend.rag_system import RAGEngine
 from backend.user_store import UserStore
+from backend.voice_transcriber import VoiceTranscriber
 
 _PAGE_DIR = Path(__file__).parent.parent
 USER_AVATAR = str(_PAGE_DIR / "app_ui/static/user.png")
@@ -18,6 +21,35 @@ STARTER_PROMPTS = [
     "Summarize the most important themes from my uploaded records in plain language.",
     "What symptoms would make chest pain an urgent medical review issue?",
 ]
+
+
+def resolve_image_source(
+    image_url: str = "",
+    image_bytes: bytes | None = None,
+    image_b64: str = "",
+) -> str | bytes | None:
+    if image_url:
+        return image_url
+    if image_bytes:
+        return image_bytes
+    if image_b64:
+        try:
+            return base64.b64decode(image_b64)
+        except Exception:
+            return None
+    return None
+
+
+def render_source_links(sources: list[dict]) -> None:
+    links = []
+    for source in sources:
+        source_id = source.get("source_id", "Source")
+        url = source.get("url", "")
+        if url:
+            links.append(f"[{source_id}]({url})")
+
+    if links:
+        st.markdown("Sources: " + " | ".join(links))
 
 
 def render_message_meta(message: dict) -> None:
@@ -68,7 +100,7 @@ def render_source_trace(message: dict) -> None:
                 tier_description = source.get("tier_description", "")
                 tier_badge_html = (
                     f'<span class="tier-badge tier-{tier}" title="{tier_description}">'
-                    f'{tier_label}</span>'
+                    f"{tier_label}</span>"
                 ) if tier_label else ""
 
                 st.markdown(
@@ -133,7 +165,6 @@ def render_source_trace(message: dict) -> None:
                 "model": trace.get("model"),
                 "created_at": trace.get("created_at"),
             }
-            # Include clinical governance fields when present
             if trace.get("role_key"):
                 audit_display["role_key"] = trace.get("role_key")
             if trace.get("intent_category"):
@@ -156,19 +187,25 @@ def render_chat_history(history: list[dict]) -> None:
         avatar = USER_AVATAR if message.get("role") == "user" else ASSISTANT_AVATAR
         with st.chat_message(message.get("role", "assistant"), avatar=avatar):
             st.markdown(message.get("content", ""))
-            # Re-render any saved illustration
-            image_url = message.get("metadata", {}).get("image_url", "")
-            if image_url and message.get("role") == "assistant":
+            meta = message.get("metadata", {})
+            history_image = resolve_image_source(
+                image_url=meta.get("image_url", ""),
+                image_b64=meta.get("image_b64", ""),
+            )
+            if history_image and message.get("role") == "assistant":
                 st.image(
-                    image_url,
-                    caption=message.get("metadata", {}).get("image_caption", "Generated illustration"),
-                    use_container_width=True,
+                    history_image,
+                    caption=meta.get("image_caption", "Generated illustration"),
+                    width="stretch",
                 )
-            # Re-render any saved video
-            video_url = message.get("metadata", {}).get("video_url", "")
+
+            video_url = meta.get("video_url", "")
             if video_url and message.get("role") == "assistant":
                 st.video(video_url)
-                st.caption(message.get("metadata", {}).get("video_caption", "Generated video"))
+                st.caption(meta.get("video_caption", "Generated video"))
+
+            if message.get("role") == "assistant":
+                render_source_links(message.get("sources", []))
             render_message_meta(message)
             if message.get("role") == "assistant":
                 render_source_trace(message)
@@ -180,7 +217,7 @@ def queue_prompt(prompt: str) -> None:
 
 
 st.set_page_config(
-    page_title="Dr. Charlotte — Workspace",
+    page_title="Dr. Charlotte - Workspace",
     page_icon=":material/monitor_heart:",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -195,7 +232,14 @@ if not current_user or not st.session_state.get("consent_given"):
 if "rag_engine" not in st.session_state:
     st.session_state.rag_engine = RAGEngine(embedding_dir="data/uploads")
 
+if "voice_transcriber" not in st.session_state:
+    try:
+        st.session_state.voice_transcriber = VoiceTranscriber()
+    except Exception:
+        st.session_state.voice_transcriber = None
+
 rag_engine: RAGEngine = st.session_state.rag_engine
+voice_transcriber: VoiceTranscriber | None = st.session_state.voice_transcriber
 rag_engine.restore_user_context(current_user)
 
 if st.session_state.get("history_user") != current_user:
@@ -339,7 +383,7 @@ with top_left:
     st.markdown(
         f"""
         <div class="workspace-hero">
-            <div class="feature-eyebrow">Dr. Charlotte — Professional Workspace</div>
+            <div class="feature-eyebrow">Dr. Charlotte - Professional Workspace</div>
             <h1>{user_profile.get('display_name', current_user)}, your evidence-backed health assistant is ready.</h1>
             <p>
                 Ask for personal health explanations, clinician-style evidence summaries, or literature-backed follow-up questions.
@@ -381,8 +425,74 @@ else:
 render_chat_history(chat_history)
 
 queued_prompt = st.session_state.pop("queued_prompt", None)
-user_question = st.chat_input("Ask a health question, request a literature summary, or continue your prior discussion...")
-active_question = user_question or queued_prompt
+user_question = st.chat_input(
+    "Ask a health question, request a literature summary, or continue your prior discussion..."
+)
+
+voice_question = None
+voice_audio_hash = None
+
+if voice_transcriber:
+    with st.expander("Speak your question", expanded=False):
+        st.caption(
+            "Use the microphone control below to record your question. "
+            "Your speech will be sent to OpenAI Whisper for transcription."
+        )
+
+        audio_bytes = b""
+        audio_filename = "recording.wav"
+
+        if hasattr(st, "audio_input"):
+            audio_file = st.audio_input(
+                "Record your question",
+                key="voice_audio_input",
+                help="Allow microphone access in your browser when prompted.",
+            )
+            if audio_file is not None:
+                audio_bytes = audio_file.getvalue()
+                audio_filename = getattr(audio_file, "name", audio_filename) or audio_filename
+        else:
+            try:
+                from streamlit_mic_recorder import mic_recorder
+
+                legacy_audio = mic_recorder(
+                    start_prompt="Start recording",
+                    stop_prompt="Stop recording",
+                    just_once=True,
+                    use_container_width=True,
+                    key="mic_recorder",
+                )
+                if legacy_audio and legacy_audio.get("bytes"):
+                    audio_bytes = legacy_audio["bytes"]
+                    audio_filename = "recording.webm"
+            except ImportError:
+                st.info("Voice input is unavailable in this environment.")
+
+        if audio_bytes:
+            voice_audio_hash = hashlib.sha1(audio_bytes).hexdigest()
+            last_audio_hash = st.session_state.get("last_voice_audio_hash")
+
+            if voice_audio_hash != last_audio_hash:
+                with st.spinner("Transcribing..."):
+                    transcribed = voice_transcriber.transcribe(
+                        audio_bytes,
+                        filename=audio_filename,
+                    )
+                st.session_state.last_voice_audio_hash = voice_audio_hash
+                st.session_state.last_voice_transcript = transcribed
+
+            transcribed = st.session_state.get("last_voice_transcript", "")
+            if transcribed:
+                st.success(f"Heard: *{transcribed}*")
+                if voice_audio_hash != st.session_state.get("last_voice_submitted_hash"):
+                    voice_question = transcribed
+            else:
+                st.warning("Could not transcribe audio. Please try again or type your question.")
+
+active_question = user_question or voice_question or queued_prompt
+
+if voice_question and voice_audio_hash:
+    st.session_state.last_voice_submitted_hash = voice_audio_hash
 
 if active_question:
     now = datetime.now(timezone.utc).isoformat()
@@ -445,6 +555,9 @@ if active_question:
                     "longitudinal_memory": payload.get("longitudinal_memory", ""),
                     "trace": payload.get("trace", {}),
                     "image_url": payload.get("image_url", ""),
+                    "image_b64": base64.b64encode(payload["image_bytes"]).decode()
+                    if payload.get("image_bytes")
+                    else "",
                     "image_caption": payload.get("image_caption", ""),
                     "video_url": payload.get("video_url", ""),
                     "video_caption": payload.get("video_caption", ""),
@@ -452,32 +565,35 @@ if active_question:
             }
             answer_placeholder.markdown(assistant_entry["content"])
 
-            # Render generated illustration if present
-            if payload.get("image_url"):
+            image_src = resolve_image_source(
+                image_url=payload.get("image_url", ""),
+                image_bytes=payload.get("image_bytes"),
+            )
+            if image_src:
                 st.image(
-                    payload["image_url"],
+                    image_src,
                     caption=payload.get("image_caption", "Generated illustration"),
-                    use_container_width=True,
+                    width="stretch",
                 )
                 st.markdown(
                     "<p style='font-size:11px;color:var(--text-soft);margin-top:0.2rem;'>"
-                    "⚠ AI-generated illustration — for educational reference only. "
+                    "AI-generated illustration - for educational reference only. "
                     "Always verify with a qualified clinician or physiotherapist.</p>",
                     unsafe_allow_html=True,
                 )
 
-            # Render generated video if present
             if payload.get("video_url"):
                 st.video(payload["video_url"])
                 st.caption(payload.get("video_caption", "Generated video"))
                 st.markdown(
                     "<p style='font-size:11px;color:var(--text-soft);margin-top:0.2rem;'>"
-                    "⚠ AI-generated video — for educational reference only. "
+                    "AI-generated video - for educational reference only. "
                     "Always verify with a qualified clinician.</p>",
                     unsafe_allow_html=True,
                 )
             elif payload.get("video_rate_limit_msg"):
                 st.warning(payload["video_rate_limit_msg"])
+
             try:
                 refreshed_memory = rag_engine.refresh_longitudinal_memory_from_turn(
                     user=current_user,
@@ -488,10 +604,13 @@ if active_question:
                     assistant_entry["metadata"]["longitudinal_memory"] = refreshed_memory
             except Exception as exc:
                 print(f"Longitudinal memory refresh failed: {exc}")
+
+            render_source_links(assistant_entry.get("sources", []))
             render_message_meta(assistant_entry)
             render_source_trace(assistant_entry)
             st.session_state.chat_history.append(assistant_entry)
             UserStore.append_chat(current_user, assistant_entry)
+            st.rerun()
         except Exception as exc:
             if progress_panel:
                 progress_panel.update(label="Response unavailable", state="error", expanded=True)
@@ -511,3 +630,4 @@ if active_question:
             render_message_meta(assistant_entry)
             st.session_state.chat_history.append(assistant_entry)
             UserStore.append_chat(current_user, assistant_entry)
+            st.rerun()
