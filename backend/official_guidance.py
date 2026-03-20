@@ -23,12 +23,17 @@ class OfficialGuidanceEngine:
         self.search_cache: Dict[tuple, List[Dict]] = {}
         self.page_cache: Dict[str, str] = {}
 
-    def search(self, queries: str | List[str], per_source_limit: int = 1) -> List[Dict]:
+    def search(
+        self,
+        queries: str | List[str],
+        per_source_limit: int = 1,
+        preferred_sources: List[str] | None = None,
+    ) -> List[Dict]:
         normalized_queries = self._normalize_queries(queries)
         if not normalized_queries:
             return []
 
-        cache_key = (tuple(normalized_queries), per_source_limit)
+        cache_key = (tuple(normalized_queries), per_source_limit, tuple(sorted(preferred_sources or [])))
         cached = self.search_cache.get(cache_key)
         if cached is not None:
             return [dict(source) for source in cached]

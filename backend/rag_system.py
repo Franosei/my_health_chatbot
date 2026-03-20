@@ -8,7 +8,10 @@ import re
 import numpy as np
 
 from backend.anonymizer import DocumentAnonymizer
+from backend.clinical_orchestrator import ClinicalOrchestrator
+from backend.image_generator import ImageGenerator
 from backend.memory_store import MemoryStore
+from backend.video_generator import VideoGenerator
 from backend.moderation_ml import ModerationEnsemble
 from backend.official_guidance import OfficialGuidanceEngine
 from backend.pubmed_search import PubMedCentralSearcher
@@ -34,6 +37,16 @@ class RAGEngine:
         self.moderation = ModerationEnsemble()
         self.official_guidance = OfficialGuidanceEngine()
         self._primed_users: set[str] = set()
+        self._orchestrator = ClinicalOrchestrator(
+            memory=self.memory,
+            pubmed=self.pubmed,
+            official_guidance=self.official_guidance,
+            llm=self.llm,
+            query_expander=self.query_expander,
+            moderation=self.moderation,
+        )
+        self._image_generator = ImageGenerator()
+        self._video_generator = VideoGenerator()
 
     def restore_user_context(self, user: Optional[str]) -> None:
         """
@@ -156,6 +169,7 @@ class RAGEngine:
         if bundle["kind"] == "final":
             return bundle["payload"]
 
+        _pd = bundle.get("policy_decision")
         raw_answer = self.llm.answer_question(
             question=question,
             context=bundle["full_context"],
@@ -164,6 +178,9 @@ class RAGEngine:
             user_profile=bundle["user_profile"],
             source_briefings=bundle["combined_sources"],
             longitudinal_memory=bundle["longitudinal_memory_summary"],
+            role_config=bundle.get("role_config"),
+            escalation_banner=_pd.escalation_banner if _pd else "",
+            policy_context_note="\n".join(_pd.context_notes) if _pd else "",
         )
         return self._finalize_answer_payload(question=question, raw_answer=raw_answer, bundle=bundle)
 
@@ -181,6 +198,14 @@ class RAGEngine:
             "type": "status",
             "message": "Searching live guidance, Europe PMC, and your saved context...",
         }
+
+        # Detect if an illustration or video is needed early (fast regex, before retrieval)
+        needs_illustration = self._image_generator.detect_illustration_need(question)
+        needs_video = self._video_generator.detect_video_request(question)
+        # Video takes priority over static illustration when both match
+        if needs_video:
+            needs_illustration = False
+
         bundle = self._prepare_answer_bundle(question=question, user=user)
         if bundle["kind"] == "final":
             yield {"type": "final", "payload": bundle["payload"]}
@@ -191,6 +216,7 @@ class RAGEngine:
             "message": "Composing the answer from the retrieved evidence...",
         }
         streamed_chunks: List[str] = []
+        policy_decision = bundle.get("policy_decision")
         for chunk in self.llm.answer_question(
             question=question,
             context=bundle["full_context"],
@@ -199,93 +225,78 @@ class RAGEngine:
             user_profile=bundle["user_profile"],
             source_briefings=bundle["combined_sources"],
             longitudinal_memory=bundle["longitudinal_memory_summary"],
+            role_config=bundle.get("role_config"),
+            escalation_banner=policy_decision.escalation_banner if policy_decision else "",
+            policy_context_note="\n".join(policy_decision.context_notes) if policy_decision else "",
         ):
             streamed_chunks.append(chunk)
             yield {"type": "token", "delta": chunk}
 
         raw_answer = "".join(streamed_chunks).strip()
-        yield {
-            "type": "final",
-            "payload": self._finalize_answer_payload(
-                question=question,
-                raw_answer=raw_answer,
-                bundle=bundle,
-            ),
-        }
+
+        # Generate illustration or video after streaming (non-blocking for tokens)
+        illustration = None
+        video_result = None
+        video_rate_limit_msg = ""
+
+        if needs_video and user:
+            from backend.user_store import UserStore as _US
+            last_video_at = _US.get_last_video_generated_at(user)
+            rate = self._video_generator.check_rate_limit(last_video_at)
+            if not rate.allowed:
+                video_rate_limit_msg = rate.message
+            else:
+                yield {"type": "status", "message": "Generating Sora-2 video (this may take a moment)..."}
+                try:
+                    video_result = self._video_generator.generate_video(
+                        question=question,
+                        context_answer=raw_answer[:400],
+                    )
+                    if video_result:
+                        _US.record_video_generated(user)
+                except Exception as exc:
+                    print(f"Video generation failed: {exc}")
+
+        elif needs_illustration:
+            yield {"type": "status", "message": "Generating illustration..."}
+            try:
+                illustration = self._image_generator.generate_illustration(
+                    question=question,
+                    context_answer=raw_answer[:400],
+                )
+            except Exception as exc:
+                print(f"Illustration generation failed: {exc}")
+
+        payload = self._finalize_answer_payload(
+            question=question,
+            raw_answer=raw_answer,
+            bundle=bundle,
+        )
+        if illustration:
+            payload["image_url"] = illustration.image_url
+            payload["image_caption"] = illustration.caption
+        if video_result:
+            payload["video_url"] = video_result.video_url
+            payload["video_caption"] = video_result.caption
+        if video_rate_limit_msg:
+            payload["video_rate_limit_msg"] = video_rate_limit_msg
+
+        yield {"type": "final", "payload": payload}
 
     def _prepare_answer_bundle(self, question: str, user: Optional[str] = None) -> Dict:
         normalized_user = user.strip().lower() if user else None
         self.restore_user_context(normalized_user)
         longitudinal_memory = UserStore.get_longitudinal_memory(normalized_user) if normalized_user else {}
         longitudinal_memory_summary = (longitudinal_memory.get("summary") or "").strip()
-
-        blocked, category, safe_msg, details = self.moderation.decide(question)
-        if blocked:
-            return {
-                "kind": "final",
-                "payload": self._build_moderation_payload(
-                    question=question,
-                    normalized_user=normalized_user,
-                    safe_msg=safe_msg,
-                    category=category,
-                    details=details,
-                ),
-            }
-
         user_profile = UserStore.get_user_profile(normalized_user) if normalized_user else {}
-        expanded_queries = self._build_search_queries(question)
-        official_sources: List[Dict] = []
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            official_future = executor.submit(self.official_guidance.search, expanded_queries)
-            pubmed_future = executor.submit(self._retrieve_pubmed_for_queries, expanded_queries, normalized_user)
-            try:
-                official_sources = official_future.result()
-            except Exception as exc:
-                print(f"Official source search failed: {exc}")
-                official_sources = []
-            try:
-                pubmed_future.result()
-            except Exception as exc:
-                print(f"PubMed retrieval failed: {exc}")
-
-        matches = self.memory.search(query=question, user=normalized_user)
-        personal_context, pubmed_matches = self._split_matches(matches)
-        pubmed_sources = self._build_source_briefings(pubmed_matches)
-        combined_sources = self._rank_sources(question, self._combine_sources(pubmed_sources, official_sources))
-        retrieval_mode = "live_multi_source"
-
-        if not combined_sources:
-            return {
-                "kind": "final",
-                "payload": self._build_limited_payload(
-                    question=question,
-                    normalized_user=normalized_user,
-                    personal_context=personal_context,
-                    retrieval_mode=retrieval_mode,
-                    expanded_queries=expanded_queries,
-                ),
-            }
-
-        personal_context_text = self._build_personal_context_text(personal_context)
-        evidence_context = "\n\n".join(source["snippet"] for source in combined_sources)
-        full_context = (
-            f"Personal context:\n{personal_context_text}\n\nBiomedical evidence:\n{evidence_context}"
-            if personal_context_text
-            else evidence_context
+        bundle = self._orchestrator.prepare_bundle(
+            question=question,
+            user=normalized_user,
+            user_profile=user_profile,
+            longitudinal_memory_summary=longitudinal_memory_summary,
         )
-        return {
-            "kind": "answer",
-            "normalized_user": normalized_user,
-            "user_profile": user_profile,
-            "combined_sources": combined_sources,
-            "personal_context": personal_context,
-            "longitudinal_memory_summary": longitudinal_memory_summary,
-            "expanded_queries": expanded_queries,
-            "matches": matches,
-            "retrieval_mode": retrieval_mode,
-            "full_context": full_context,
-        }
+        return bundle
 
     def _build_moderation_payload(
         self,
@@ -349,7 +360,27 @@ class RAGEngine:
 
     def _finalize_answer_payload(self, question: str, raw_answer: str, bundle: Dict) -> Dict:
         answer_markdown = self._link_citations(raw_answer, bundle["combined_sources"])
+
+        # Prepend escalation banner to answer if policy triggered one
+        policy_decision = bundle.get("policy_decision")
+        if policy_decision and policy_decision.escalation_banner:
+            answer_markdown = policy_decision.escalation_banner + answer_markdown
+
+        # Append disclaimer
+        if policy_decision and policy_decision.disclaimer:
+            answer_markdown = answer_markdown + policy_decision.disclaimer
+
+        # Append vulnerability notice near top if applicable
+        if policy_decision and policy_decision.vulnerability_notice:
+            answer_markdown = policy_decision.vulnerability_notice + answer_markdown
+
         trace_id = f"trace-{uuid4().hex[:12]}"
+        intent = bundle.get("intent")
+        role_config = bundle.get("role_config")
+
+        from backend.evidence_ranker import EvidenceRanker
+        tiers_present = EvidenceRanker.get_tiers_present(bundle["combined_sources"])
+
         trace = {
             "trace_id": trace_id,
             "created_at": self._utc_now(),
@@ -361,6 +392,16 @@ class RAGEngine:
             "expanded_queries": bundle["expanded_queries"],
             "memory_match_count": len(bundle["matches"]),
             "model": self.llm.model,
+            # Clinical governance fields
+            "role_key": role_config.role_key if role_config else "patient",
+            "intent_category": intent.intent_category if intent else "",
+            "risk_level": intent.risk_level if intent else "routine",
+            "escalation_triggered": bool(policy_decision and policy_decision.action != "allow"),
+            "crisis_detected": intent.crisis_detected if intent else False,
+            "evidence_tiers_present": tiers_present,
+            "pathway_used": intent.pathway_hint if intent else "",
+            "vulnerable_flags": intent.vulnerable_flags if intent else [],
+            "policy_gates_applied": policy_decision.gates_as_dicts() if policy_decision else [],
         }
         if bundle["normalized_user"]:
             UserStore.save_interaction_trace(bundle["normalized_user"], trace)

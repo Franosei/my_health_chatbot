@@ -47,6 +47,21 @@ class QueryExpander:
         self.cache[normalized_question] = queries
         return queries
 
+    def expand_with_pathway(self, user_question: str, pathway_terms: List[str]) -> List[str]:
+        """
+        Generates PubMed search queries augmented with pathway-specific terminology.
+        """
+        base_queries = self.expand(user_question)
+        if not pathway_terms:
+            return base_queries
+
+        augmented = list(base_queries)
+        for term in pathway_terms[:2]:
+            combined = f"{user_question} {term}"
+            if combined not in augmented:
+                augmented.append(combined)
+        return augmented[:5]
+
     def _parse_response(self, text: str) -> List[str]:
         """
         Parses numbered or bullet lists from LLM output and removes noisy characters.

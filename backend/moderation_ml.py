@@ -1,10 +1,19 @@
 # backend/moderation_ml.py
 from __future__ import annotations
 from typing import Dict, Tuple
+import logging
 import re
+import warnings
+
+# Suppress transformers/BERT load warnings (position_ids UNEXPECTED is harmless
+# when loading a fine-tuned classification checkpoint from a base architecture)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
 
 # Non-LLM model: RoBERTa fine-tuned on Jigsaw (Detoxify)
-from detoxify import Detoxify
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    from detoxify import Detoxify
 
 
 SAFE_MESSAGES: Dict[str, str] = {
@@ -33,8 +42,10 @@ class ModerationEnsemble:
         detoxify_variant: str = "original",  # 'original' covers toxicity/threat/identity/insult/obscene/sexual_explicit
         thresholds: Dict[str, float] | None = None,
     ):
-        # Load classifier
-        self.detox = Detoxify(detoxify_variant)
+        # Load classifier — suppress harmless position_ids UNEXPECTED key warning
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.detox = Detoxify(detoxify_variant)
 
         # Thresholds tuned for strong recall on harmful content; you can adjust later.
         self.t = thresholds or {
@@ -72,9 +83,31 @@ class ModerationEnsemble:
         )
         self.re_sexual = re.compile(r"(sex|nude|naked|porn|explicit|xxx|erotic)", re.IGNORECASE)
 
-    def decide(self, text: str) -> Tuple[bool, str, str, Dict]:
+    # Clinical context whitelist: suppresses medical_harm block for professional queries
+    _CLINICAL_CONTEXT_PATTERN = re.compile(
+        r"\b(therapeutic index|prescrib|clinical management|drug interaction|"
+        r"formulary|pharmacokinetic|pharmacodynamic|safe prescribing|"
+        r"adverse effect management|dose adjustment|monitoring parameter)\b",
+        re.IGNORECASE,
+    )
+
+    # Role-adaptive threshold multipliers
+    _CLINICAL_ROLE_MULTIPLIERS: Dict[str, Dict[str, float]] = {
+        "doctor": {"medical_harm": 2.0},    # Raise medical harm threshold for doctors
+        "nurse": {"medical_harm": 1.5},
+        "midwife": {"medical_harm": 1.5},
+        "physiotherapist": {"medical_harm": 1.3},
+        "patient": {},
+        "caregiver": {},
+    }
+
+    def decide(self, text: str, role_key: str = "patient") -> Tuple[bool, str, str, Dict]:
         """
         Decide if text should be blocked.
+
+        Args:
+            text: The user's question text
+            role_key: Canonical clinical role (patient, doctor, nurse, midwife, physiotherapist, caregiver)
 
         Returns:
             blocked (bool), category (str), safe_message (str), details (dict with model scores & rule hits)
@@ -89,7 +122,12 @@ class ModerationEnsemble:
         # 2) High-precision rule hits
         rules = self._rule_hits(text)
 
-        # 3) Decision (severity order)
+        # 3) Clinical context override for medical_harm
+        has_clinical_context = bool(self._CLINICAL_CONTEXT_PATTERN.search(text))
+        role_mults = self._CLINICAL_ROLE_MULTIPLIERS.get(role_key, {})
+        is_clinical_role = role_key in ("doctor", "nurse", "midwife", "physiotherapist")
+
+        # 4) Decision (severity order)
         if rules["sexual_minors"]:
             return True, "sexual_minors", SAFE_MESSAGES["sexual_minors"], self._pack(det_scores, rules)
         if rules["self_harm"]:
@@ -97,7 +135,11 @@ class ModerationEnsemble:
         if rules["violence_illegal"]:
             return True, "violence_illegal", SAFE_MESSAGES["violence_illegal"], self._pack(det_scores, rules)
         if rules["medical_harm"]:
-            return True, "medical_harm", SAFE_MESSAGES["medical_harm"], self._pack(det_scores, rules)
+            # Clinical professionals asking in professional context: allow through
+            if is_clinical_role and has_clinical_context:
+                pass  # Fall through to model check
+            else:
+                return True, "medical_harm", SAFE_MESSAGES["medical_harm"], self._pack(det_scores, rules)
 
         if det_scores.get("sexual_explicit", 0.0) >= self.t["sexual_explicit"]:
             return True, "nsfw", SAFE_MESSAGES["nsfw"], self._pack(det_scores, rules)

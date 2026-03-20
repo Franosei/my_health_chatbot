@@ -10,8 +10,9 @@ from app_ui.uploader import upload_documents
 from backend.rag_system import RAGEngine
 from backend.user_store import UserStore
 
-USER_AVATAR = str(Path("app_ui/static/user.png"))
-ASSISTANT_AVATAR = str(Path("app_ui/static/assistant.png"))
+_PAGE_DIR = Path(__file__).parent.parent
+USER_AVATAR = str(_PAGE_DIR / "app_ui/static/user.png")
+ASSISTANT_AVATAR = str(_PAGE_DIR / "app_ui/static/assistant.png")
 STARTER_PROMPTS = [
     "What does the recent evidence say about hypertension treatment in older adults?",
     "Summarize the most important themes from my uploaded records in plain language.",
@@ -62,13 +63,23 @@ def render_source_trace(message: dict) -> None:
     with st.expander(expander_title, expanded=False):
         if sources:
             for source in sources:
+                tier = source.get("evidence_tier", 3)
+                tier_label = source.get("tier_label", f"Tier {tier}")
+                tier_description = source.get("tier_description", "")
+                tier_badge_html = (
+                    f'<span class="tier-badge tier-{tier}" title="{tier_description}">'
+                    f'{tier_label}</span>'
+                ) if tier_label else ""
+
                 st.markdown(
                     f"""
                     <div class="source-card">
                         <div class="source-card-head">
                             <span class="source-badge">{source.get('source_id', 'S')}</span>
                             <div>
-                                <strong>{source.get('title', 'Untitled article')}</strong><br />
+                                <strong>{source.get('title', 'Untitled article')}</strong>
+                                {tier_badge_html}
+                                <br />
                                 <span>{source.get('journal', 'Journal unavailable')} {source.get('year', '')}</span>
                             </div>
                         </div>
@@ -115,15 +126,29 @@ def render_source_trace(message: dict) -> None:
 
         if trace:
             st.markdown("#### Audit trace")
-            st.json(
-                {
-                    "trace_id": trace.get("trace_id"),
-                    "retrieval_mode": trace.get("retrieval_mode"),
-                    "expanded_queries": trace.get("expanded_queries", []),
-                    "model": trace.get("model"),
-                    "created_at": trace.get("created_at"),
-                }
-            )
+            audit_display = {
+                "trace_id": trace.get("trace_id"),
+                "retrieval_mode": trace.get("retrieval_mode"),
+                "expanded_queries": trace.get("expanded_queries", []),
+                "model": trace.get("model"),
+                "created_at": trace.get("created_at"),
+            }
+            # Include clinical governance fields when present
+            if trace.get("role_key"):
+                audit_display["role_key"] = trace.get("role_key")
+            if trace.get("intent_category"):
+                audit_display["intent_category"] = trace.get("intent_category")
+            if trace.get("risk_level"):
+                audit_display["risk_level"] = trace.get("risk_level")
+            if trace.get("evidence_tiers_present"):
+                audit_display["evidence_tiers_present"] = trace.get("evidence_tiers_present")
+            if trace.get("pathway_used"):
+                audit_display["pathway_used"] = trace.get("pathway_used")
+            if trace.get("escalation_triggered"):
+                audit_display["escalation_triggered"] = trace.get("escalation_triggered")
+            if trace.get("policy_gates_applied"):
+                audit_display["policy_gates_applied"] = trace.get("policy_gates_applied")
+            st.json(audit_display)
 
 
 def render_chat_history(history: list[dict]) -> None:
@@ -131,6 +156,19 @@ def render_chat_history(history: list[dict]) -> None:
         avatar = USER_AVATAR if message.get("role") == "user" else ASSISTANT_AVATAR
         with st.chat_message(message.get("role", "assistant"), avatar=avatar):
             st.markdown(message.get("content", ""))
+            # Re-render any saved illustration
+            image_url = message.get("metadata", {}).get("image_url", "")
+            if image_url and message.get("role") == "assistant":
+                st.image(
+                    image_url,
+                    caption=message.get("metadata", {}).get("image_caption", "Generated illustration"),
+                    use_container_width=True,
+                )
+            # Re-render any saved video
+            video_url = message.get("metadata", {}).get("video_url", "")
+            if video_url and message.get("role") == "assistant":
+                st.video(video_url)
+                st.caption(message.get("metadata", {}).get("video_caption", "Generated video"))
             render_message_meta(message)
             if message.get("role") == "assistant":
                 render_source_trace(message)
@@ -171,12 +209,13 @@ traces = UserStore.get_interaction_traces(current_user, limit=5)
 audit_records = UserStore.get_audit(current_user, limit=8)
 
 with st.sidebar:
+    clinical_role_display = user_profile.get("clinical_role") or user_profile.get("role", "Individual")
     st.markdown(
         f"""
         <div class="sidebar-profile">
             <div class="feature-eyebrow">Signed in</div>
             <h2>{user_profile.get('display_name', current_user)}</h2>
-            <p>{user_profile.get('role', 'Individual')}</p>
+            <span class="clinical-role-badge">{clinical_role_display}</span>
             <p>{user_profile.get('care_context', 'Personal health guidance')}</p>
         </div>
         """,
@@ -225,6 +264,14 @@ with st.sidebar:
             )
             st.success("Profile updated.")
             st.rerun()
+
+        st.divider()
+        if st.button("Sign out", use_container_width=True, type="secondary"):
+            st.session_state.current_user = None
+            st.session_state.history_user = None
+            st.session_state.chat_history = []
+            st.session_state.consent_given = False
+            st.switch_page("pages/1_Landing.py")
 
     st.markdown("### Documents")
     saved_paths = upload_documents(current_user)
@@ -397,9 +444,40 @@ if active_question:
                     "personal_context": payload.get("personal_context", []),
                     "longitudinal_memory": payload.get("longitudinal_memory", ""),
                     "trace": payload.get("trace", {}),
+                    "image_url": payload.get("image_url", ""),
+                    "image_caption": payload.get("image_caption", ""),
+                    "video_url": payload.get("video_url", ""),
+                    "video_caption": payload.get("video_caption", ""),
                 },
             }
             answer_placeholder.markdown(assistant_entry["content"])
+
+            # Render generated illustration if present
+            if payload.get("image_url"):
+                st.image(
+                    payload["image_url"],
+                    caption=payload.get("image_caption", "Generated illustration"),
+                    use_container_width=True,
+                )
+                st.markdown(
+                    "<p style='font-size:11px;color:var(--text-soft);margin-top:0.2rem;'>"
+                    "⚠ AI-generated illustration — for educational reference only. "
+                    "Always verify with a qualified clinician or physiotherapist.</p>",
+                    unsafe_allow_html=True,
+                )
+
+            # Render generated video if present
+            if payload.get("video_url"):
+                st.video(payload["video_url"])
+                st.caption(payload.get("video_caption", "Generated video"))
+                st.markdown(
+                    "<p style='font-size:11px;color:var(--text-soft);margin-top:0.2rem;'>"
+                    "⚠ AI-generated video — for educational reference only. "
+                    "Always verify with a qualified clinician.</p>",
+                    unsafe_allow_html=True,
+                )
+            elif payload.get("video_rate_limit_msg"):
+                st.warning(payload["video_rate_limit_msg"])
             try:
                 refreshed_memory = rag_engine.refresh_longitudinal_memory_from_turn(
                     user=current_user,

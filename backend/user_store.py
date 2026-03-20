@@ -61,8 +61,10 @@ def _default_profile(username: str, display_name: Optional[str] = None) -> Dict[
         "email": "",
         "care_context": "Personal health guidance",
         "role": "Individual",
+        "clinical_role": "",   # 5-tier clinical role (patient, doctor, nurse, midwife, physiotherapist)
         "organization": "",
         "follow_up_preferences": "",
+        "last_video_generated_at": "",  # ISO-8601 UTC; enforces 1-video-per-hour rate limit
     }
 
 
@@ -310,6 +312,7 @@ class UserStore:
         email: str = "",
         care_context: str = "Personal health guidance",
         role: str = "Individual",
+        clinical_role: str = "",
         organization: str = "",
     ) -> bool:
         key = username.strip().lower()
@@ -323,6 +326,7 @@ class UserStore:
                 "email": email.strip(),
                 "care_context": care_context.strip() or "Personal health guidance",
                 "role": role.strip() or "Individual",
+                "clinical_role": clinical_role.strip(),
                 "organization": organization.strip(),
             }
         )
@@ -392,8 +396,10 @@ class UserStore:
             "email",
             "care_context",
             "role",
+            "clinical_role",
             "organization",
             "follow_up_preferences",
+            "last_video_generated_at",
         }
         applied_updates = {}
         for field, value in updates.items():
@@ -628,6 +634,24 @@ class UserStore:
         if limit is None:
             return audit
         return audit[:limit]
+
+    @staticmethod
+    def record_video_generated(username: str) -> None:
+        """Stamps the current UTC time as the last video generation timestamp."""
+        user = _get_user_record(username)
+        if not user:
+            return
+        user.setdefault("profile", {})["last_video_generated_at"] = _utc_now()
+        _append_audit(user, "video_generated", "Sora-2 video generated")
+        _save_user_record(username, user)
+
+    @staticmethod
+    def get_last_video_generated_at(username: str) -> str:
+        """Returns the ISO-8601 UTC timestamp of the last video generation, or empty string."""
+        user = _get_user_record(username)
+        if not user:
+            return ""
+        return user.get("profile", {}).get("last_video_generated_at", "")
 
     @staticmethod
     def export_user_snapshot(username: str) -> Dict:

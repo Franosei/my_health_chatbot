@@ -7,6 +7,8 @@ from app_ui.theme import inject_custom_css
 from backend.user_store import UserStore
 
 ASSISTANT_AVATAR = Path("app_ui/static/assistant.png")
+from backend.role_router import RoleRouter as _RoleRouter
+
 CARE_CONTEXTS = [
     "Personal health guidance",
     "Caregiver support",
@@ -17,6 +19,7 @@ ROLES = [
     "Caregiver",
     "Clinician / care team",
 ]
+CLINICAL_ROLES = _RoleRouter.get_all_clinical_roles()
 
 st.set_page_config(
     page_title="Dr. Charlotte",
@@ -53,11 +56,15 @@ def render_consent_page() -> None:
     st.markdown(
         """
         <p class="consent-intro">
-            Dr. Charlotte is a health information assistant. Before you create an account or sign in,
-            we are required under the <strong>General Data Protection Regulation (GDPR)</strong> and
-            applicable data-protection law to explain clearly what personal data we collect, how we
-            use it, where it is stored, and what your rights are. <strong>You must actively accept
-            these terms to use the service.</strong>
+            Dr. Charlotte is a health information and decision-support assistant. Before you create an
+            account or sign in, we are required under the <strong>UK General Data Protection Regulation
+            (UK GDPR)</strong> and the <strong>Data Protection Act 2018</strong> to explain clearly what
+            personal data we collect, the lawful basis for processing, how we use it, where it is stored,
+            and what your rights are as a data subject.
+            <strong>You must actively provide informed consent to use this service.</strong>
+            The lawful basis for processing your data is <strong>consent (Article 6(1)(a) UK GDPR)</strong>.
+            Where health data is processed, the additional lawful basis is
+            <strong>explicit consent (Article 9(2)(a) UK GDPR)</strong>.
         </p>
         """,
         unsafe_allow_html=True,
@@ -115,7 +122,7 @@ def render_consent_page() -> None:
                     <li><strong>No third-party data warehousing</strong> — your personal data is not replicated to or shared with any third-party analytics or data-brokerage platforms.</li>
                 </ul>
                 <div class="consent-highlight">
-                    Third-party AI services (OpenAI) receive only the anonymised text of your query and relevant anonymised document excerpts in order to generate a response. No persistent user profile is held by these providers.
+                    Four OpenAI services (GPT-4o-mini for responses, text-embedding-3-small for relevance ranking, gpt-image-1 for illustrations, and Sora-2 for short demonstration videos) receive only the anonymised text of your query and relevant anonymised document excerpts. PubMed / Europe PMC, NHS (nhs.uk), and MedlinePlus each receive only search query strings via their public APIs. No persistent user profile is held by any of these providers.
                 </div>
             </div>
             """,
@@ -161,8 +168,14 @@ def render_consent_page() -> None:
                 <div>
                     <strong>Third-party services used</strong>
                     <ul>
-                        <li><strong>OpenAI GPT-4o-mini</strong> — used to generate AI responses. Queries are sent as anonymised text; no user account data is transmitted. Subject to OpenAI's data-processing terms.</li>
-                        <li><strong>PubMed / NCBI (US National Library of Medicine)</strong> — used to retrieve published medical literature citations. Only search queries are sent; no personal data is transmitted.</li>
+                        <li><strong>OpenAI GPT-4o-mini</strong> — used to generate AI responses and synthesise retrieved evidence. Anonymised query text only; no user account data is transmitted.</li>
+                        <li><strong>OpenAI text-embedding-3-small</strong> — used to create semantic embeddings of your query and retrieved documents for relevance ranking. Only anonymised text fragments are processed; no personal data is transmitted.</li>
+                        <li><strong>OpenAI gpt-image-1</strong> — used to generate clinical illustration images when requested. Only a sanitised description of the requested topic is sent; no personal data is transmitted.</li>
+                        <li><strong>OpenAI Sora-2</strong> — used to generate short clinical demonstration videos (up to 8 seconds) when explicitly requested. Only a sanitised description of the requested topic is sent; no personal data is transmitted. Video generation is rate-limited to once per hour per user.</li>
+                        <li>All four OpenAI services are subject to <a href="https://openai.com/policies/data-processing-addendum" target="_blank" rel="noopener noreferrer">OpenAI's data-processing terms</a>. Anonymised queries may be retained by OpenAI to improve their models unless your operator has enabled zero-data-retention (ZDR) under an enterprise agreement.</li>
+                        <li><strong>PubMed / Europe PMC (US National Library of Medicine &amp; EMBL-EBI)</strong> — used to retrieve published medical literature citations and article sections. Only search query strings are transmitted via public APIs; no personal data is sent and no user account is linked.</li>
+                        <li><strong>NHS (nhs.uk)</strong> — used to retrieve live patient-facing health guidance. Only search query strings are sent to the NHS search API; no personal data is transmitted.</li>
+                        <li><strong>MedlinePlus (US National Library of Medicine)</strong> — used to retrieve additional consumer health information. Only search query strings are sent via the public MedlinePlus web service; no personal data is transmitted.</li>
                         <li><strong>No other third-party processors</strong> receive your personal or health data.</li>
                     </ul>
                 </div>
@@ -172,27 +185,30 @@ def render_consent_page() -> None:
         unsafe_allow_html=True,
     )
 
-    # ── Password requirements notice ───────────────────────────────────────
-    st.markdown(
-        """
-        <div class="consent-card consent-card-wide consent-pw-card">
-            <div class="consent-card-icon"></div>
-            <h3>Password requirements</h3>
-            <p>When you create an account, your password must meet the following requirements to protect your health data:</p>
-            <div class="pw-req-grid">
-                <div class="pw-req-item pw-req-ok">Minimum <strong>8 characters</strong> in length</div>
-                <div class="pw-req-item pw-req-ok">Must be entered <strong>identically twice</strong> (confirmation field)</div>
-                <div class="pw-req-item pw-req-ok">Stored as a <strong>one-way bcrypt hash</strong> — never in plain text</div>
-                <div class="pw-req-item pw-req-ok">Never displayed, logged, or transmitted unencrypted</div>
-            </div>
-            <p style="margin-top:0.5rem;font-size:13px;color:var(--text-soft);">
-                We strongly recommend using a unique password that you do not use for any other service,
-                and a password manager to generate and store it securely.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # ── Returning user sign-in (on consent page) ───────────────────────────
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+    with st.expander("Already have an account? Sign in here", expanded=False):
+        st.markdown(
+            "<p style='font-size:13px;color:var(--text-soft);margin-bottom:0.6rem;'>"
+            "If you created an account previously, you accepted our data privacy terms during signup. "
+            "Sign in below to access your workspace directly.</p>",
+            unsafe_allow_html=True,
+        )
+        with st.form("consent_page_login", clear_on_submit=False):
+            cp_username = st.text_input("Username", key="cp_login_user")
+            cp_password = st.text_input("Password", type="password", key="cp_login_pw")
+            cp_login_btn = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+        if cp_login_btn:
+            if UserStore.authenticate(cp_username, cp_password):
+                normalized = cp_username.strip().lower()
+                UserStore.update_last_login(normalized)
+                st.session_state.current_user = normalized
+                st.session_state.history_user = None
+                st.session_state.consent_given = True
+                st.session_state.consent_timestamp = datetime.now(timezone.utc).isoformat()
+                st.switch_page("pages/2_Chatbot.py")
+            else:
+                st.error("Username or password did not match our records.")
 
     # ── Acceptance form ────────────────────────────────────────────────────
     st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
@@ -203,13 +219,14 @@ def render_consent_page() -> None:
             <strong>By clicking "I Accept &amp; Continue" you confirm that:</strong>
             <ul>
                 <li>You have read and understood this data privacy notice.</li>
-                <li>You consent to the collection, storage, and processing of your data as described above.</li>
-                <li>You understand your GDPR rights and how to exercise them.</li>
-                <li>You are at least 18 years of age, or accessing this service under appropriate supervision.</li>
+                <li>You consent to the collection, storage, and processing of your personal data as described above, in accordance with the UK GDPR and Data Protection Act 2018.</li>
+                <li>You understand your rights as a data subject and how to exercise them.</li>
+                <li>You are at least 18 years of age, or are accessing this service under appropriate supervision.</li>
             </ul>
             <p style="margin:0;font-size:13px;color:var(--text-soft);">
                 Consent is required to use Dr. Charlotte. If you decline, no data will be collected and
-                you will not be able to access the service.
+                you will not be able to access the service. You may withdraw consent at any time by
+                contacting the data controller or deleting your account.
             </p>
         </div>
         """,
@@ -408,7 +425,11 @@ with form_left:
             signup_email = st.text_input("Email address (optional)")
             signup_username = st.text_input("Username")
             signup_care_context = st.selectbox("Primary use case", CARE_CONTEXTS)
-            signup_role = st.selectbox("Role", ROLES)
+            signup_clinical_role = st.selectbox(
+                "Clinical role",
+                CLINICAL_ROLES,
+                help="Select your clinical role. This personalises response style, evidence depth, and safety thresholds.",
+            )
             signup_org = st.text_input("Organization (optional)")
             signup_password = st.text_input("Password", type="password")
             signup_confirm = st.text_input("Confirm password", type="password")
@@ -455,7 +476,8 @@ with form_left:
                     display_name=signup_name.strip() or signup_username,
                     email=signup_email,
                     care_context=signup_care_context,
-                    role=signup_role,
+                    role=signup_clinical_role,
+                    clinical_role=signup_clinical_role,
                     organization=signup_org,
                 )
                 if created:

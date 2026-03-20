@@ -1,8 +1,11 @@
-from typing import Generator, Optional
+from typing import Generator, Optional, TYPE_CHECKING
 import os
 
 from dotenv import load_dotenv
 from openai import OpenAI
+
+if TYPE_CHECKING:
+    from backend.role_router import RoleConfig
 
 load_dotenv()
 
@@ -28,34 +31,72 @@ class LLMHelper:
         user_profile: Optional[dict] = None,
         source_briefings: Optional[list[dict]] = None,
         longitudinal_memory: Optional[str] = None,
+        role_config: Optional["RoleConfig"] = None,
+        escalation_banner: str = "",
+        policy_context_note: str = "",
     ) -> str | Generator[str, None, None]:
         """
-        Creates a professional, domain-aware response using the supplied evidence dossier.
+        Creates a role-aware, evidence-grounded response using the supplied evidence dossier.
         The assistant is instructed to cite claims inline with source markers like [S1].
         """
+        # Build role-specific system persona
+        if role_config:
+            from backend.response_templates import get_persona_block
+            persona = get_persona_block(role_config.role_key)
+        else:
+            persona = (
+                "You are Dr. Charlotte, a senior clinical information specialist supporting "
+                "individual health users, caregivers, and hospital or ambulatory teams. "
+                "You provide polished, evidence-grounded explanations without replacing a treating clinician."
+            )
+
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are Dr. Charlotte, a senior clinical information specialist supporting "
-                    "individual health users, caregivers, and hospital or ambulatory teams. "
-                    "You provide polished, evidence-grounded explanations without replacing a treating clinician.\n\n"
+                    f"{persona}\n\n"
                     "Rules:\n"
                     "1. Use only the supplied evidence dossier and conversation context.\n"
-                    "2. Use concise markdown with practical section headings.\n"
+                    "2. Use concise markdown with the role-appropriate section headings provided.\n"
                     "3. Cite factual claims inline using the provided source markers like [S1] or [S1][S2].\n"
                     "4. If evidence is limited or conflicting, say so explicitly.\n"
-                    "5. Do not diagnose or make unsafe medication changes.\n"
-                    "6. Include escalation guidance if symptoms sound urgent.\n"
+                    "5. Do not state a definitive diagnosis — discuss possibilities and direct to appropriate care.\n"
+                    "6. Always escalate emergency or urgent symptom patterns before educational content.\n"
                     "7. Synthesize across sources rather than copying any single source.\n"
-                    "8. For symptom triage, diagnosis, or initial workup questions, prioritize trusted official guidance "
-                    "and use literature to add nuance or detail.\n"
-                    "9. Use longitudinal patient memory when it is relevant to the current question, but do not let it "
-                    "override current evidence or the user's latest message.\n"
-                    "10. Keep the tone appropriate for a premium, client-facing digital health application."
+                    "8. For symptom triage, prioritize Tier 1 (formal guidance) sources first, "
+                    "then use Tier 2/3 to add nuance.\n"
+                    "9. Use longitudinal patient memory when relevant, but do not override current evidence.\n"
+                    "10. Label evidence confidence when sources conflict or are limited.\n"
+                    "11. Keep the tone appropriate for a premium, clinical-grade health application."
                 ),
             }
         ]
+
+        # Build role-appropriate section headings
+        if role_config:
+            from backend.response_templates import get_section_headings_text
+            headings_text = get_section_headings_text(role_config.role_key)
+        else:
+            headings_text = (
+                "## Clinical Takeaway\n"
+                "## What This Means In Practice\n"
+                "## Evidence Snapshot\n"
+                "## Recommended Next Step\n"
+                "## Safety Note"
+            )
+
+        # Build policy context injection
+        policy_block = ""
+        if policy_context_note:
+            policy_block = f"Clinical policy instructions (must be followed):\n{policy_context_note}\n\n"
+
+        # Build escalation banner injection (pre-pended to answer)
+        banner_instruction = ""
+        if escalation_banner:
+            banner_instruction = (
+                f"IMPORTANT: Begin your response with this escalation notice verbatim:\n"
+                f"{escalation_banner}\n\n"
+            )
 
         messages.append(
             {
@@ -65,15 +106,14 @@ class LLMHelper:
                     f"Longitudinal patient memory:\n{self._render_longitudinal_memory(longitudinal_memory)}\n\n"
                     f"Recent conversation:\n{self._render_chat_history(chat_history)}\n\n"
                     f"Evidence dossier:\n{self._render_evidence_dossier(source_briefings, context)}\n\n"
+                    f"{policy_block}"
                     f"Current question:\n{question}\n\n"
-                    "Write the answer using these headings whenever helpful:\n"
-                    "## Clinical Takeaway\n"
-                    "## What This Means In Practice\n"
-                    "## Evidence Snapshot\n"
-                    "## Recommended Next Step\n"
-                    "## Safety Note\n\n"
+                    f"{banner_instruction}"
+                    f"Write the answer using these headings:\n{headings_text}\n\n"
                     "Every evidence-based statement should include one or more source markers.\n"
-                    "Where multiple sources agree, synthesize them into one clearer statement with combined citations."
+                    "Where multiple sources agree, synthesize them into one clearer statement with combined citations.\n"
+                    "Label the evidence tier (Tier 1 / Tier 2 / Tier 3) inline when it helps the reader "
+                    "assess the strength of the recommendation."
                 ),
             }
         )
@@ -219,10 +259,12 @@ class LLMHelper:
         if source_briefings:
             blocks = []
             for source in source_briefings:
+                tier_label = source.get("tier_label", "")
+                tier_str = f" | {tier_label}" if tier_label else ""
                 blocks.append(
                     "\n".join(
                         [
-                            f"[{source['source_id']}] {source.get('title', 'Untitled article')}",
+                            f"[{source['source_id']}] {source.get('title', 'Untitled article')}{tier_str}",
                             f"Source type: {source.get('source_type', 'evidence source')}",
                             f"Provider: {source.get('provider', source.get('journal', 'Unknown provider'))}",
                             f"Journal: {source.get('journal', 'Unknown journal')}",

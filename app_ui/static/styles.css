@@ -740,3 +740,83 @@ a:hover {
         border-radius: 16px;
     }
 }
+
+/* ── Evidence Tier Badges ─────────────────────────────────────────────────── */
+.tier-badge {
+    display: inline-block;
+    padding: 0.1rem 0.55rem;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    margin-left: 0.4rem;
+    vertical-align: middle;
+    cursor: default;
+}
+
+.tier-1 {
+    background: #d8efea;
+    color: #0f6b4e;
+    border: 1px solid #a8dbd0;
+}
+
+.tier-2 {
+    background: #dce9f8;
+    color: #1a4d8a;
+    border: 1px solid #aac7ef;
+}
+
+.tier-3 {
+    background: #ebebeb;
+    color: #444;
+    border: 1px solid #ccc;
+}
+
+/* ── Escalation Banner ───────────────────────────────────────────────────── */
+.escalation-banner {
+    background: #fff8e6;
+    border-left: 4px solid #f0a500;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    font-size: 13px;
+    color: #7a5700;
+}
+
+/* ── Crisis Banner ───────────────────────────────────────────────────────── */
+.crisis-banner {
+    background: #fff0f0;
+    border-left: 4px solid #d32f2f;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    font-size: 13px;
+    color: #7a0000;
+    font-weight: 600;
+}
+
+/* ── Clinical Role Badge ─────────────────────────────────────────────────── */
+.clinical-role-badge {
+    display: inline-block;
+    background: rgba(31, 122, 114, 0.18);
+    color: #d8f0ec;
+    border: 1px solid rgba(31, 122, 114, 0.35);
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 0.15rem 0.6rem;
+    margin-bottom: 0.4rem;
+    text-transform: uppercase;
+}
+
+/* ── Vulnerability Notice ────────────────────────────────────────────────── */
+.vulnerability-notice {
+    background: #fff9e8;
+    border-left: 3px solid #e6ac00;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 0.6rem 0.85rem;
+    font-size: 12px;
+    color: #6b4f00;
+    margin-bottom: 0.75rem;
+}
