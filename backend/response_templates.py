@@ -1,13 +1,15 @@
 """
 Role-specific response templates, escalation banners, evidence tier labels,
-and clinical safety disclaimers for Dr. Charlotte.
+and clinical safety disclaimers for the product UI.
 """
 from __future__ import annotations
 from typing import List
 
+from backend.product_config import PRODUCT_NAME
+
 
 # ── Crisis template ────────────────────────────────────────────────────────────
-CRISIS_RESPONSE = """\
+CRISIS_RESPONSE = f"""\
 ## ⚠ Urgent Safety Notice
 
 Based on what you have described, this may be an emergency situation.
@@ -28,7 +30,7 @@ Based on what you have described, this may be an emergency situation.
 
 ---
 
-Dr. Charlotte is not able to provide emergency care. Please reach out to a real person right now.
+{PRODUCT_NAME} is not able to provide emergency care. Please reach out to a real person right now.
 """
 
 # ── Evidence tier labels ───────────────────────────────────────────────────────
@@ -86,7 +88,7 @@ def build_no_diagnosis_disclaimer(role_key: str = "patient") -> str:
     if role_key == "patient":
         return (
             "\n\n---\n"
-            "*Dr. Charlotte provides evidence-based health information and education. "
+            f"*{PRODUCT_NAME} provides evidence-based health information and education. "
             "This is not a diagnosis and does not replace advice from your doctor or a qualified clinician. "
             "If you have concerns about your symptoms, please see a healthcare professional.*"
         )
@@ -218,7 +220,7 @@ ROLE_PERSONA_BLOCKS: dict[str, str] = {
 }
 
 DEFAULT_PERSONA_BLOCK = (
-    "You are Dr. Charlotte, a senior clinical information specialist. "
+    f"You are {PRODUCT_NAME}, a senior clinical information specialist. "
     "Provide polished, evidence-grounded explanations using the supplied evidence dossier."
 )
 

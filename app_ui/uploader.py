@@ -32,5 +32,5 @@ def upload_documents(current_user: str) -> List[Path]:
         UserStore.add_upload(current_user, uploaded_file.name, stored_path=str(file_path))
         saved_paths.append(file_path)
 
-    st.success(f"Saved {len(saved_paths)} document(s) to this user's secure workspace.")
+    st.success(f"Saved {len(saved_paths)} document(s) to this account.")
     return saved_paths

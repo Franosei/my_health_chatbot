@@ -1,5 +1,5 @@
 """
-ClinicalOrchestrator: central workflow engine for Dr. Charlotte.
+ClinicalOrchestrator: central workflow engine for the health assistant.
 Coordinates role detection, risk classification, tiered evidence retrieval,
 policy gating, and response assembly.
 

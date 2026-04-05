@@ -11,6 +11,7 @@ from backend.anonymizer import DocumentAnonymizer
 from backend.clinical_orchestrator import ClinicalOrchestrator
 from backend.image_generator import ImageGenerator
 from backend.memory_store import MemoryStore
+from backend.product_config import PRODUCT_NAME
 from backend.video_generator import VideoGenerator
 from backend.moderation_ml import ModerationEnsemble
 from backend.official_guidance import OfficialGuidanceEngine
@@ -369,7 +370,7 @@ class RAGEngine:
 
         # Append disclaimer only if the LLM hasn't already included equivalent text
         if policy_decision and policy_decision.disclaimer:
-            _disc_marker = "Dr. Charlotte provides evidence-based"
+            _disc_marker = f"{PRODUCT_NAME} provides evidence-based"
             _clinical_marker = "This summary is for clinical decision-support"
             _edu_marker = "This information is for educational purposes"
             already_present = any(

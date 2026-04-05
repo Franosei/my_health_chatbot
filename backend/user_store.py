@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,15 @@ def _normalize_message(message: Dict) -> Dict:
     return normalized
 
 
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _is_valid_email(email: str) -> bool:
+    normalized = _normalize_email(email)
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized))
+
+
 def _default_profile(username: str, display_name: Optional[str] = None) -> Dict[str, str]:
     name = (display_name or username).strip() or username
     return {
@@ -64,6 +74,10 @@ def _default_profile(username: str, display_name: Optional[str] = None) -> Dict[
         "clinical_role": "",   # 5-tier clinical role (patient, doctor, nurse, midwife, physiotherapist)
         "organization": "",
         "follow_up_preferences": "",
+        "terms_version": "",
+        "terms_role": "",
+        "terms_accepted_at": "",
+        "privacy_accepted_at": "",
         "last_video_generated_at": "",  # ISO-8601 UTC; enforces 1-video-per-hour rate limit
     }
 
@@ -161,6 +175,9 @@ class _UserBackend(Protocol):
     def get_user(self, username: str) -> Optional[Dict]:
         ...
 
+    def find_username_by_email(self, email: str) -> Optional[str]:
+        ...
+
     def save_user(self, username: str, record: Dict) -> None:
         ...
 
@@ -199,6 +216,17 @@ class _LocalJSONUserBackend:
 
     def get_user(self, username: str) -> Optional[Dict]:
         return self._load_all_users().get(username)
+
+    def find_username_by_email(self, email: str) -> Optional[str]:
+        normalized_email = _normalize_email(email)
+        if not normalized_email:
+            return None
+
+        for username, record in self._load_all_users().items():
+            profile_email = _normalize_email(record.get("profile", {}).get("email", ""))
+            if profile_email == normalized_email:
+                return username
+        return None
 
     def save_user(self, username: str, record: Dict) -> None:
         users = self._load_all_users()
@@ -262,6 +290,27 @@ class _PostgresUserBackend:
             self.save_user(username, normalized)
         return normalized
 
+    def find_username_by_email(self, email: str) -> Optional[str]:
+        normalized_email = _normalize_email(email)
+        if not normalized_email:
+            return None
+
+        self._ensure_ready()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT username, payload FROM {USER_TABLE_NAME}")
+                rows = cur.fetchall()
+
+        for username, payload in rows:
+            record = json.loads(payload) if isinstance(payload, str) else payload
+            normalized_record = _normalize_user_record(username, record)
+            profile_email = _normalize_email(normalized_record.get("profile", {}).get("email", ""))
+            if profile_email == normalized_email:
+                if normalized_record != record:
+                    self.save_user(username, normalized_record)
+                return username
+        return None
+
     def save_user(self, username: str, record: Dict) -> None:
         self._ensure_ready()
         payload = json.dumps(_normalize_user_record(username, record))
@@ -294,6 +343,17 @@ def _get_user_record(username: str) -> Optional[Dict]:
     return _get_backend().get_user(key)
 
 
+def _resolve_username(identifier: str) -> Optional[str]:
+    key = (identifier or "").strip().lower()
+    if not key:
+        return None
+
+    if _get_backend().get_user(key):
+        return key
+
+    return _get_backend().find_username_by_email(key)
+
+
 def _save_user_record(username: str, record: Dict) -> None:
     key = username.strip().lower()
     if not key:
@@ -314,20 +374,36 @@ class UserStore:
         role: str = "Individual",
         clinical_role: str = "",
         organization: str = "",
+        terms_version: str = "",
+        terms_role: str = "",
+        terms_accepted_at: str = "",
+        privacy_accepted_at: str = "",
     ) -> bool:
         key = username.strip().lower()
-        if not key or _get_user_record(key) or len(password) < 8:
+        normalized_email = _normalize_email(email)
+
+        if (
+            not key
+            or _get_user_record(key)
+            or len(password) < 8
+            or not _is_valid_email(normalized_email)
+            or _get_backend().find_username_by_email(normalized_email)
+        ):
             return False
 
         pwh = _hash_password(password)
         profile = _default_profile(key, display_name)
         profile.update(
             {
-                "email": email.strip(),
+                "email": normalized_email,
                 "care_context": care_context.strip() or "Personal health guidance",
                 "role": role.strip() or "Individual",
                 "clinical_role": clinical_role.strip(),
                 "organization": organization.strip(),
+                "terms_version": terms_version.strip(),
+                "terms_role": (terms_role or clinical_role or role).strip(),
+                "terms_accepted_at": terms_accepted_at or _utc_now(),
+                "privacy_accepted_at": privacy_accepted_at or _utc_now(),
             }
         )
 
@@ -349,13 +425,27 @@ class UserStore:
                 "longitudinal_memory": _default_longitudinal_memory(),
             },
         )
-        _append_audit(user_record, "account_created", "Account created")
+        _append_audit(
+            user_record,
+            "account_created",
+            "Account created",
+            metadata={
+                "terms_version": profile.get("terms_version", ""),
+                "terms_role": profile.get("terms_role", ""),
+                "email": profile.get("email", ""),
+            },
+        )
         _save_user_record(key, user_record)
         return True
 
     @staticmethod
+    def resolve_login_username(identifier: str) -> Optional[str]:
+        return _resolve_username(identifier)
+
+    @staticmethod
     def authenticate(username: str, password: str) -> bool:
-        user = _get_user_record(username)
+        resolved_username = _resolve_username(username)
+        user = _get_user_record(resolved_username or "")
         if not user:
             return False
 
@@ -384,10 +474,10 @@ class UserStore:
         return profile
 
     @staticmethod
-    def update_profile(username: str, updates: Dict[str, str]) -> None:
+    def update_profile(username: str, updates: Dict[str, str]) -> bool:
         user = _get_user_record(username)
         if not user:
-            return
+            return False
 
         key = username.strip().lower()
         profile = user.setdefault("profile", _default_profile(key))
@@ -404,13 +494,21 @@ class UserStore:
         applied_updates = {}
         for field, value in updates.items():
             if field in allowed_keys:
-                profile[field] = (value or "").strip()
+                if field == "email":
+                    normalized_email = _normalize_email(value)
+                    existing_owner = _get_backend().find_username_by_email(normalized_email) if normalized_email else None
+                    if existing_owner and existing_owner != key:
+                        return False
+                    profile[field] = normalized_email
+                else:
+                    profile[field] = (value or "").strip()
                 applied_updates[field] = profile[field]
 
         if "display_name" in applied_updates and applied_updates["display_name"]:
             user["display_name"] = applied_updates["display_name"]
         _append_audit(user, "profile_updated", "Profile details updated", metadata=applied_updates)
         _save_user_record(username, user)
+        return True
 
     @staticmethod
     def get_upload_dir(username: str) -> Path:

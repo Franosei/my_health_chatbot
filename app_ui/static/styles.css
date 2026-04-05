@@ -52,6 +52,11 @@ body {
     border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+[data-testid="stSidebarNav"],
+[data-testid="stSidebarNavSeparator"] {
+    display: none !important;
+}
+
 [data-testid="stSidebar"] * {
     color: #f6fbfa;
 }
@@ -276,7 +281,9 @@ a:hover {
 .trust-card,
 .status-card,
 .checklist-card,
-.note-card {
+.note-card,
+.terms-card,
+.support-card {
     border-radius: var(--radius-lg);
     padding: 0.8rem 0.85rem;
     min-height: 100%;
@@ -295,11 +302,29 @@ a:hover {
     padding-left: 1.1rem;
 }
 
+.legal-list {
+    margin: 0.35rem 0 0;
+    padding-left: 1.1rem;
+}
+
+.legal-list li {
+    color: var(--text-soft);
+    line-height: 1.45 !important;
+}
+
+.terms-version,
+.support-contact {
+    color: var(--text-soft);
+    margin-top: 0.45rem;
+}
+
 .note-card p,
 .trust-card p,
 .status-card p,
 .feature-card p,
-.checklist-card p {
+.checklist-card p,
+.terms-card p,
+.support-card p {
     color: var(--text-soft);
     margin-bottom: 0;
 }
@@ -508,7 +533,7 @@ a:hover {
     background: linear-gradient(135deg, rgba(31, 122, 114, 0.16) 0%, rgba(22, 59, 71, 0.14) 100%);
 }
 
-/* ── Dr. Charlotte brand hero (on landing page post-consent) ── */
+/* ── Product brand hero ── */
 .brand-hero-title {
     font-family: "Source Serif 4", serif !important;
     font-size: 2.6rem !important;

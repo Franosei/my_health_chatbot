@@ -7,6 +7,8 @@ from xml.etree import ElementTree as ET
 
 import requests
 
+from backend.product_config import PRODUCT_NAME
+
 
 class OfficialGuidanceEngine:
     """
@@ -17,7 +19,7 @@ class OfficialGuidanceEngine:
 
     NHS_SEARCH_URL = "https://www.nhs.uk/search/results"
     MEDLINEPLUS_SEARCH_URL = "https://wsearch.nlm.nih.gov/ws/query"
-    USER_AGENT = "MyHealthChatbot/1.0 (+https://www.nhs.uk/ https://medlineplus.gov/)"
+    USER_AGENT = f"{PRODUCT_NAME.replace(' ', '')}/1.0 (+https://www.nhs.uk/ https://medlineplus.gov/)"
 
     def __init__(self) -> None:
         self.search_cache: Dict[tuple, List[Dict]] = {}

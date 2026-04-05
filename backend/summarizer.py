@@ -4,6 +4,8 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from backend.product_config import PRODUCT_NAME
+
 if TYPE_CHECKING:
     from backend.role_router import RoleConfig
 
@@ -45,7 +47,7 @@ class LLMHelper:
             persona = get_persona_block(role_config.role_key)
         else:
             persona = (
-                "You are Dr. Charlotte, a senior clinical information specialist supporting "
+                f"You are {PRODUCT_NAME}, a senior clinical information specialist supporting "
                 "individual health users, caregivers, and hospital or ambulatory teams. "
                 "You provide polished, evidence-grounded explanations without replacing a treating clinician."
             )

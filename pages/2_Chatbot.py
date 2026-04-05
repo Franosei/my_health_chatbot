@@ -9,6 +9,7 @@ import streamlit as st
 
 from app_ui.theme import format_timestamp, inject_custom_css
 from app_ui.uploader import upload_documents
+from backend.product_config import PRODUCT_NAME, SUPPORT_EMAIL
 from backend.rag_system import RAGEngine
 from backend.user_store import UserStore
 from backend.voice_transcriber import VoiceTranscriber
@@ -149,7 +150,7 @@ def render_source_trace(message: dict) -> None:
             st.markdown(
                 f"""
                 <div class="context-card">
-                    <strong>Persistent patient memory</strong>
+                    <strong>Persistent account memory</strong>
                     <p>{memory_html}</p>
                 </div>
                 """,
@@ -212,12 +213,12 @@ def render_chat_history(history: list[dict]) -> None:
 
 
 def queue_prompt(prompt: str) -> None:
-    st.session_state.queued_prompt = prompt
+    st.session_state.prompt_draft = prompt
     st.rerun()
 
 
 st.set_page_config(
-    page_title="Dr. Charlotte - Workspace",
+    page_title=PRODUCT_NAME,
     page_icon=":material/monitor_heart:",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -225,8 +226,8 @@ st.set_page_config(
 inject_custom_css()
 
 current_user = st.session_state.get("current_user")
-if not current_user or not st.session_state.get("consent_given"):
-    st.warning("Please review the privacy notice and sign in to continue.")
+if not current_user:
+    st.warning("Please sign in to continue.")
     st.switch_page("pages/1_Landing.py")
 
 if "rag_engine" not in st.session_state:
@@ -253,7 +254,7 @@ traces = UserStore.get_interaction_traces(current_user, limit=5)
 audit_records = UserStore.get_audit(current_user, limit=8)
 
 with st.sidebar:
-    clinical_role_display = user_profile.get("clinical_role") or user_profile.get("role", "Individual")
+    clinical_role_display = user_profile.get("clinical_role") or user_profile.get("role", "Patient / Individual")
     st.markdown(
         f"""
         <div class="sidebar-profile">
@@ -268,53 +269,56 @@ with st.sidebar:
 
     sidebar_actions = st.columns(2, gap="small")
     with sidebar_actions[0]:
-        if st.button("Delete chat", use_container_width=True):
+        if st.button("Clear conversation", use_container_width=True):
             UserStore.clear_chat_history(current_user)
             st.session_state.chat_history = []
-            st.success("Chat history deleted.")
+            st.success("Conversation history cleared.")
             st.rerun()
     with sidebar_actions[1]:
-        if st.button("Logout", use_container_width=True):
+        if st.button("Sign out", use_container_width=True):
             st.session_state.current_user = None
             st.session_state.history_user = None
             st.session_state.chat_history = []
             st.switch_page("pages/1_Landing.py")
 
-    with st.expander("Profile settings", expanded=False):
+    with st.expander("Account settings", expanded=False):
         with st.form("profile_form"):
             profile_name = st.text_input("Display name", value=user_profile.get("display_name", ""))
             profile_email = st.text_input("Email", value=user_profile.get("email", ""))
-            care_context = st.text_input("Use case", value=user_profile.get("care_context", ""))
-            role = st.text_input("Role", value=user_profile.get("role", ""))
+            st.text_input("Account role", value=clinical_role_display, disabled=True)
+            st.text_input("Account type", value=user_profile.get("care_context", ""), disabled=True)
             organization = st.text_input("Organization", value=user_profile.get("organization", ""))
             follow_up = st.text_area(
                 "Follow-up preferences",
                 value=user_profile.get("follow_up_preferences", ""),
                 height=90,
             )
-            profile_saved = st.form_submit_button("Save profile", type="primary", use_container_width=True)
+            profile_saved = st.form_submit_button("Save changes", type="primary", use_container_width=True)
 
         if profile_saved:
-            UserStore.update_profile(
+            updated = UserStore.update_profile(
                 current_user,
                 {
                     "display_name": profile_name,
                     "email": profile_email,
-                    "care_context": care_context,
-                    "role": role,
                     "organization": organization,
                     "follow_up_preferences": follow_up,
                 },
             )
-            st.success("Profile updated.")
-            st.rerun()
+            if updated:
+                st.success("Account details updated.")
+                st.rerun()
+            else:
+                st.error("That email address is already linked to another account.")
 
         st.divider()
-        if st.button("Sign out", use_container_width=True, type="secondary"):
+        st.caption(
+            f"Need support or a role change? Contact {SUPPORT_EMAIL}."
+        )
+        if st.button("Sign out from this account", use_container_width=True, type="secondary"):
             st.session_state.current_user = None
             st.session_state.history_user = None
             st.session_state.chat_history = []
-            st.session_state.consent_given = False
             st.switch_page("pages/1_Landing.py")
 
     st.markdown("### Documents")
@@ -343,7 +347,7 @@ with st.sidebar:
     st.markdown("### Audit export")
     export_payload = json.dumps(UserStore.export_user_snapshot(current_user), indent=2)
     st.download_button(
-        "Download audit JSON",
+        "Download account export",
         data=export_payload,
         file_name=f"{current_user}-audit.json",
         mime="application/json",
@@ -383,11 +387,10 @@ with top_left:
     st.markdown(
         f"""
         <div class="workspace-hero">
-            <div class="feature-eyebrow">Dr. Charlotte - Professional Workspace</div>
-            <h1>{user_profile.get('display_name', current_user)}, your evidence-backed health assistant is ready.</h1>
+            <div class="feature-eyebrow">{PRODUCT_NAME}</div>
+            <h1>Welcome back, {user_profile.get('display_name', current_user)}.</h1>
             <p>
-                Ask for personal health explanations, clinician-style evidence summaries, or literature-backed follow-up questions.
-                Every substantive answer is designed to surface references and trace data.
+                Continue your conversation, review supporting references, and manage your saved documents and account history in one place.
             </p>
         </div>
         """,
@@ -403,19 +406,19 @@ with top_right:
 st.markdown(
     """
     <div class="toolbar-card">
-        <span>Evidence-first answers</span>
-        <span>PubMed source trace</span>
-        <span>Continuity across logins</span>
-        <span>Audit-ready session history</span>
+        <span>Structured guidance</span>
+        <span>Supporting references</span>
+        <span>Saved history</span>
+        <span>Account continuity</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 if chat_history:
-    st.info(f"Resumed {len(chat_history)} message(s) from your saved workspace.")
+    st.info(f"Resumed {len(chat_history)} saved message(s) from your account.")
 else:
-    st.markdown("### Start with a strong prompt")
+    st.markdown("### Start with a strong question")
     starter_cols = st.columns(len(STARTER_PROMPTS), gap="small")
     for index, prompt in enumerate(STARTER_PROMPTS):
         with starter_cols[index]:
@@ -424,19 +427,14 @@ else:
 
 render_chat_history(chat_history)
 
-queued_prompt = st.session_state.pop("queued_prompt", None)
-user_question = st.chat_input(
-    "Ask a health question, request a literature summary, or continue your prior discussion..."
-)
-
-voice_question = None
+st.session_state.setdefault("prompt_draft", "")
 voice_audio_hash = None
 
 if voice_transcriber:
     with st.expander("Speak your question", expanded=False):
         st.caption(
             "Use the microphone control below to record your question. "
-            "Your speech will be sent to OpenAI Whisper for transcription."
+            "When you stop recording, the transcript will be added to your draft so you can review it before sending."
         )
 
         audio_bytes = b""
@@ -483,18 +481,46 @@ if voice_transcriber:
 
             transcribed = st.session_state.get("last_voice_transcript", "")
             if transcribed:
-                st.success(f"Heard: *{transcribed}*")
-                if voice_audio_hash != st.session_state.get("last_voice_submitted_hash"):
-                    voice_question = transcribed
+                if voice_audio_hash != st.session_state.get("last_voice_applied_hash"):
+                    existing_draft = st.session_state.get("prompt_draft", "").strip()
+                    if existing_draft:
+                        st.session_state.prompt_draft = f"{existing_draft}\n{transcribed}".strip()
+                    else:
+                        st.session_state.prompt_draft = transcribed
+                    st.session_state.last_voice_applied_hash = voice_audio_hash
+
+                st.success("Transcript added to your draft. Review it below and send when ready.")
+                st.caption(transcribed)
             else:
                 st.warning("Could not transcribe audio. Please try again or type your question.")
 
-active_question = user_question or voice_question or queued_prompt
+st.markdown("### Your message")
+st.text_area(
+    "Message",
+    key="prompt_draft",
+    height=120,
+    placeholder="Ask a health question, request an evidence summary, or continue your saved conversation...",
+    label_visibility="collapsed",
+)
 
-if voice_question and voice_audio_hash:
-    st.session_state.last_voice_submitted_hash = voice_audio_hash
+composer_actions = st.columns([1, 1, 4], gap="small")
+with composer_actions[0]:
+    send_prompt = st.button("Send", type="primary", use_container_width=True)
+with composer_actions[1]:
+    clear_prompt = st.button("Clear", use_container_width=True)
+
+if clear_prompt:
+    st.session_state.prompt_draft = ""
+    st.rerun()
+
+active_question = ""
+if send_prompt:
+    active_question = st.session_state.get("prompt_draft", "").strip()
+    if not active_question:
+        st.warning("Enter or record a message before sending.")
 
 if active_question:
+    st.session_state.prompt_draft = ""
     now = datetime.now(timezone.utc).isoformat()
     user_entry = {
         "role": "user",
