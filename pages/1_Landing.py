@@ -156,15 +156,15 @@ with main_left:
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        f"""
-        <div class="surface-card note-card">
-            <div class="feature-eyebrow">Support</div>
-            <p>For account access, privacy, or general support, contact <strong>{FOUNDER_NAME}</strong> at <a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a>.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+#    st.markdown(
+#        f"""
+#        <div class="surface-card note-card">
+#            <div class="feature-eyebrow">Support</div>
+#            <p>For account access, privacy, or general support, contact <strong>{FOUNDER_NAME}</strong> at <a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a>.</p>
+#        </div>
+#        """,
+#        unsafe_allow_html=True,
+#    )
 
 with main_right:
     if st.session_state.get("signup_role_reference") not in ROLE_OPTIONS:
