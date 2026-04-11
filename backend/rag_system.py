@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Generator, List, Optional, Tuple
 from uuid import uuid4
 import re
@@ -9,9 +10,13 @@ import numpy as np
 
 from backend.anonymizer import DocumentAnonymizer
 from backend.clinical_orchestrator import ClinicalOrchestrator
+from backend.gp_summary import build_gp_summary_pdf
 from backend.image_generator import ImageGenerator
+from backend.medication_checker import MedicationInteractionChecker
 from backend.memory_store import MemoryStore
 from backend.product_config import PRODUCT_NAME
+from backend.symptom_tracker import build_symptom_pattern_summary
+from backend.triage_summary import build_default_triage, normalize_triage_output
 from backend.video_generator import VideoGenerator
 from backend.moderation_ml import ModerationEnsemble
 from backend.official_guidance import OfficialGuidanceEngine
@@ -48,18 +53,16 @@ class RAGEngine:
         )
         self._image_generator = ImageGenerator()
         self._video_generator = VideoGenerator()
+        self._medication_checker = MedicationInteractionChecker()
 
     def restore_user_context(self, user: Optional[str]) -> None:
         """
-        Restores persisted user document summaries into memory once per session.
+        Syncs persisted user document, symptom, and medication summaries into memory.
         """
         if not user:
             return
 
         normalized_user = user.strip().lower()
-        if normalized_user in self._primed_users:
-            return
-
         pending_entries = []
         for summary_record in UserStore.get_document_summaries(normalized_user):
             summary_text = summary_record.get("summary", "").strip()
@@ -71,19 +74,61 @@ class RAGEngine:
                 {
                     "text": summary_text,
                     "metadata": {
-                    "type": "user_summary",
-                    "source": filename,
-                    "title": f"User-uploaded record: {filename}",
-                    "section": "document summary",
-                    "stored_path": summary_record.get("stored_path", ""),
-                    "entry_key": f"{normalized_user}:upload:{filename}",
-                },
+                        "type": "user_summary",
+                        "source": filename,
+                        "title": f"User-uploaded record: {filename}",
+                        "section": "document summary",
+                        "stored_path": summary_record.get("stored_path", ""),
+                        "entry_key": f"{normalized_user}:upload:{filename}",
+                    },
                     "user": normalized_user,
                     "entry_key": f"{normalized_user}:upload:{filename}",
                 }
             )
 
-        self.memory.add_entries(pending_entries)
+        symptom_summary = build_symptom_pattern_summary(
+            UserStore.get_symptom_logs(normalized_user, limit=None)
+        )
+        if symptom_summary:
+            pending_entries.append(
+                {
+                    "text": symptom_summary,
+                    "metadata": {
+                        "type": "user_summary",
+                        "source": "Symptom tracker",
+                        "title": "Tracked symptom timeline",
+                        "section": "symptom tracking",
+                        "entry_key": f"{normalized_user}:tracker:symptoms",
+                    },
+                    "user": normalized_user,
+                    "entry_key": f"{normalized_user}:tracker:symptoms",
+                }
+            )
+        else:
+            self.memory.remove_entry(f"{normalized_user}:tracker:symptoms")
+
+        medication_summary = self._build_medication_memory_summary(
+            UserStore.get_medications(normalized_user)
+        )
+        if medication_summary:
+            pending_entries.append(
+                {
+                    "text": medication_summary,
+                    "metadata": {
+                        "type": "user_summary",
+                        "source": "Medication list",
+                        "title": "Current medication list",
+                        "section": "medication list",
+                        "entry_key": f"{normalized_user}:tracker:medications",
+                    },
+                    "user": normalized_user,
+                    "entry_key": f"{normalized_user}:tracker:medications",
+                }
+            )
+        else:
+            self.memory.remove_entry(f"{normalized_user}:tracker:medications")
+
+        self.memory.upsert_entries(pending_entries)
         self._primed_users.add(normalized_user)
 
     def ingest_documents(
@@ -112,18 +157,22 @@ class RAGEngine:
             summary = self.llm.summarize_user_health_record(anonymized)
 
             memory_key = f"{normalized_user or 'global'}:upload:{path.name}"
-            self.memory.add_entry(
-                text=summary,
-                metadata={
-                    "type": "user_summary",
-                    "source": path.name,
-                    "title": f"User-uploaded record: {path.name}",
-                    "section": "document summary",
-                    "stored_path": str(path),
-                    "entry_key": memory_key,
-                },
-                user=normalized_user,
-                entry_key=memory_key,
+            self.memory.upsert_entries(
+                [
+                    {
+                        "text": summary,
+                        "metadata": {
+                            "type": "user_summary",
+                            "source": path.name,
+                            "title": f"User-uploaded record: {path.name}",
+                            "section": "document summary",
+                            "stored_path": str(path),
+                            "entry_key": memory_key,
+                        },
+                        "user": normalized_user,
+                        "entry_key": memory_key,
+                    }
+                ]
             )
 
             if normalized_user:
@@ -168,7 +217,7 @@ class RAGEngine:
         del stream
         bundle = self._prepare_answer_bundle(question=question, user=user)
         if bundle["kind"] == "final":
-            return bundle["payload"]
+            return self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user)
 
         _pd = bundle.get("policy_decision")
         raw_answer = self.llm.answer_question(
@@ -209,7 +258,10 @@ class RAGEngine:
 
         bundle = self._prepare_answer_bundle(question=question, user=user)
         if bundle["kind"] == "final":
-            yield {"type": "final", "payload": bundle["payload"]}
+            yield {
+                "type": "final",
+                "payload": self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user),
+            }
             return
 
         yield {
@@ -288,9 +340,10 @@ class RAGEngine:
     def _prepare_answer_bundle(self, question: str, user: Optional[str] = None) -> Dict:
         normalized_user = user.strip().lower() if user else None
         self.restore_user_context(normalized_user)
-        longitudinal_memory = UserStore.get_longitudinal_memory(normalized_user) if normalized_user else {}
-        longitudinal_memory_summary = (longitudinal_memory.get("summary") or "").strip()
+        longitudinal_memory_summary = self.get_combined_longitudinal_memory(normalized_user)
         user_profile = UserStore.get_user_profile(normalized_user) if normalized_user else {}
+        medications = UserStore.get_medications(normalized_user) if normalized_user else []
+        symptom_logs = UserStore.get_symptom_logs(normalized_user, limit=None) if normalized_user else []
 
         bundle = self._orchestrator.prepare_bundle(
             question=question,
@@ -298,6 +351,20 @@ class RAGEngine:
             user_profile=user_profile,
             longitudinal_memory_summary=longitudinal_memory_summary,
         )
+        if bundle.get("kind") == "answer":
+            medication_check = self._build_medication_check(
+                question=question,
+                intent=bundle.get("intent"),
+                medications=medications,
+            )
+            bundle["medication_check"] = medication_check
+            bundle["symptom_logs"] = symptom_logs
+            bundle["medications"] = medications
+            if medication_check.get("alerts"):
+                bundle["full_context"] = self._append_medication_context(
+                    bundle["full_context"],
+                    medication_check["alerts"],
+                )
         return bundle
 
     def _build_moderation_payload(
@@ -390,6 +457,13 @@ class RAGEngine:
 
         from backend.evidence_ranker import EvidenceRanker
         tiers_present = EvidenceRanker.get_tiers_present(bundle["combined_sources"])
+        medication_check = bundle.get("medication_check", {})
+        triage_summary = self._build_triage_summary(
+            question=question,
+            answer_markdown=answer_markdown,
+            intent=bundle.get("intent"),
+            policy_decision=policy_decision,
+        )
 
         trace = {
             "trace_id": trace_id,
@@ -412,15 +486,29 @@ class RAGEngine:
             "pathway_used": intent.pathway_hint if intent else "",
             "vulnerable_flags": intent.vulnerable_flags if intent else [],
             "policy_gates_applied": policy_decision.gates_as_dicts() if policy_decision else [],
+            "medication_alert_count": len(medication_check.get("alerts", [])),
         }
         if bundle["normalized_user"]:
             UserStore.save_interaction_trace(bundle["normalized_user"], trace)
+            UserStore.save_triage_summary(
+                bundle["normalized_user"],
+                {
+                    **triage_summary,
+                    "question": question,
+                    "trace_id": trace_id,
+                },
+            )
         return {
             "answer_markdown": answer_markdown,
             "answer_text": raw_answer,
             "sources": bundle["combined_sources"],
             "personal_context": bundle["personal_context"],
             "longitudinal_memory": bundle["longitudinal_memory_summary"],
+            "triage_summary": triage_summary,
+            "medication_alerts": medication_check.get("alerts", []),
+            "resolved_medications": self._summarize_resolved_medications(
+                medication_check.get("resolved_medications", [])
+            ),
             "trace": trace,
         }
 
@@ -438,11 +526,13 @@ class RAGEngine:
             user_message=user_message,
             personal_context=personal_context or [],
         )
-        return self._refresh_longitudinal_memory(
+        self._refresh_longitudinal_memory(
             user=normalized_user,
             new_information=new_information,
             source_label="conversation",
         )
+        self.restore_user_context(normalized_user)
+        return self.get_combined_longitudinal_memory(normalized_user)
 
     def refresh_longitudinal_memory_from_documents(
         self,
@@ -458,10 +548,45 @@ class RAGEngine:
             for item in indexed_documents
             if item.get("summary", "").strip()
         )
-        return self._refresh_longitudinal_memory(
+        self._refresh_longitudinal_memory(
             user=normalized_user,
             new_information=new_information,
             source_label="uploaded documents",
+        )
+        self.restore_user_context(normalized_user)
+        return self.get_combined_longitudinal_memory(normalized_user)
+
+    def get_combined_longitudinal_memory(self, user: Optional[str]) -> str:
+        normalized_user = user.strip().lower() if user else None
+        if not normalized_user:
+            return ""
+
+        stored_memory = UserStore.get_longitudinal_memory(normalized_user)
+        base_summary = (stored_memory.get("summary") or "").strip()
+        symptom_summary = build_symptom_pattern_summary(
+            UserStore.get_symptom_logs(normalized_user, limit=None)
+        )
+        medication_summary = self._build_medication_memory_summary(
+            UserStore.get_medications(normalized_user)
+        )
+        return self._compose_longitudinal_memory_summary(
+            base_summary=base_summary,
+            symptom_summary=symptom_summary,
+            medication_summary=medication_summary,
+        )
+
+    def build_gp_summary_pdf_for_user(self, user: Optional[str]) -> bytes:
+        normalized_user = user.strip().lower() if user else None
+        if not normalized_user:
+            return b""
+
+        return build_gp_summary_pdf(
+            user_profile=UserStore.get_user_profile(normalized_user),
+            symptom_logs=UserStore.get_symptom_logs(normalized_user, limit=None),
+            medications=UserStore.get_medications(normalized_user),
+            uploads=UserStore.get_uploads(normalized_user),
+            longitudinal_memory=self.get_combined_longitudinal_memory(normalized_user),
+            latest_triage=UserStore.get_latest_triage_summary(normalized_user),
         )
 
     def _refresh_longitudinal_memory(
@@ -732,6 +857,169 @@ class RAGEngine:
         if cleaned.lower() == "no durable patient-specific memory recorded yet.":
             return ""
         return summary.strip()
+
+    @staticmethod
+    def _compose_longitudinal_memory_summary(
+        base_summary: str,
+        symptom_summary: str,
+        medication_summary: str,
+    ) -> str:
+        parts = []
+        cleaned_base = (base_summary or "").strip()
+        if cleaned_base:
+            parts.append(cleaned_base)
+        if symptom_summary:
+            parts.append(symptom_summary)
+        if medication_summary:
+            parts.append(medication_summary)
+        return "\n\n".join(parts).strip()
+
+    @staticmethod
+    def _build_medication_memory_summary(medications: List[Dict]) -> str:
+        medication_lines = []
+        for medication in medications:
+            name = (medication.get("name") or "").strip()
+            if not name:
+                continue
+            line = name
+            extras = [
+                part for part in (
+                    medication.get("dose", "").strip(),
+                    medication.get("schedule", "").strip(),
+                )
+                if part
+            ]
+            if extras:
+                line += " - " + ", ".join(extras)
+            medication_lines.append(line)
+        if not medication_lines:
+            return ""
+        return "Current medication list:\n" + "\n".join(f"- {item}" for item in medication_lines[:8])
+
+    def _build_medication_check(
+        self,
+        question: str,
+        intent,
+        medications: List[Dict],
+    ) -> Dict:
+        question_lower = (question or "").lower()
+        stored_names = [
+            medication.get("name", "").strip()
+            for medication in medications
+            if medication.get("name", "").strip()
+        ]
+        names_from_question = []
+        try:
+            names_from_question = self.llm.extract_medication_mentions(question)
+        except Exception as exc:
+            print(f"Medication extraction failed: {exc}")
+
+        names_in_question = [
+            name for name in stored_names
+            if name.lower() in question_lower
+        ]
+
+        candidate_names: List[str] = []
+        for name in [*names_from_question, *names_in_question]:
+            if name and name.lower() not in {item.lower() for item in candidate_names}:
+                candidate_names.append(name)
+
+        intent_category = getattr(intent, "intent_category", "")
+        if intent_category == "medication_query" and len(candidate_names) < 2:
+            for name in stored_names:
+                if name.lower() not in {item.lower() for item in candidate_names}:
+                    candidate_names.append(name)
+                if len(candidate_names) >= 6:
+                    break
+
+        if len(candidate_names) < 2:
+            return {
+                "resolved_medications": [],
+                "unresolved_medications": [],
+                "alerts": [],
+            }
+        return self._medication_checker.check_interactions(candidate_names[:6])
+
+    @staticmethod
+    def _append_medication_context(context: str, alerts: List[Dict]) -> str:
+        if not alerts:
+            return context
+        alert_lines = [
+            f"- {alert.get('pair')}: {alert.get('summary')}"
+            for alert in alerts[:3]
+        ]
+        return (
+            context
+            + "\n\nMedication interaction flags from openFDA label sections:\n"
+            + "\n".join(alert_lines)
+        )
+
+    @staticmethod
+    def _summarize_resolved_medications(resolved_medications: List[Dict]) -> List[Dict]:
+        return [
+            {
+                "query_name": item.get("query_name", ""),
+                "canonical_name": item.get("canonical_name", ""),
+                "effective_time": item.get("effective_time", ""),
+            }
+            for item in resolved_medications
+        ]
+
+    def _build_triage_summary(
+        self,
+        question: str,
+        answer_markdown: str,
+        intent,
+        policy_decision,
+    ) -> Dict:
+        fallback = build_default_triage(intent, policy_decision)
+        intent_summary = (
+            f"intent={getattr(intent, 'intent_category', '')}; "
+            f"risk={getattr(intent, 'risk_level', '')}; "
+            f"escalation_reason={getattr(intent, 'escalation_reason', '')}"
+        )
+        try:
+            model_triage = self.llm.build_structured_triage(
+                question=question,
+                answer_markdown=answer_markdown,
+                fallback_triage=fallback,
+                intent_summary=intent_summary,
+            )
+        except Exception as exc:
+            print(f"Structured triage generation failed: {exc}")
+            model_triage = {}
+        return normalize_triage_output(model_triage, fallback)
+
+    def _enrich_prebuilt_payload(
+        self,
+        question: str,
+        payload: Dict,
+        user: Optional[str],
+    ) -> Dict:
+        enriched = dict(payload)
+        trace = enriched.get("trace", {})
+        risk_level = trace.get("risk_level") or ("crisis" if trace.get("crisis_detected") else "routine")
+        intent = SimpleNamespace(
+            risk_level=risk_level,
+            crisis_detected=trace.get("crisis_detected", False),
+            escalation_reason=trace.get("moderation_category") or trace.get("retrieval_mode", ""),
+        )
+        policy = SimpleNamespace(action="escalate_only" if risk_level in ("urgent", "crisis") else "allow")
+        triage_summary = build_default_triage(intent, policy)
+        enriched["triage_summary"] = triage_summary
+        enriched.setdefault("medication_alerts", [])
+        enriched.setdefault("resolved_medications", [])
+        normalized_user = user.strip().lower() if user else None
+        if normalized_user:
+            UserStore.save_triage_summary(
+                normalized_user,
+                {
+                    **triage_summary,
+                    "question": question,
+                    "trace_id": trace.get("trace_id"),
+                },
+            )
+        return enriched
 
     @staticmethod
     def _build_personal_context_text(personal_context: List[Dict]) -> str:

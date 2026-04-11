@@ -53,10 +53,92 @@ def render_source_links(sources: list[dict]) -> None:
         st.markdown("Sources: " + " | ".join(links))
 
 
+def render_triage_summary(summary: dict) -> None:
+    if not summary:
+        return
+
+    monitor_items = summary.get("what_to_monitor", [])
+    monitor_html = "".join(
+        f"<li>{html.escape(str(item))}</li>"
+        for item in monitor_items[:3]
+        if str(item).strip()
+    ) or "<li>No specific monitoring points saved.</li>"
+
+    st.markdown(
+        f"""
+        <div class="triage-card">
+            <div class="triage-card-head">
+                <span class="triage-label">Structured triage</span>
+                <span class="triage-next-step">{html.escape(summary.get('next_step', 'Self-care'))}</span>
+            </div>
+            <div class="triage-grid">
+                <div>
+                    <strong>Urgency</strong>
+                    <p>{html.escape(summary.get('urgency_level', 'Routine'))}</p>
+                </div>
+                <div>
+                    <strong>Suggested next step</strong>
+                    <p>{html.escape(summary.get('next_step', 'Self-care'))}</p>
+                </div>
+            </div>
+            <div class="triage-monitor">
+                <strong>What to monitor</strong>
+                <ul>{monitor_html}</ul>
+            </div>
+            <p class="triage-rationale">{html.escape(summary.get('rationale', ''))}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_medication_alerts(alerts: list[dict], resolved_medications: list[dict]) -> None:
+    if not alerts and not resolved_medications:
+        return
+
+    st.markdown("#### Medication interaction check")
+    if alerts:
+        for alert in alerts[:3]:
+            severity = alert.get("severity", "mentioned")
+            severity_label = {
+                "high": "High label warning",
+                "monitor": "Needs monitoring",
+                "mentioned": "Label mention",
+            }.get(severity, "Label mention")
+            evidence = alert.get("evidence", [])
+            source_url = evidence[0].get("source_url", "") if evidence else ""
+            st.markdown(
+                f"""
+                <div class="interaction-card interaction-{severity}">
+                    <div class="interaction-head">
+                        <strong>{html.escape(alert.get('pair', 'Medication pair'))}</strong>
+                        <span>{html.escape(severity_label)}</span>
+                    </div>
+                    <p>{html.escape(alert.get('summary', ''))}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if source_url:
+                st.markdown(f"[Open openFDA label evidence]({source_url})")
+    else:
+        medication_names = ", ".join(
+            item.get("canonical_name", item.get("query_name", ""))
+            for item in resolved_medications[:6]
+            if item.get("canonical_name") or item.get("query_name")
+        )
+        st.info(
+            "No explicit pair-specific warning was found in the queried openFDA label sections"
+            + (f" for {medication_names}." if medication_names else ".")
+            + " This is helpful but not exhaustive."
+        )
+
+
 def render_message_meta(message: dict) -> None:
     timestamp = format_timestamp(message.get("timestamp", ""))
     source_count = len(message.get("sources", []))
     trace_id = message.get("trace_id")
+    triage_summary = message.get("metadata", {}).get("triage_summary", {})
     pills = []
     if timestamp:
         pills.append(timestamp)
@@ -64,6 +146,8 @@ def render_message_meta(message: dict) -> None:
         pills.append(f"{source_count} sources")
     if trace_id:
         pills.append(trace_id)
+    if triage_summary.get("next_step"):
+        pills.append(f"Next: {triage_summary['next_step']}")
 
     if pills:
         joined = "".join(f"<span>{pill}</span>" for pill in pills)
@@ -180,6 +264,8 @@ def render_source_trace(message: dict) -> None:
                 audit_display["escalation_triggered"] = trace.get("escalation_triggered")
             if trace.get("policy_gates_applied"):
                 audit_display["policy_gates_applied"] = trace.get("policy_gates_applied")
+            if trace.get("medication_alert_count") is not None:
+                audit_display["medication_alert_count"] = trace.get("medication_alert_count")
             st.json(audit_display)
 
 
@@ -206,6 +292,11 @@ def render_chat_history(history: list[dict]) -> None:
                 st.caption(meta.get("video_caption", "Generated video"))
 
             if message.get("role") == "assistant":
+                render_triage_summary(meta.get("triage_summary", {}))
+                render_medication_alerts(
+                    meta.get("medication_alerts", []),
+                    meta.get("resolved_medications", []),
+                )
                 render_source_links(message.get("sources", []))
             render_message_meta(message)
             if message.get("role") == "assistant":
@@ -250,8 +341,11 @@ if st.session_state.get("history_user") != current_user:
 chat_history = st.session_state.get("chat_history", [])
 user_profile = UserStore.get_user_profile(current_user)
 uploads = UserStore.get_uploads(current_user)
+symptom_logs = UserStore.get_symptom_logs(current_user, limit=None)
+medications = UserStore.get_medications(current_user)
 traces = UserStore.get_interaction_traces(current_user, limit=5)
 audit_records = UserStore.get_audit(current_user, limit=8)
+latest_triage = UserStore.get_latest_triage_summary(current_user)
 
 with st.sidebar:
     clinical_role_display = user_profile.get("clinical_role") or user_profile.get("role", "Patient / Individual")
@@ -344,6 +438,138 @@ with st.sidebar:
     else:
         st.caption("No uploaded records yet.")
 
+    with st.expander("Symptom timeline tracker", expanded=False):
+        with st.form("symptom_tracker_form"):
+            symptom_name = st.text_input("Symptom")
+            symptom_date = st.date_input(
+                "Date noticed",
+                value=datetime.now(timezone.utc).date(),
+            )
+            symptom_severity = st.slider("Severity", min_value=0, max_value=10, value=5)
+            symptom_triggers = st.text_input("Possible triggers")
+            symptom_notes = st.text_area("Notes", height=80)
+            symptom_saved = st.form_submit_button(
+                "Log symptom",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if symptom_saved:
+            saved_entry = UserStore.add_symptom_log(
+                current_user,
+                symptom=symptom_name,
+                logged_for=symptom_date.isoformat(),
+                severity=symptom_severity,
+                triggers=symptom_triggers,
+                notes=symptom_notes,
+            )
+            if saved_entry:
+                rag_engine.restore_user_context(current_user)
+                st.success("Symptom saved to your timeline.")
+                st.rerun()
+            else:
+                st.error("Add a symptom name and date to save a tracker entry.")
+
+        if symptom_logs:
+            for entry in symptom_logs[:6]:
+                log_label = f"{entry.get('logged_for', '')} | {entry.get('symptom', 'Symptom')}"
+                if entry.get("severity"):
+                    log_label += f" | {entry['severity']}/10"
+                st.markdown(
+                    f"""
+                    <div class="mini-record">
+                        <strong>{html.escape(log_label)}</strong>
+                        <span>{html.escape(entry.get('triggers', 'No trigger noted') or 'No trigger noted')}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button("Remove log", key=f"symptom_delete_{entry['log_id']}", use_container_width=True):
+                    UserStore.delete_symptom_log(current_user, entry["log_id"])
+                    rag_engine.restore_user_context(current_user)
+                    st.rerun()
+        else:
+            st.caption("No symptom logs yet.")
+
+    with st.expander("Medication list", expanded=False):
+        with st.form("medication_list_form"):
+            medication_name = st.text_input("Medication name")
+            medication_dose = st.text_input("Dose")
+            medication_schedule = st.text_input("Schedule")
+            medication_reason = st.text_input("Reason / condition")
+            medication_saved = st.form_submit_button(
+                "Save medication",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if medication_saved:
+            saved_medication = UserStore.save_medication(
+                current_user,
+                {
+                    "name": medication_name,
+                    "dose": medication_dose,
+                    "schedule": medication_schedule,
+                    "reason": medication_reason,
+                },
+            )
+            if saved_medication:
+                rag_engine.restore_user_context(current_user)
+                st.success("Medication list updated.")
+                st.rerun()
+            else:
+                st.error("Enter a medication name to save it.")
+
+        if medications:
+            for medication in medications[:8]:
+                pieces = [medication.get("name", "Medication")]
+                if medication.get("dose"):
+                    pieces.append(medication["dose"])
+                if medication.get("schedule"):
+                    pieces.append(medication["schedule"])
+                st.markdown(
+                    f"""
+                    <div class="mini-record">
+                        <strong>{html.escape(' | '.join(pieces))}</strong>
+                        <span>{html.escape(medication.get('reason', 'On file') or 'On file')}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button(
+                    "Remove medication",
+                    key=f"medication_delete_{medication['medication_id']}",
+                    use_container_width=True,
+                ):
+                    UserStore.delete_medication(current_user, medication["medication_id"])
+                    rag_engine.restore_user_context(current_user)
+                    st.rerun()
+        else:
+            st.caption("No medications saved yet.")
+
+    st.markdown("### GP summary")
+    gp_pdf = rag_engine.build_gp_summary_pdf_for_user(current_user)
+    has_gp_content = bool(
+        symptom_logs
+        or medications
+        or uploads
+        or rag_engine.get_combined_longitudinal_memory(current_user)
+        or latest_triage
+    )
+    st.download_button(
+        "Download GP summary PDF",
+        data=gp_pdf,
+        file_name=f"{current_user}-gp-summary.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        disabled=not has_gp_content,
+    )
+    if latest_triage:
+        st.caption(
+            f"Latest triage: {latest_triage.get('urgency_level', 'Routine')} -> "
+            f"{latest_triage.get('next_step', 'Self-care')}"
+        )
+
     st.markdown("### Audit export")
     export_payload = json.dumps(UserStore.export_user_snapshot(current_user), indent=2)
     st.download_button(
@@ -400,16 +626,16 @@ with top_left:
 with top_right:
     metric_columns = st.columns(3, gap="small")
     metric_columns[0].metric("Messages", len(chat_history))
-    metric_columns[1].metric("Uploads", len(uploads))
-    metric_columns[2].metric("Traces", len(UserStore.get_interaction_traces(current_user, limit=None)))
+    metric_columns[1].metric("Symptom logs", len(symptom_logs))
+    metric_columns[2].metric("Medications", len(medications))
 
 st.markdown(
     """
     <div class="toolbar-card">
-        <span>Structured guidance</span>
-        <span>Supporting references</span>
-        <span>Saved history</span>
-        <span>Account continuity</span>
+        <span>Structured triage</span>
+        <span>Symptom timeline</span>
+        <span>Medication safety</span>
+        <span>GP handover PDF</span>
     </div>
     """,
     unsafe_allow_html=True,
@@ -579,6 +805,9 @@ if active_question:
                 "metadata": {
                     "personal_context": payload.get("personal_context", []),
                     "longitudinal_memory": payload.get("longitudinal_memory", ""),
+                    "triage_summary": payload.get("triage_summary", {}),
+                    "medication_alerts": payload.get("medication_alerts", []),
+                    "resolved_medications": payload.get("resolved_medications", []),
                     "trace": payload.get("trace", {}),
                     "image_url": payload.get("image_url", ""),
                     "image_b64": base64.b64encode(payload["image_bytes"]).decode()
@@ -631,6 +860,11 @@ if active_question:
             except Exception as exc:
                 print(f"Longitudinal memory refresh failed: {exc}")
 
+            render_triage_summary(assistant_entry["metadata"].get("triage_summary", {}))
+            render_medication_alerts(
+                assistant_entry["metadata"].get("medication_alerts", []),
+                assistant_entry["metadata"].get("resolved_medications", []),
+            )
             render_source_links(assistant_entry.get("sources", []))
             render_message_meta(assistant_entry)
             render_source_trace(assistant_entry)

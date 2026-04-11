@@ -412,7 +412,9 @@ a:hover {
 .source-card,
 .context-card,
 .mini-record,
-.audit-row {
+.audit-row,
+.triage-card,
+.interaction-card {
     border: 1px solid rgba(22, 59, 71, 0.12);
     border-radius: var(--radius-md);
     background: var(--surface-soft);
@@ -478,6 +480,106 @@ a:hover {
 .audit-row span {
     color: var(--text-soft);
     font-size: 14px;
+}
+
+.triage-card {
+    padding: 0.8rem;
+    margin: 0.45rem 0 0.55rem;
+    background: linear-gradient(135deg, #f9fcfb 0%, #eef7f4 100%);
+}
+
+.triage-card-head,
+.interaction-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.triage-label,
+.triage-next-step,
+.interaction-head span {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.16rem 0.55rem;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.triage-label {
+    background: rgba(31, 122, 114, 0.12);
+    color: #135951;
+}
+
+.triage-next-step {
+    background: rgba(22, 59, 71, 0.1);
+    color: var(--navy);
+}
+
+.triage-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.55rem;
+    margin-top: 0.7rem;
+}
+
+.triage-grid strong,
+.triage-monitor strong {
+    display: block;
+    margin-bottom: 0.15rem;
+}
+
+.triage-grid p,
+.triage-monitor ul,
+.triage-rationale,
+.interaction-card p {
+    margin: 0;
+    color: var(--text-soft);
+}
+
+.triage-monitor {
+    margin-top: 0.7rem;
+}
+
+.triage-monitor ul {
+    padding-left: 1.1rem;
+    margin-top: 0.3rem;
+}
+
+.triage-rationale {
+    margin-top: 0.55rem;
+    font-size: 13px !important;
+}
+
+.interaction-card {
+    padding: 0.75rem;
+    margin: 0.35rem 0;
+}
+
+.interaction-high {
+    background: #fff3f0;
+    border-color: rgba(180, 67, 39, 0.2);
+}
+
+.interaction-high .interaction-head span {
+    background: rgba(180, 67, 39, 0.12);
+    color: #9b3418;
+}
+
+.interaction-monitor {
+    background: #fff9ef;
+    border-color: rgba(201, 134, 24, 0.22);
+}
+
+.interaction-monitor .interaction-head span {
+    background: rgba(201, 134, 24, 0.12);
+    color: #8f620a;
+}
+
+.interaction-mentioned .interaction-head span {
+    background: rgba(22, 59, 71, 0.08);
+    color: var(--navy);
 }
 
 [data-testid="stSidebar"] .mini-record,
@@ -763,6 +865,10 @@ a:hover {
 
     .toolbar-card {
         border-radius: 16px;
+    }
+
+    .triage-grid {
+        grid-template-columns: 1fr;
     }
 }
 

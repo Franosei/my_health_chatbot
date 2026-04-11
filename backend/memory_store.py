@@ -27,6 +27,7 @@ class MemoryStore:
         self.embedding_model = embedding_model or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
         self.entries: List[Dict] = []
         self.entry_keys: set[str] = set()
+        self.entry_key_to_index: Dict[str, int] = {}
         self.embedding_cache: Dict[str, np.ndarray] = {}
 
     def add_entry(
@@ -52,11 +53,17 @@ class MemoryStore:
         )
 
     def add_entries(self, items: List[Dict]) -> None:
+        self._store_entries(items, replace=False)
+
+    def upsert_entries(self, items: List[Dict]) -> None:
+        self._store_entries(items, replace=True)
+
+    def _store_entries(self, items: List[Dict], replace: bool) -> None:
         pending = []
 
         for item in items:
             stable_key = item.get("entry_key") or item.get("metadata", {}).get("entry_key")
-            if stable_key and stable_key in self.entry_keys:
+            if stable_key and stable_key in self.entry_keys and not replace:
                 continue
             text = (item.get("text") or "").strip()
             if not text:
@@ -80,10 +87,18 @@ class MemoryStore:
                 "embedding": embedding,
                 "metadata": item["metadata"],
                 "user": item["user"],
+                "entry_key": item["entry_key"],
             }
-            self.entries.append(payload)
-            if item["entry_key"]:
-                self.entry_keys.add(item["entry_key"])
+            stable_key = item["entry_key"]
+            if stable_key and stable_key in self.entry_key_to_index:
+                index = self.entry_key_to_index[stable_key]
+                self.entries[index] = payload
+            else:
+                self.entries.append(payload)
+                if stable_key:
+                    self.entry_key_to_index[stable_key] = len(self.entries) - 1
+            if stable_key:
+                self.entry_keys.add(stable_key)
 
     def search(
         self,
@@ -111,9 +126,28 @@ class MemoryStore:
         matches.sort(key=lambda item: item[1], reverse=True)
         return matches[:top_k]
 
+    def remove_entry(self, entry_key: str) -> None:
+        stable_key = (entry_key or "").strip()
+        if not stable_key or stable_key not in self.entry_key_to_index:
+            return
+
+        index = self.entry_key_to_index.pop(stable_key)
+        self.entries.pop(index)
+        self.entry_keys.discard(stable_key)
+        self.entry_key_to_index = {
+            entry.get("entry_key"): idx
+            for idx, entry in enumerate(self.entries)
+            if entry.get("entry_key")
+        }
+
+    def remove_entries(self, entry_keys: List[str]) -> None:
+        for entry_key in entry_keys:
+            self.remove_entry(entry_key)
+
     def clear(self):
         self.entries.clear()
         self.entry_keys.clear()
+        self.entry_key_to_index.clear()
         self.embedding_cache.clear()
 
     def _embed_text(self, text: str) -> np.ndarray:

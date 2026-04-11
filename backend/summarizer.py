@@ -1,3 +1,4 @@
+import json
 from typing import Generator, Optional, TYPE_CHECKING
 import os
 
@@ -201,6 +202,78 @@ class LLMHelper:
             },
         ]
         return self._complete_response(messages)
+
+    def extract_medication_mentions(self, text: str) -> list[str]:
+        cleaned_text = (text or "").strip()
+        if not cleaned_text:
+            return []
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract only direct medication names from the user's message. "
+                        "Do not infer diagnoses, drug classes, supplements, or vague categories. "
+                        "Return a JSON object with one key: medications."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Message:\n{cleaned_text}\n\n"
+                        "Return JSON in this shape only:\n"
+                        '{"medications": ["drug name"]}'
+                    ),
+                },
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content.strip()
+        payload = json.loads(raw)
+        medications = payload.get("medications", [])
+        if not isinstance(medications, list):
+            return []
+        return [str(item).strip() for item in medications if str(item).strip()][:6]
+
+    def build_structured_triage(
+        self,
+        question: str,
+        answer_markdown: str,
+        fallback_triage: dict,
+        intent_summary: str = "",
+    ) -> dict:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You produce a compact structured triage summary for a health assistant. "
+                        "Use only the supplied answer and fallback safety route. "
+                        "Never lower the acuity below the fallback next step. "
+                        "Return a JSON object with these exact keys: urgency_level, next_step, what_to_monitor, rationale. "
+                        "The next_step must be one of: Self-care, GP, 111, 999. "
+                        "what_to_monitor must be an array of up to 3 short phrases."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question:\n{question}\n\n"
+                        f"Intent summary:\n{intent_summary or 'Not available'}\n\n"
+                        f"Fallback triage (minimum safe acuity):\n{json.dumps(fallback_triage)}\n\n"
+                        f"Assistant answer:\n{answer_markdown}\n\n"
+                        "Return only valid JSON."
+                    ),
+                },
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        return json.loads(response.choices[0].message.content.strip())
 
     def _complete_response(self, messages) -> str:
         response = self.client.chat.completions.create(

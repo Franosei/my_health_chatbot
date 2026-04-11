@@ -2,7 +2,14 @@
 
 Dr. Charlotte is a Streamlit-based health information assistant with a proper signed-in workspace, personal document context, live evidence retrieval, traceable sources, and safety guardrails. It is designed for individuals, caregivers, and clinical users who want answers that are readable, inspectable, and consistent across sessions.
 
-This repository is more than a simple chatbot demo. It includes account persistence, document upload and anonymisation, longitudinal memory, audit export, voice input, optional AI-generated visuals, and a role-aware clinical orchestration layer.
+This repository is more than a simple chatbot demo. It includes account persistence, document upload and anonymisation, longitudinal memory, a symptom timeline tracker, medication safety checks, structured triage output, GP-ready PDF export, audit export, voice input, optional AI-generated visuals, and a role-aware clinical orchestration layer.
+
+## High-impact features
+
+- Symptom timeline tracker: users can log symptoms over time with dates, severity, triggers, and notes
+- Medication interaction checker: the app keeps a medication list and checks openFDA label interaction sections for concerning combinations
+- Structured triage output: each answer can include a scannable urgency level, suggested next step, and monitoring points
+- Shareable GP summary: users can download a one-page PDF with tracked symptoms, medications, uploaded records, longitudinal memory, and the latest triage summary
 
 ## What the app can do
 
@@ -14,7 +21,12 @@ This repository is more than a simple chatbot demo. It includes account persiste
 - Upload PDF records such as discharge letters, lab reports, and specialist notes
 - Extract text from uploaded PDFs, anonymise sensitive information, and summarise the document into retrieval-ready context
 - Build and refresh a longitudinal patient memory from uploaded records and ongoing conversation
-- Search live public sources for each question, including NHS guidance, MedlinePlus, and Europe PMC / PubMed Central
+- Let users log symptom timelines with dates, severity, triggers, and notes
+- Detect repeat symptom patterns from tracker entries and feed them into longitudinal memory
+- Save a structured medication list and flag label-based interaction warnings from openFDA
+- Generate a structured triage card after each answer with urgency, next step, and what to monitor
+- Export a one-page GP summary PDF covering symptoms, medications, records, and the AI summary
+- Search live public sources for each question, including NHS guidance, MedlinePlus, Europe PMC / PubMed Central, and openFDA drug label data for medication interaction support
 - Expand user questions into retrieval-friendly search queries
 - Rank evidence with OpenAI embeddings and label sources by evidence tier
 - Stream answers into the chat interface as they are generated
@@ -33,13 +45,24 @@ This repository is more than a simple chatbot demo. It includes account persiste
 4. The system restores any saved document summaries and longitudinal memory for that user.
 5. Each new question is checked for crisis language and passed through moderation.
 6. The question is classified for intent and risk, then routed through a relevant pathway such as general triage, maternity, musculoskeletal, medication, or chronic condition support.
-7. The app expands the question into search-friendly variants.
-8. It retrieves live official guidance from NHS and MedlinePlus, and open-access biomedical evidence from Europe PMC / PubMed Central.
-9. Retrieved material and personal context are ranked semantically with OpenAI embeddings.
-10. Sources are deduplicated, tiered, and passed to the LLM for a cited answer.
-11. The final answer, trace, sources, and refreshed longitudinal memory are saved back to the user account.
+7. The app restores symptom tracker patterns and saved medications into the user's working memory.
+8. The app expands the question into search-friendly variants.
+9. It retrieves live official guidance from NHS and MedlinePlus, open-access biomedical evidence from Europe PMC / PubMed Central, and medication label interaction data from openFDA when relevant.
+10. Retrieved material and personal context are ranked semantically with OpenAI embeddings.
+11. Sources are deduplicated, tiered, and passed to the LLM for a cited answer.
+12. The app generates a structured triage summary and stores it with the trace.
+13. The final answer, trace, triage summary, and refreshed longitudinal memory are saved back to the user account.
 
 If the system cannot retrieve enough reliable evidence, it falls back to a more limited response rather than pretending to know more than it does.
+
+## Workspace experience
+
+The main chat workspace is now designed around longitudinal use, not one-off prompts.
+
+- The sidebar lets users upload records, log symptoms, manage medications, download a GP summary PDF, and export an audit snapshot
+- Assistant responses can surface a structured triage card before the source trace
+- Medication questions can trigger a dedicated interaction panel with openFDA-backed label evidence links
+- Symptom tracker data is folded into longitudinal memory so the assistant can reference recurring patterns over time
 
 ## Roles, pathways, and safety
 
@@ -49,10 +72,20 @@ The app does not answer every user in the same voice. It adapts response style, 
 - Doctors, nurses, midwives, and physiotherapists get more clinically structured responses
 - Crisis patterns are screened early so emergency guidance can be returned immediately
 - Policy gates add extra caution for pregnancy, paediatrics, elderly polypharmacy, medication dosing, diagnosis-seeking questions, and mental health topics
+- Structured triage is normalized against a fallback safety floor so the final card cannot de-escalate below the minimum safe route
 - Moderation runs before retrieval so unsafe requests can be blocked early
 - AI-generated images and videos are only triggered by explicit user requests and are filtered away from unsafe visual topics
 
-The pathway and policy layers are written with UK clinical safety framing in mind. The live public retrievers in this repo currently fetch NHS, MedlinePlus, and Europe PMC / PubMed Central content.
+The pathway and policy layers are written with UK clinical safety framing in mind. The live public retrievers in this repo currently fetch NHS, MedlinePlus, Europe PMC / PubMed Central, and openFDA drug label content.
+
+## New data captured per user
+
+In addition to chat history and uploaded document summaries, each user account can now persist:
+
+- symptom tracker entries
+- medication list entries
+- saved structured triage summaries
+- generated GP handover content derived from the above data
 
 ## Media features
 
@@ -72,7 +105,7 @@ If a user explicitly asks for a video or animation, the app can attempt to gener
 
 By default, the app stores user data locally:
 
-- `users.json` holds accounts, hashed passwords, profiles, chat history, document summaries, traces, audit events, and longitudinal memory
+- `users.json` holds accounts, hashed passwords, profiles, chat history, document summaries, symptom logs, medication lists, triage summaries, traces, audit events, and longitudinal memory
 - `data/uploads/<username>/` holds uploaded PDFs for each user
 
 If `DATABASE_URL` is set, the app switches from the local JSON store to PostgreSQL for account persistence. That is the better option for hosted or shared deployments.
@@ -89,7 +122,9 @@ Passwords are stored as salted PBKDF2-SHA256 hashes, not in plain text.
 - Video generation: OpenAI `sora-2`
 - Official guidance retrieval: NHS and MedlinePlus
 - Biomedical literature retrieval: Europe PMC / PubMed Central
+- Medication interaction support: openFDA drug label API
 - PDF parsing: PyMuPDF
+- GP summary export: PyMuPDF-generated single-page PDF
 - Persistence: local JSON or PostgreSQL
 - Moderation: rules-based checks plus Detoxify support when available
 
@@ -163,7 +198,9 @@ backend/
   clinical_orchestrator.py
   evidence_ranker.py
   image_generator.py
+  gp_summary.py
   intent_risk_classifier.py
+  medication_checker.py
   memory_store.py
   moderation_ml.py
   official_guidance.py
@@ -172,7 +209,9 @@ backend/
   query_expander.py
   rag_system.py
   response_templates.py
+  symptom_tracker.py
   summarizer.py
+  triage_summary.py
   user_store.py
   video_generator.py
   voice_transcriber.py
@@ -203,6 +242,14 @@ Make sure your browser allows microphone access. The app uses Streamlit's audio 
 ### Video generation does not appear
 
 Check that your OpenAI account has access to the required video model. The app will silently skip video generation if the model call fails.
+
+### Medication interaction warnings do not appear
+
+The current interaction checker uses public openFDA drug label sections. If a medication name cannot be resolved cleanly, or if the label does not explicitly mention the paired drug, the app may show no pair-specific warning even when a pharmacist or clinician would still want to review it.
+
+### GP summary PDF is sparse
+
+The PDF is generated from what the user has actually saved. Add symptom logs, medications, uploaded PDFs, or ask a question first so the account has longitudinal memory and triage content to include.
 
 ### spaCy or other optional NLP packages cause install issues
 

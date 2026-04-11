@@ -90,6 +90,56 @@ def _default_longitudinal_memory() -> Dict[str, Optional[str]]:
     }
 
 
+def _normalize_symptom_log(entry: Dict) -> Dict:
+    logged_for = str(entry.get("logged_for") or "").strip()
+    severity = entry.get("severity", 0)
+    try:
+        severity_value = max(0, min(10, int(severity)))
+    except (TypeError, ValueError):
+        severity_value = 0
+
+    return {
+        "log_id": entry.get("log_id") or f"sym-{uuid4().hex[:12]}",
+        "symptom": str(entry.get("symptom") or "").strip(),
+        "logged_for": logged_for,
+        "severity": severity_value,
+        "triggers": str(entry.get("triggers") or "").strip(),
+        "notes": str(entry.get("notes") or "").strip(),
+        "created_at": entry.get("created_at") or _utc_now(),
+    }
+
+
+def _normalize_medication(entry: Dict) -> Dict:
+    return {
+        "medication_id": entry.get("medication_id") or f"med-{uuid4().hex[:12]}",
+        "name": str(entry.get("name") or "").strip(),
+        "dose": str(entry.get("dose") or "").strip(),
+        "schedule": str(entry.get("schedule") or "").strip(),
+        "reason": str(entry.get("reason") or "").strip(),
+        "started_on": str(entry.get("started_on") or "").strip(),
+        "notes": str(entry.get("notes") or "").strip(),
+        "created_at": entry.get("created_at") or _utc_now(),
+        "updated_at": entry.get("updated_at") or _utc_now(),
+    }
+
+
+def _normalize_triage_summary(entry: Dict) -> Dict:
+    monitor = entry.get("what_to_monitor", [])
+    if not isinstance(monitor, list):
+        monitor = []
+
+    return {
+        "summary_id": entry.get("summary_id") or f"triage-{uuid4().hex[:12]}",
+        "question": str(entry.get("question") or "").strip(),
+        "urgency_level": str(entry.get("urgency_level") or "").strip(),
+        "next_step": str(entry.get("next_step") or "").strip(),
+        "what_to_monitor": [str(item).strip() for item in monitor if str(item).strip()],
+        "rationale": str(entry.get("rationale") or "").strip(),
+        "trace_id": entry.get("trace_id"),
+        "created_at": entry.get("created_at") or _utc_now(),
+    }
+
+
 def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized = dict(record)
     profile = dict(normalized.get("profile", {}))
@@ -116,6 +166,9 @@ def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized.setdefault("uploads", [])
     normalized.setdefault("doc_summaries", [])
     normalized.setdefault("traces", [])
+    normalized.setdefault("symptom_logs", [])
+    normalized.setdefault("medications", [])
+    normalized.setdefault("triage_summaries", [])
     normalized.setdefault("active_conversation_id", f"conv-{uuid4().hex[:12]}")
 
     normalized["conversation"] = [
@@ -137,6 +190,22 @@ def _normalize_user_record(username: str, record: Dict) -> Dict:
         trace.setdefault("trace_id", f"trace-{uuid4().hex[:12]}")
         trace.setdefault("created_at", _utc_now())
         trace.setdefault("sources", [])
+
+    normalized["symptom_logs"] = [
+        _normalize_symptom_log(entry)
+        for entry in normalized.get("symptom_logs", [])
+        if isinstance(entry, dict)
+    ]
+    normalized["medications"] = [
+        _normalize_medication(entry)
+        for entry in normalized.get("medications", [])
+        if isinstance(entry, dict)
+    ]
+    normalized["triage_summaries"] = [
+        _normalize_triage_summary(entry)
+        for entry in normalized.get("triage_summaries", [])
+        if isinstance(entry, dict)
+    ]
 
     return normalized
 
@@ -422,6 +491,9 @@ class UserStore:
                 "uploads": [],
                 "doc_summaries": [],
                 "traces": [],
+                "symptom_logs": [],
+                "medications": [],
+                "triage_summaries": [],
                 "longitudinal_memory": _default_longitudinal_memory(),
             },
         )
@@ -517,6 +589,186 @@ class UserStore:
         upload_dir = UPLOAD_ROOT / key
         upload_dir.mkdir(parents=True, exist_ok=True)
         return upload_dir
+
+    @staticmethod
+    def add_symptom_log(
+        username: str,
+        symptom: str,
+        logged_for: str,
+        severity: int,
+        triggers: str = "",
+        notes: str = "",
+    ) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+
+        payload = _normalize_symptom_log(
+            {
+                "symptom": symptom,
+                "logged_for": logged_for,
+                "severity": severity,
+                "triggers": triggers,
+                "notes": notes,
+            }
+        )
+        if not payload["symptom"] or not payload["logged_for"]:
+            return None
+
+        user.setdefault("symptom_logs", []).append(payload)
+        _append_audit(
+            user,
+            "symptom_logged",
+            f"Tracked symptom: {payload['symptom']}",
+            metadata={
+                "log_id": payload["log_id"],
+                "logged_for": payload["logged_for"],
+                "severity": payload["severity"],
+            },
+        )
+        _save_user_record(username, user)
+        return payload
+
+    @staticmethod
+    def get_symptom_logs(username: str, limit: Optional[int] = 50) -> List[Dict]:
+        user = _get_user_record(username)
+        logs = deepcopy(user.get("symptom_logs", [])) if user else []
+        logs.sort(
+            key=lambda item: (
+                item.get("logged_for", ""),
+                item.get("created_at", ""),
+            ),
+            reverse=True,
+        )
+        if limit is None:
+            return logs
+        return logs[:limit]
+
+    @staticmethod
+    def delete_symptom_log(username: str, log_id: str) -> bool:
+        user = _get_user_record(username)
+        if not user:
+            return False
+
+        logs = user.setdefault("symptom_logs", [])
+        kept = [entry for entry in logs if entry.get("log_id") != log_id]
+        if len(kept) == len(logs):
+            return False
+
+        user["symptom_logs"] = kept
+        _append_audit(
+            user,
+            "symptom_deleted",
+            "Removed symptom tracker entry",
+            metadata={"log_id": log_id},
+        )
+        _save_user_record(username, user)
+        return True
+
+    @staticmethod
+    def save_medication(username: str, medication: Dict) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+
+        normalized = _normalize_medication(medication)
+        if not normalized["name"]:
+            return None
+
+        medications = user.setdefault("medications", [])
+        updated = False
+        for index, existing in enumerate(medications):
+            same_id = existing.get("medication_id") == normalized.get("medication_id")
+            same_name = existing.get("name", "").strip().lower() == normalized["name"].lower()
+            if same_id or same_name:
+                normalized["created_at"] = existing.get("created_at") or normalized["created_at"]
+                medications[index] = normalized
+                updated = True
+                break
+
+        if not updated:
+            medications.append(normalized)
+
+        _append_audit(
+            user,
+            "medication_saved",
+            f"Saved medication: {normalized['name']}",
+            metadata={
+                "medication_id": normalized["medication_id"],
+                "dose": normalized["dose"],
+                "schedule": normalized["schedule"],
+            },
+        )
+        _save_user_record(username, user)
+        return normalized
+
+    @staticmethod
+    def get_medications(username: str) -> List[Dict]:
+        user = _get_user_record(username)
+        medications = deepcopy(user.get("medications", [])) if user else []
+        medications.sort(
+            key=lambda item: (
+                item.get("name", "").lower(),
+                item.get("updated_at", ""),
+            )
+        )
+        return medications
+
+    @staticmethod
+    def delete_medication(username: str, medication_id: str) -> bool:
+        user = _get_user_record(username)
+        if not user:
+            return False
+
+        medications = user.setdefault("medications", [])
+        kept = [entry for entry in medications if entry.get("medication_id") != medication_id]
+        if len(kept) == len(medications):
+            return False
+
+        user["medications"] = kept
+        _append_audit(
+            user,
+            "medication_deleted",
+            "Removed medication from list",
+            metadata={"medication_id": medication_id},
+        )
+        _save_user_record(username, user)
+        return True
+
+    @staticmethod
+    def save_triage_summary(username: str, summary: Dict) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+
+        payload = _normalize_triage_summary(summary)
+        triage_summaries = user.setdefault("triage_summaries", [])
+        triage_summaries.append(payload)
+        triage_summaries.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        user["triage_summaries"] = triage_summaries[:25]
+        _append_audit(
+            user,
+            "triage_saved",
+            f"Saved triage summary: {payload['urgency_level']} -> {payload['next_step']}",
+            trace_id=payload.get("trace_id"),
+            metadata={"summary_id": payload["summary_id"]},
+        )
+        _save_user_record(username, user)
+        return payload
+
+    @staticmethod
+    def get_triage_summaries(username: str, limit: Optional[int] = 10) -> List[Dict]:
+        user = _get_user_record(username)
+        triage_summaries = deepcopy(user.get("triage_summaries", [])) if user else []
+        triage_summaries.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        if limit is None:
+            return triage_summaries
+        return triage_summaries[:limit]
+
+    @staticmethod
+    def get_latest_triage_summary(username: str) -> Dict:
+        summaries = UserStore.get_triage_summaries(username, limit=1)
+        return summaries[0] if summaries else {}
 
     @staticmethod
     def get_longitudinal_memory(username: str) -> Dict:
