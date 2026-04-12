@@ -308,6 +308,15 @@ def queue_prompt(prompt: str) -> None:
     st.rerun()
 
 
+def clear_prompt_draft() -> None:
+    st.session_state.prompt_draft = ""
+
+
+def submit_prompt_draft() -> None:
+    st.session_state.pending_submitted_prompt = st.session_state.get("prompt_draft", "").strip()
+    st.session_state.prompt_draft = ""
+
+
 st.set_page_config(
     page_title=PRODUCT_NAME,
     page_icon=":material/monitor_heart:",
@@ -654,6 +663,7 @@ else:
 render_chat_history(chat_history)
 
 st.session_state.setdefault("prompt_draft", "")
+st.session_state.setdefault("pending_submitted_prompt", "")
 voice_audio_hash = None
 
 if voice_transcriber:
@@ -731,22 +741,26 @@ st.text_area(
 
 composer_actions = st.columns([1, 1, 4], gap="small")
 with composer_actions[0]:
-    send_prompt = st.button("Send", type="primary", use_container_width=True)
+    send_prompt = st.button(
+        "Send",
+        type="primary",
+        use_container_width=True,
+        on_click=submit_prompt_draft,
+    )
 with composer_actions[1]:
-    clear_prompt = st.button("Clear", use_container_width=True)
-
-if clear_prompt:
-    st.session_state.prompt_draft = ""
-    st.rerun()
+    st.button(
+        "Clear",
+        use_container_width=True,
+        on_click=clear_prompt_draft,
+    )
 
 active_question = ""
 if send_prompt:
-    active_question = st.session_state.get("prompt_draft", "").strip()
+    active_question = st.session_state.pop("pending_submitted_prompt", "").strip()
     if not active_question:
         st.warning("Enter or record a message before sending.")
 
 if active_question:
-    st.session_state.prompt_draft = ""
     now = datetime.now(timezone.utc).isoformat()
     user_entry = {
         "role": "user",
