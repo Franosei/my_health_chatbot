@@ -205,11 +205,37 @@ class MedicationInteractionChecker:
         return None
 
     @staticmethod
-    def _extract_excerpt(text: str, start: int, end: int, window: int = 180) -> str:
+    def _extract_excerpt(text: str, start: int, end: int, window: int = 220, max_chars: int = 420) -> str:
         left = max(0, start - window)
         right = min(len(text), end + window)
+
+        # Prefer sentence boundaries when available so the UI does not show a
+        # label fragment chopped in the middle of a thought.
+        left_slice = text[left:start]
+        sentence_start_candidates = [match.end() for match in re.finditer(r"[.!?;:]\s+", left_slice)]
+        if sentence_start_candidates:
+            left = left + sentence_start_candidates[-1]
+
+        right_slice = text[end:right]
+        sentence_end_match = re.search(r"[.!?;:](?:\s|$)", right_slice)
+        if sentence_end_match:
+            right = end + sentence_end_match.end()
+
         excerpt = text[left:right].strip()
-        return excerpt[:320].strip()
+        prefix = "... " if left > 0 else ""
+        suffix = ""
+
+        if len(excerpt) > max_chars:
+            trimmed = excerpt[:max_chars].rstrip()
+            last_space = trimmed.rfind(" ")
+            if last_space > max_chars * 0.6:
+                trimmed = trimmed[:last_space]
+            excerpt = trimmed.rstrip(" ,;:")
+            suffix = " ..."
+        elif right < len(text):
+            suffix = " ..."
+
+        return f"{prefix}{excerpt}{suffix}".strip()
 
     @staticmethod
     def _classify_excerpt(excerpt: str) -> str:

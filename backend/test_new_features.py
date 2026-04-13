@@ -92,6 +92,23 @@ def test_medication_checker_flags_label_warning_without_network():
     assert "Warfarin + Ibuprofen" == alert["pair"]
 
 
+def test_medication_checker_excerpt_marks_continuation_instead_of_hard_cut():
+    checker = MedicationInteractionChecker()
+    text = (
+        "Introductory text. Lithium should be used with caution with lisinopril and hydrochlorothiazide. "
+        "Frequent monitoring of serum potassium and renal function is required because toxicity may increase "
+        "when sodium balance changes during treatment. Additional explanatory wording continues for a long time "
+        "to simulate label content that would otherwise be cut off abruptly in the UI."
+    )
+
+    start = text.index("lisinopril")
+    end = start + len("lisinopril")
+    excerpt = checker._extract_excerpt(text, start, end, window=220, max_chars=140)
+
+    assert "lisinopril and hydrochlorothiazide" in excerpt.lower()
+    assert excerpt.endswith("...") or excerpt.endswith(".")
+
+
 def test_gp_summary_pdf_is_created():
     pdf_bytes = build_gp_summary_pdf(
         user_profile={"display_name": "Alex Patient"},
