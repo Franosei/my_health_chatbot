@@ -1,4 +1,5 @@
 import backend.user_store as user_store_module
+import fitz
 from backend.gp_summary import build_gp_summary_pdf
 from backend.medication_checker import MedicationInteractionChecker
 from backend.symptom_tracker import build_symptom_pattern_summary
@@ -115,6 +116,31 @@ def test_gp_summary_pdf_is_created():
     )
 
     assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_gp_summary_uses_medications_mentioned_in_longitudinal_memory():
+    pdf_bytes = build_gp_summary_pdf(
+        user_profile={"display_name": "Case Study"},
+        symptom_logs=[],
+        medications=[],
+        uploads=[],
+        longitudinal_memory=(
+            "Patient Summary:\n"
+            "Atrial fibrillation.\n"
+            "Current treatments and medicines:\n"
+            "On warfarin for atrial fibrillation. Recently prescribed ibuprofen for knee pain.\n"
+            "Recent symptoms or active concerns:\n"
+            "Increasing confusion and reduced urine output.\n"
+        ),
+        latest_triage={},
+    )
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    text = "\n".join(page.get_text() for page in doc)
+
+    assert "Medications" in text
+    assert "warfarin" in text.lower()
+    assert "ibuprofen" in text.lower()
 
 
 def test_user_store_round_trip_for_new_health_records(tmp_path, monkeypatch):

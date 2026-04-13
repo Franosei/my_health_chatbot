@@ -62,7 +62,7 @@ def build_escalation_banner(reason: str, role_key: str = "patient") -> str:
     if role_key in ("doctor", "nurse", "midwife", "physiotherapist"):
         return (
             f"> **Clinical escalation flag:** {reason}\n"
-            "> Please apply your clinical judgement and consider immediate review.\n\n"
+            "> **Action:** treat this as a red-flag presentation and follow the urgent local escalation pathway now.\n\n"
         )
     return (
         f"> **Important:** {reason}\n"
@@ -123,10 +123,11 @@ ROLE_SECTION_HEADINGS: dict[str, List[str]] = {
         "## Uncertainty & Limitations",
     ],
     "nurse": [
-        "## Practical Interpretation",
-        "## Monitoring Priorities",
-        "## Escalation Thresholds",
-        "## Patient Education Points",
+        "## Disposition",
+        "## Immediate Actions",
+        "## Monitor Right Now",
+        "## Escalate Immediately If",
+        "## What To Tell The Patient Or Family",
         "## Evidence Basis",
     ],
     "midwife": [
@@ -192,7 +193,9 @@ ROLE_PERSONA_BLOCKS: dict[str, str] = {
     "nurse": (
         "You are supporting a registered nurse. "
         "Use intermediate clinical language appropriate for nursing practice. "
-        "Focus on practical interpretation, monitoring parameters, and escalation thresholds. "
+        "Lead with disposition and immediate actions before explanation. "
+        "Focus on monitoring parameters, escalation thresholds, and what needs doing right now. "
+        "Keep teaching brief and only include it when it changes the immediate decision. "
         "Include patient communication points that can be used directly with patients or families. "
         "Reference NICE guidelines and trust protocol considerations where relevant."
     ),

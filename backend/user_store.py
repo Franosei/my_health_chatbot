@@ -127,6 +127,15 @@ def _normalize_triage_summary(entry: Dict) -> Dict:
     monitor = entry.get("what_to_monitor", [])
     if not isinstance(monitor, list):
         monitor = []
+    immediate_actions = entry.get("immediate_actions", [])
+    if not isinstance(immediate_actions, list):
+        immediate_actions = []
+    escalation_triggers = entry.get("escalation_triggers", [])
+    if not isinstance(escalation_triggers, list):
+        escalation_triggers = []
+    communication_points = entry.get("communication_points", [])
+    if not isinstance(communication_points, list):
+        communication_points = []
 
     return {
         "summary_id": entry.get("summary_id") or f"triage-{uuid4().hex[:12]}",
@@ -135,6 +144,14 @@ def _normalize_triage_summary(entry: Dict) -> Dict:
         "next_step": str(entry.get("next_step") or "").strip(),
         "what_to_monitor": [str(item).strip() for item in monitor if str(item).strip()],
         "rationale": str(entry.get("rationale") or "").strip(),
+        "pathway_label": str(entry.get("pathway_label") or "").strip(),
+        "decision_summary": str(entry.get("decision_summary") or "").strip(),
+        "immediate_actions": [str(item).strip() for item in immediate_actions if str(item).strip()],
+        "escalation_triggers": [str(item).strip() for item in escalation_triggers if str(item).strip()],
+        "communication_points": [str(item).strip() for item in communication_points if str(item).strip()],
+        "rule_hits": entry.get("rule_hits", []),
+        "guideline_references": entry.get("guideline_references", []),
+        "logic_version": str(entry.get("logic_version") or "").strip(),
         "trace_id": entry.get("trace_id"),
         "created_at": entry.get("created_at") or _utc_now(),
     }

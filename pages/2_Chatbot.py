@@ -58,11 +58,24 @@ def render_triage_summary(summary: dict) -> None:
         return
 
     monitor_items = summary.get("what_to_monitor", [])
+    immediate_actions = summary.get("immediate_actions", [])
+    escalation_items = summary.get("escalation_triggers", [])
     monitor_html = "".join(
         f"<li>{html.escape(str(item))}</li>"
         for item in monitor_items[:3]
         if str(item).strip()
     ) or "<li>No specific monitoring points saved.</li>"
+    immediate_html = "".join(
+        f"<li>{html.escape(str(item))}</li>"
+        for item in immediate_actions[:4]
+        if str(item).strip()
+    )
+    escalation_html = "".join(
+        f"<li>{html.escape(str(item))}</li>"
+        for item in escalation_items[:3]
+        if str(item).strip()
+    )
+    pathway_label = summary.get("pathway_label", "")
 
     st.markdown(
         f"""
@@ -71,6 +84,7 @@ def render_triage_summary(summary: dict) -> None:
                 <span class="triage-label">Structured triage</span>
                 <span class="triage-next-step">{html.escape(summary.get('next_step', 'Self-care'))}</span>
             </div>
+            {f"<p><strong>Pathway</strong><br />{html.escape(pathway_label)}</p>" if pathway_label else ""}
             <div class="triage-grid">
                 <div>
                     <strong>Urgency</strong>
@@ -85,6 +99,8 @@ def render_triage_summary(summary: dict) -> None:
                 <strong>What to monitor</strong>
                 <ul>{monitor_html}</ul>
             </div>
+            {f"<div class='triage-monitor'><strong>Immediate actions</strong><ul>{immediate_html}</ul></div>" if immediate_html else ""}
+            {f"<div class='triage-monitor'><strong>Escalate immediately if</strong><ul>{escalation_html}</ul></div>" if escalation_html else ""}
             <p class="triage-rationale">{html.escape(summary.get('rationale', ''))}</p>
         </div>
         """,
@@ -266,6 +282,12 @@ def render_source_trace(message: dict) -> None:
                 audit_display["policy_gates_applied"] = trace.get("policy_gates_applied")
             if trace.get("medication_alert_count") is not None:
                 audit_display["medication_alert_count"] = trace.get("medication_alert_count")
+            if trace.get("decision_logic_version"):
+                audit_display["decision_logic_version"] = trace.get("decision_logic_version")
+            if trace.get("rule_hits"):
+                audit_display["rule_hits"] = trace.get("rule_hits")
+            if trace.get("guideline_references"):
+                audit_display["guideline_references"] = trace.get("guideline_references")
             st.json(audit_display)
 
 

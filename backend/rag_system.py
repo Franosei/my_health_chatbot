@@ -220,18 +220,23 @@ class RAGEngine:
             return self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user)
 
         _pd = bundle.get("policy_decision")
-        raw_answer = self.llm.answer_question(
-            question=question,
-            context=bundle["full_context"],
-            chat_history=chat_history,
-            stream=False,
-            user_profile=bundle["user_profile"],
-            source_briefings=bundle["combined_sources"],
-            longitudinal_memory=bundle["longitudinal_memory_summary"],
-            role_config=bundle.get("role_config"),
-            escalation_banner=_pd.escalation_banner if _pd else "",
-            policy_context_note="\n".join(_pd.context_notes) if _pd else "",
-        )
+        clinical_decision = bundle.get("clinical_decision")
+        if clinical_decision and clinical_decision.deterministic_response:
+            role_key = bundle.get("role_config").role_key if bundle.get("role_config") else "patient"
+            raw_answer = clinical_decision.render_markdown(role_key, bundle["combined_sources"])
+        else:
+            raw_answer = self.llm.answer_question(
+                question=question,
+                context=bundle["full_context"],
+                chat_history=chat_history,
+                stream=False,
+                user_profile=bundle["user_profile"],
+                source_briefings=bundle["combined_sources"],
+                longitudinal_memory=bundle["longitudinal_memory_summary"],
+                role_config=bundle.get("role_config"),
+                escalation_banner=_pd.escalation_banner if _pd else "",
+                policy_context_note="\n".join(_pd.context_notes) if _pd else "",
+            )
         return self._finalize_answer_payload(question=question, raw_answer=raw_answer, bundle=bundle)
 
     def stream_user_question_events(
@@ -270,20 +275,27 @@ class RAGEngine:
         }
         streamed_chunks: List[str] = []
         policy_decision = bundle.get("policy_decision")
-        for chunk in self.llm.answer_question(
-            question=question,
-            context=bundle["full_context"],
-            chat_history=chat_history,
-            stream=True,
-            user_profile=bundle["user_profile"],
-            source_briefings=bundle["combined_sources"],
-            longitudinal_memory=bundle["longitudinal_memory_summary"],
-            role_config=bundle.get("role_config"),
-            escalation_banner=policy_decision.escalation_banner if policy_decision else "",
-            policy_context_note="\n".join(policy_decision.context_notes) if policy_decision else "",
-        ):
-            streamed_chunks.append(chunk)
-            yield {"type": "token", "delta": chunk}
+        clinical_decision = bundle.get("clinical_decision")
+        if clinical_decision and clinical_decision.deterministic_response:
+            role_key = bundle.get("role_config").role_key if bundle.get("role_config") else "patient"
+            deterministic_answer = clinical_decision.render_markdown(role_key, bundle["combined_sources"])
+            streamed_chunks.append(deterministic_answer)
+            yield {"type": "token", "delta": deterministic_answer}
+        else:
+            for chunk in self.llm.answer_question(
+                question=question,
+                context=bundle["full_context"],
+                chat_history=chat_history,
+                stream=True,
+                user_profile=bundle["user_profile"],
+                source_briefings=bundle["combined_sources"],
+                longitudinal_memory=bundle["longitudinal_memory_summary"],
+                role_config=bundle.get("role_config"),
+                escalation_banner=policy_decision.escalation_banner if policy_decision else "",
+                policy_context_note="\n".join(policy_decision.context_notes) if policy_decision else "",
+            ):
+                streamed_chunks.append(chunk)
+                yield {"type": "token", "delta": chunk}
 
         raw_answer = "".join(streamed_chunks).strip()
 
@@ -458,11 +470,13 @@ class RAGEngine:
         from backend.evidence_ranker import EvidenceRanker
         tiers_present = EvidenceRanker.get_tiers_present(bundle["combined_sources"])
         medication_check = bundle.get("medication_check", {})
+        clinical_decision = bundle.get("clinical_decision")
         triage_summary = self._build_triage_summary(
             question=question,
             answer_markdown=answer_markdown,
             intent=bundle.get("intent"),
             policy_decision=policy_decision,
+            clinical_decision=clinical_decision,
         )
 
         trace = {
@@ -487,6 +501,14 @@ class RAGEngine:
             "vulnerable_flags": intent.vulnerable_flags if intent else [],
             "policy_gates_applied": policy_decision.gates_as_dicts() if policy_decision else [],
             "medication_alert_count": len(medication_check.get("alerts", [])),
+            "decision_logic_version": clinical_decision.logic_version if clinical_decision else "",
+            "pathway_decision": clinical_decision.as_dict() if clinical_decision else {},
+            "rule_hits": [
+                item.as_dict() for item in clinical_decision.triggered_rules
+            ] if clinical_decision else [],
+            "guideline_references": [
+                item.as_dict() for item in clinical_decision.guideline_references
+            ] if clinical_decision else [],
         }
         if bundle["normalized_user"]:
             UserStore.save_interaction_trace(bundle["normalized_user"], trace)
@@ -971,7 +993,14 @@ class RAGEngine:
         answer_markdown: str,
         intent,
         policy_decision,
+        clinical_decision=None,
     ) -> Dict:
+        if clinical_decision is not None:
+            fallback = build_default_triage(intent, policy_decision)
+            return normalize_triage_output(
+                clinical_decision.build_triage_summary(),
+                fallback,
+            )
         fallback = build_default_triage(intent, policy_decision)
         intent_summary = (
             f"intent={getattr(intent, 'intent_category', '')}; "

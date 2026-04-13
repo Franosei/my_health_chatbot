@@ -1,0 +1,688 @@
+"""Deterministic clinical decision support for high-risk triage questions.
+
+This module keeps pathway selection, urgency classification, and immediate
+actions in rule-based Python so the LLM is not left to infer critical
+disposition or escalation steps on its own.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import re
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.intent_risk_classifier import IntentClassification
+    from backend.role_router import RoleConfig
+
+
+CLINICAL_LOGIC_VERSION = "2026.04.13-general-triage-v1"
+
+RISK_LEVEL_RANK = {
+    "routine": 1,
+    "elevated": 2,
+    "urgent": 3,
+    "crisis": 4,
+}
+
+CLINICAL_ROLES = {"doctor", "nurse", "midwife", "physiotherapist"}
+
+
+@dataclass
+class GuidelineReference:
+    authority: str
+    title: str
+    url: str = ""
+    note: str = ""
+
+    def as_dict(self) -> Dict:
+        return {
+            "authority": self.authority,
+            "title": self.title,
+            "url": self.url,
+            "note": self.note,
+        }
+
+
+@dataclass
+class RuleTrigger:
+    rule_id: str
+    finding: str
+    severity: str
+    rationale: str
+    matched_terms: List[str] = field(default_factory=list)
+
+    def as_dict(self) -> Dict:
+        return {
+            "rule_id": self.rule_id,
+            "finding": self.finding,
+            "severity": self.severity,
+            "rationale": self.rationale,
+            "matched_terms": list(self.matched_terms),
+        }
+
+
+@dataclass
+class ClinicalDecision:
+    decision_id: str
+    pathway_id: str
+    pathway_label: str
+    summary: str
+    urgency_level: str
+    next_step: str
+    minimum_risk_level: str
+    escalation_reason: str
+    rationale: str
+    immediate_actions: List[str] = field(default_factory=list)
+    monitoring_priorities: List[str] = field(default_factory=list)
+    escalation_triggers: List[str] = field(default_factory=list)
+    communication_points: List[str] = field(default_factory=list)
+    likely_concerns: List[str] = field(default_factory=list)
+    triggered_rules: List[RuleTrigger] = field(default_factory=list)
+    guideline_references: List[GuidelineReference] = field(default_factory=list)
+    search_terms: List[str] = field(default_factory=list)
+    vulnerable_flags: List[str] = field(default_factory=list)
+    deterministic_response: bool = False
+    logic_version: str = CLINICAL_LOGIC_VERSION
+
+    def as_dict(self) -> Dict:
+        return {
+            "decision_id": self.decision_id,
+            "pathway_id": self.pathway_id,
+            "pathway_label": self.pathway_label,
+            "summary": self.summary,
+            "urgency_level": self.urgency_level,
+            "next_step": self.next_step,
+            "minimum_risk_level": self.minimum_risk_level,
+            "escalation_reason": self.escalation_reason,
+            "rationale": self.rationale,
+            "immediate_actions": list(self.immediate_actions),
+            "monitoring_priorities": list(self.monitoring_priorities),
+            "escalation_triggers": list(self.escalation_triggers),
+            "communication_points": list(self.communication_points),
+            "likely_concerns": list(self.likely_concerns),
+            "triggered_rules": [item.as_dict() for item in self.triggered_rules],
+            "guideline_references": [item.as_dict() for item in self.guideline_references],
+            "search_terms": list(self.search_terms),
+            "vulnerable_flags": list(self.vulnerable_flags),
+            "deterministic_response": self.deterministic_response,
+            "logic_version": self.logic_version,
+        }
+
+    def build_triage_summary(self) -> Dict:
+        return {
+            "urgency_level": self.urgency_level,
+            "next_step": self.next_step,
+            "what_to_monitor": list(self.monitoring_priorities),
+            "rationale": self.rationale,
+            "pathway_label": self.pathway_label,
+            "decision_summary": self.summary,
+            "immediate_actions": list(self.immediate_actions),
+            "escalation_triggers": list(self.escalation_triggers),
+            "communication_points": list(self.communication_points),
+            "rule_hits": [item.as_dict() for item in self.triggered_rules],
+            "guideline_references": [item.as_dict() for item in self.guideline_references],
+            "logic_version": self.logic_version,
+        }
+
+    def render_markdown(self, role_key: str, sources: Optional[List[Dict]] = None) -> str:
+        official_markers = self._official_source_markers(sources or [])
+        evidence_line = (
+            f"Retrieved formal guidance was prioritised for this pathway {official_markers}."
+            if official_markers
+            else "This pathway was built from deterministic triage logic mapped to formal NICE/NHS guidance."
+        )
+
+        sections = []
+        if role_key in CLINICAL_ROLES:
+            sections.append(
+                "## Disposition\n"
+                f"**{self.urgency_level}: {self.summary}**\n\n"
+                f"**Primary action:** {self.next_step}"
+            )
+            sections.append(self._bullet_section("## Immediate Actions", self.immediate_actions))
+            sections.append(self._bullet_section("## Monitor Right Now", self.monitoring_priorities))
+            sections.append(self._bullet_section("## Escalate Immediately If", self.escalation_triggers))
+
+            reasoning_items = []
+            if self.likely_concerns:
+                reasoning_items.append("Key concerns: " + ", ".join(self.likely_concerns))
+            for trigger in self.triggered_rules:
+                matched = f" ({', '.join(trigger.matched_terms)})" if trigger.matched_terms else ""
+                reasoning_items.append(f"{trigger.finding}{matched}")
+            reasoning_items.append(self.rationale)
+            sections.append(self._bullet_section("## Why This Pathway Was Selected", reasoning_items))
+
+            if self.communication_points:
+                sections.append(self._bullet_section("## What To Tell The Patient Or Family", self.communication_points))
+        else:
+            sections.append(
+                "## What To Do Now\n"
+                f"**{self.summary}**\n\n"
+                f"Recommended next step: **{self.next_step}**"
+            )
+            sections.append(self._bullet_section("## Why This Needs Attention", [self.rationale]))
+            sections.append(self._bullet_section("## Get Help Urgently If", self.escalation_triggers))
+            if self.communication_points:
+                sections.append(self._bullet_section("## Key Advice", self.communication_points))
+
+        guideline_lines = [evidence_line]
+        for guideline in self.guideline_references:
+            line = f"{guideline.authority}: {guideline.title}"
+            if guideline.note:
+                line += f" - {guideline.note}"
+            guideline_lines.append(line)
+        guideline_lines.append(f"Logic version: {self.logic_version}")
+        sections.append(self._bullet_section("## Guideline Basis", guideline_lines))
+        return "\n\n".join(section for section in sections if section.strip())
+
+    @staticmethod
+    def _bullet_section(heading: str, items: List[str]) -> str:
+        cleaned = [str(item).strip() for item in items if str(item).strip()]
+        if not cleaned:
+            return ""
+        return heading + "\n" + "\n".join(f"- {item}" for item in cleaned)
+
+    @staticmethod
+    def _official_source_markers(sources: List[Dict]) -> str:
+        markers = []
+        for source in sources:
+            if source.get("source_type") != "official_guidance":
+                continue
+            source_id = source.get("source_id")
+            if source_id:
+                markers.append(f"[{source_id}]")
+            if len(markers) >= 3:
+                break
+        return "".join(markers)
+
+
+@dataclass
+class _ParsedQuestion:
+    text: str
+    lower: str
+    age: Optional[int]
+    duration_weeks: Optional[int]
+
+
+class ClinicalDecisionSupportEngine:
+    """Rule-based triage engine used before any answer generation."""
+
+    _AGE_PATTERNS = [
+        re.compile(r"\b(\d{1,3})\s*-\s*year\s*-\s*old\b", re.IGNORECASE),
+        re.compile(r"\b(\d{1,3})\s*year\s*old\b", re.IGNORECASE),
+        re.compile(r"\baged?\s*(\d{1,3})\b", re.IGNORECASE),
+    ]
+    _WEEK_PATTERNS = [
+        re.compile(r"\bfor\s+(\d{1,2})\s+weeks?\b", re.IGNORECASE),
+        re.compile(r"\b(\d{1,2})\s+weeks?\b", re.IGNORECASE),
+    ]
+
+    def assess(
+        self,
+        question: str,
+        intent: "IntentClassification",
+        role_config: "RoleConfig",
+    ) -> ClinicalDecision:
+        parsed = self._parse_question(question)
+        matches = [
+            self._rule_thunderclap_headache(parsed),
+            self._rule_possible_sepsis(parsed),
+            self._rule_recurrent_blackout(parsed),
+            self._rule_chronic_cough(parsed),
+        ]
+        for decision in matches:
+            if decision is not None:
+                return decision
+        return self._build_default_decision(parsed, intent, role_config)
+
+    def apply_to_intent(
+        self,
+        intent: "IntentClassification",
+        decision: ClinicalDecision,
+    ) -> "IntentClassification":
+        if RISK_LEVEL_RANK.get(decision.minimum_risk_level, 1) > RISK_LEVEL_RANK.get(intent.risk_level, 1):
+            intent.risk_level = decision.minimum_risk_level
+            intent.escalation_required = decision.minimum_risk_level in {"urgent", "crisis"}
+            intent.escalation_reason = decision.escalation_reason
+        if decision.pathway_id in {"thunderclap_headache", "possible_sepsis", "recurrent_blackout", "chronic_cough"}:
+            intent.pathway_hint = "general_triage"
+            if intent.intent_category == "general_info":
+                intent.intent_category = "symptom_triage"
+        for flag in decision.vulnerable_flags:
+            if flag not in intent.vulnerable_flags:
+                intent.vulnerable_flags.append(flag)
+        if decision.minimum_risk_level == "crisis":
+            intent.crisis_detected = True
+        return intent
+
+    @classmethod
+    def _parse_question(cls, question: str) -> _ParsedQuestion:
+        text = " ".join((question or "").split()).strip()
+        lower = text.lower()
+
+        age = None
+        for pattern in cls._AGE_PATTERNS:
+            match = pattern.search(lower)
+            if match:
+                age = int(match.group(1))
+                break
+
+        duration_weeks = None
+        for pattern in cls._WEEK_PATTERNS:
+            match = pattern.search(lower)
+            if match:
+                duration_weeks = int(match.group(1))
+                break
+
+        return _ParsedQuestion(text=text, lower=lower, age=age, duration_weeks=duration_weeks)
+
+    def _rule_thunderclap_headache(self, parsed: _ParsedQuestion) -> Optional[ClinicalDecision]:
+        headache_terms = [
+            term for term in (
+                "severe headache",
+                "worst headache",
+                "headache",
+                "suddenly",
+                "sudden",
+                "hour ago",
+            )
+            if term in parsed.lower
+        ]
+        has_headache = "headache" in parsed.lower
+        sudden_onset = any(term in parsed.lower for term in ("came on suddenly", "sudden", "suddenly"))
+        worst_ever = any(term in parsed.lower for term in ("worst headache", "worst headache i have ever had"))
+        if not (has_headache and sudden_onset and worst_ever):
+            return None
+
+        return ClinicalDecision(
+            decision_id="general-triage-thunderclap-headache",
+            pathway_id="thunderclap_headache",
+            pathway_label="Sudden severe headache / acute neurological emergency",
+            summary="Treat as a thunderclap headache requiring emergency assessment now.",
+            urgency_level="Emergency",
+            next_step="Immediate review",
+            minimum_risk_level="urgent",
+            escalation_reason="Sudden severe headache / possible intracranial emergency.",
+            rationale=(
+                "Sudden onset severe headache described as the worst ever should be managed as a red-flag "
+                "neurological presentation until serious intracranial causes are excluded."
+            ),
+            immediate_actions=[
+                "Escalate now for emergency department or acute medical review; do not manage as routine headache care.",
+                "Record exact onset time and perform NEWS2 plus full neurological observations immediately.",
+                "Keep the patient under direct observation and follow the local acute headache or suspected subarachnoid haemorrhage pathway.",
+            ],
+            monitoring_priorities=[
+                "Level of consciousness, new confusion, speech change, or focal neurological deficit",
+                "Blood pressure, pulse, respiratory rate, oxygen saturation, and temperature",
+                "Vomiting, neck stiffness, photophobia, seizure activity, or worsening pain",
+            ],
+            escalation_triggers=[
+                "Any reduced consciousness, collapse, seizure, or new focal neurology",
+                "Visual disturbance, persistent vomiting, or rapidly worsening headache",
+                "Signs of meningism or any deterioration in NEWS2",
+            ],
+            communication_points=[
+                "This pattern needs emergency assessment because a sudden severe headache can signal a bleed or another acute neurological event.",
+                "Please tell us immediately if there is any confusion, weakness, speech change, or visual change while help is being arranged.",
+            ],
+            likely_concerns=[
+                "subarachnoid haemorrhage",
+                "other acute intracranial pathology",
+            ],
+            triggered_rules=[
+                RuleTrigger(
+                    rule_id="thunderclap_headache_red_flag",
+                    finding="Sudden severe headache with worst-ever description",
+                    severity="urgent",
+                    rationale="Red-flag headache pattern requires emergency exclusion of intracranial causes.",
+                    matched_terms=headache_terms,
+                )
+            ],
+            guideline_references=[
+                GuidelineReference(
+                    authority="NHS",
+                    title="Migraine - immediate action required for sudden extremely painful headache",
+                    url="https://www.nhs.uk/conditions/migraine/",
+                    note="NHS advises 999 for sudden extremely painful headache and associated neurological features.",
+                ),
+                GuidelineReference(
+                    authority="NHS",
+                    title="Brain aneurysm - thunderclap headache emergency advice",
+                    url="https://www.nhs.uk/conditions/brain-aneurysm/",
+                    note="Sudden severe thunderclap headache is treated as an emergency presentation.",
+                ),
+            ],
+            search_terms=[
+                "sudden severe headache thunderclap headache NHS NICE",
+                "subarachnoid haemorrhage sudden severe headache guideline",
+            ],
+            deterministic_response=True,
+        )
+
+    def _rule_possible_sepsis(self, parsed: _ParsedQuestion) -> Optional[ClinicalDecision]:
+        confusion_terms = [term for term in ("confused", "confusion", "increasingly confused", "delirium") if term in parsed.lower]
+        fever_terms = [term for term in ("temperature", "fever", "38.", "39.") if term in parsed.lower]
+        urine_terms = [term for term in ("very little urine", "passing very little urine", "reduced urine", "not had a pee", "oliguria") if term in parsed.lower]
+        age = parsed.age or 0
+        elderly = age >= 65 or "elderly" in parsed.lower
+        if not (confusion_terms and fever_terms and urine_terms):
+            return None
+
+        vulnerable_flags = ["elderly"] if elderly else []
+        return ClinicalDecision(
+            decision_id="general-triage-possible-sepsis",
+            pathway_id="possible_sepsis",
+            pathway_label="Possible sepsis / acute delirium pathway",
+            summary="Treat as possible sepsis with acute organ dysfunction and arrange immediate clinician review.",
+            urgency_level="Emergency",
+            next_step="Immediate review",
+            minimum_risk_level="urgent",
+            escalation_reason="Confusion, fever, and reduced urine output suggest possible sepsis.",
+            rationale=(
+                "Confusion plus fever plus reduced urine output indicates possible sepsis or another acute "
+                "cause of organ dysfunction and needs immediate escalation rather than watchful waiting."
+            ),
+            immediate_actions=[
+                "Escalate immediately to the acute medical or senior review pathway and treat as possible sepsis until assessed.",
+                "Calculate NEWS2 now and repeat observations at a frequency dictated by deterioration risk.",
+                "Start the local sepsis bundle if criteria are met, including cultures, bloods, fluids, oxygen, and antibiotics as directed by protocol.",
+                "Strictly monitor urine output and seek the likely source of infection while escalation is underway.",
+            ],
+            monitoring_priorities=[
+                "Mental status, respiratory rate, blood pressure, pulse, oxygen saturation, and temperature",
+                "Urine output, fluid balance, and signs of acute kidney injury",
+                "Rapid change in NEWS2, lactate if available, and signs of shock or poor perfusion",
+            ],
+            escalation_triggers=[
+                "Hypotension, tachypnoea, hypoxia, mottled skin, or rising NEWS2",
+                "Worsening confusion, reduced responsiveness, or new agitation",
+                "No urine output, persistent vomiting, or evidence of a new infection source",
+            ],
+            communication_points=[
+                "The combination of confusion, fever, and reduced urine output can indicate sepsis, so we are escalating immediately.",
+                "We need to monitor observations closely and may need urgent blood tests, fluids, oxygen, and antibiotics.",
+            ],
+            likely_concerns=[
+                "sepsis",
+                "acute delirium",
+                "acute kidney injury",
+            ],
+            triggered_rules=[
+                RuleTrigger(
+                    rule_id="sepsis_red_flags",
+                    finding="Confusion with fever and reduced urine output",
+                    severity="urgent",
+                    rationale="This combination suggests infection with possible organ dysfunction.",
+                    matched_terms=confusion_terms + fever_terms + urine_terms,
+                )
+            ],
+            guideline_references=[
+                GuidelineReference(
+                    authority="NICE",
+                    title="NG253 Suspected sepsis in people aged 16 or over",
+                    url="https://www.nice.org.uk/guidance/ng253",
+                    note="Supports urgent assessment and treatment for suspected sepsis in adults.",
+                ),
+                GuidelineReference(
+                    authority="NHS",
+                    title="Symptoms of sepsis",
+                    url="https://www.nhs.uk/conditions/sepsis/",
+                    note="Confusion and passing no urine are highlighted adult red flags.",
+                ),
+                GuidelineReference(
+                    authority="NHS England",
+                    title="National Early Warning Score (NEWS)",
+                    url="https://www.england.nhs.uk/ourwork/clinical-policy/sepsis/nationalearlywarningscore/",
+                    note="NEWS2 is endorsed to identify deterioration and support early escalation.",
+                ),
+            ],
+            search_terms=[
+                "suspected sepsis adults confusion reduced urine output NICE NG253",
+                "sepsis confusion oliguria NEWS2 NHS",
+            ],
+            vulnerable_flags=vulnerable_flags,
+            deterministic_response=True,
+        )
+
+    def _rule_recurrent_blackout(self, parsed: _ParsedQuestion) -> Optional[ClinicalDecision]:
+        blackout_terms = [
+            term for term in (
+                "everything goes black",
+                "goes black",
+                "blackout",
+                "blacking out",
+                "nearly fall",
+                "nearly fell",
+                "faint",
+                "passed out",
+            )
+            if term in parsed.lower
+        ]
+        recurrent = any(term in parsed.lower for term in ("three times", "twice", "recurrent", "episodes", "past two weeks", "last two weeks"))
+        if not blackout_terms:
+            return None
+        if not recurrent and "few seconds" not in parsed.lower:
+            return None
+
+        return ClinicalDecision(
+            decision_id="general-triage-recurrent-blackout",
+            pathway_id="recurrent_blackout",
+            pathway_label="Recurrent blackout / presyncope pathway",
+            summary="Arrange same-day medical assessment for recurrent blackout or presyncope until cardiac and neurological causes are excluded.",
+            urgency_level="Urgent",
+            next_step="Same-day review",
+            minimum_risk_level="urgent",
+            escalation_reason="Recurrent blackouts or near-syncope require urgent assessment.",
+            rationale=(
+                "Recurrent episodes of transient visual blackout or near-collapse need urgent assessment for "
+                "arrhythmia, syncope, orthostatic hypotension, or neurological causes."
+            ),
+            immediate_actions=[
+                "Keep the patient safe from falls and do not dismiss the episodes as benign without assessment.",
+                "Obtain lying and standing blood pressure, pulse, capillary glucose, and a 12-lead ECG if available.",
+                "Arrange same-day medical assessment or urgent referral in line with the local blackout or syncope pathway.",
+            ],
+            monitoring_priorities=[
+                "Further blackout, collapse, chest pain, palpitations, or exertional symptoms",
+                "Heart rate and rhythm, blood pressure including postural change, and injury risk",
+                "Any focal neurological symptoms, persistent visual loss, or prolonged recovery",
+            ],
+            escalation_triggers=[
+                "Loss of consciousness, injury, chest pain, palpitations, or abnormal ECG",
+                "Any focal neurological deficit, persistent visual loss, or prolonged confusion",
+                "Episode during exertion or without warning, especially with breathlessness",
+            ],
+            communication_points=[
+                "Repeated blackouts or near-blackouts need urgent assessment because they can be caused by heart rhythm or blood pressure problems.",
+                "Please report any chest pain, palpitations, weakness, speech change, or a full loss of consciousness immediately.",
+            ],
+            likely_concerns=[
+                "syncope or presyncope",
+                "arrhythmia",
+                "orthostatic hypotension",
+                "neurological event",
+            ],
+            triggered_rules=[
+                RuleTrigger(
+                    rule_id="recurrent_blackout_red_flag",
+                    finding="Recurrent transient blackout or near-collapse episodes",
+                    severity="urgent",
+                    rationale="Recurrent blackout presentations need structured syncope assessment and cardiac screening.",
+                    matched_terms=blackout_terms,
+                )
+            ],
+            guideline_references=[
+                GuidelineReference(
+                    authority="NICE",
+                    title="CG109 Transient loss of consciousness ('blackouts') in over 16s",
+                    url="https://www.nice.org.uk/guidance/cg109",
+                    note="NICE recommends structured initial assessment and 12-lead ECG for blackout presentations.",
+                ),
+            ],
+            search_terms=[
+                "blackouts over 16s NICE CG109 12 lead ECG",
+                "recurrent blackout near syncope same day assessment guideline",
+            ],
+            deterministic_response=True,
+        )
+
+    def _rule_chronic_cough(self, parsed: _ParsedQuestion) -> Optional[ClinicalDecision]:
+        if "cough" not in parsed.lower:
+            return None
+        duration_weeks = parsed.duration_weeks or 0
+        if duration_weeks < 8 and "eight weeks" not in parsed.lower:
+            return None
+
+        red_flags = any(
+            self._present_without_negation(parsed.lower, term)
+            for term in ("weight loss", "lost weight", "night sweats", "coughing up blood", "haemoptysis")
+        )
+        next_step = "GP"
+        urgency = "Prompt"
+        risk = "elevated"
+        reason = "Persistent cough lasting 8 weeks requires structured outpatient review."
+        rationale = (
+            "A cough lasting 8 weeks meets the threshold for chronic cough assessment. "
+            "Without emergency red flags in the history given, this is usually a prompt outpatient workup rather than emergency care."
+        )
+        if red_flags:
+            urgency = "Urgent"
+            next_step = "Same-day review"
+            risk = "urgent"
+            reason = "Persistent cough with red-flag features requires urgent assessment."
+            rationale = "Chronic cough plus red-flag features needs urgent assessment rather than routine follow-up."
+
+        return ClinicalDecision(
+            decision_id="general-triage-chronic-cough",
+            pathway_id="chronic_cough",
+            pathway_label="Chronic cough assessment pathway",
+            summary="Arrange clinician review for chronic cough rather than continuing simple self-care alone.",
+            urgency_level=urgency,
+            next_step=next_step,
+            minimum_risk_level=risk,
+            escalation_reason=reason,
+            rationale=rationale,
+            immediate_actions=[
+                "Arrange GP or appropriate clinician review for chronic cough assessment.",
+                "Take a focused history for asthma, rhinitis/postnasal drip, reflux, ACE inhibitor use, and infection exposure.",
+                "Escalate faster if new red flags appear or if examination suggests respiratory compromise.",
+            ],
+            monitoring_priorities=[
+                "Breathlessness, chest pain, haemoptysis, fever, or systemic symptoms",
+                "Any change in cough pattern, sputum, wheeze, or exercise tolerance",
+                "Weight loss, voice change, or other new red-flag features",
+            ],
+            escalation_triggers=[
+                "Coughing up blood, chest pain, breathlessness, or rapidly worsening symptoms",
+                "Unexplained weight loss, night sweats, or persistent fever",
+                "Oxygen desaturation, respiratory distress, or inability to maintain oral intake",
+            ],
+            communication_points=[
+                "A cough lasting 8 weeks needs clinician review to look for common causes such as asthma, reflux, upper airway causes, or less commonly something more serious.",
+                "Please seek help sooner if you develop breathlessness, chest pain, coughing up blood, weight loss, or fevers.",
+            ],
+            likely_concerns=[
+                "upper airway cough syndrome",
+                "asthma",
+                "gastro-oesophageal reflux",
+            ],
+            triggered_rules=[
+                RuleTrigger(
+                    rule_id="chronic_cough_threshold",
+                    finding="Cough duration at or beyond 8 weeks",
+                    severity=risk,
+                    rationale="Persistent cough needs structured assessment rather than generic reassurance.",
+                    matched_terms=[f"{duration_weeks} weeks" if duration_weeks else "eight weeks"],
+                )
+            ],
+            guideline_references=[
+                GuidelineReference(
+                    authority="NHS",
+                    title="Cough - when to see a GP and when urgent review is needed",
+                    url="https://www.nhs.uk/symptoms/cough/",
+                    note="NHS advises GP review for persistent cough and urgent escalation for breathing difficulty, chest pain, or haemoptysis.",
+                ),
+            ],
+            search_terms=[
+                "persistent cough more than 8 weeks NHS guideline",
+                "chronic cough adult primary care assessment NHS",
+            ],
+            deterministic_response=True,
+        )
+
+    @staticmethod
+    def _present_without_negation(text: str, term: str) -> bool:
+        if term not in text:
+            return False
+        negated_pattern = re.compile(
+            rf"(?:no|not|without|denies)\s+(?:\w+\s+){{0,3}}{re.escape(term)}",
+            re.IGNORECASE,
+        )
+        return not bool(negated_pattern.search(text))
+
+    def _build_default_decision(
+        self,
+        parsed: _ParsedQuestion,
+        intent: "IntentClassification",
+        role_config: "RoleConfig",
+    ) -> ClinicalDecision:
+        del parsed
+        risk_level = (intent.risk_level or "routine").lower()
+        if risk_level == "crisis":
+            urgency_level = "Emergency"
+            next_step = "999"
+        elif risk_level == "urgent":
+            urgency_level = "Urgent"
+            next_step = "111" if role_config.role_key not in CLINICAL_ROLES else "Immediate review"
+        elif risk_level == "elevated":
+            urgency_level = "Prompt"
+            next_step = "GP"
+        else:
+            urgency_level = "Routine"
+            next_step = "Self-care"
+
+        rationale = intent.escalation_reason or "No deterministic red-flag pathway was triggered from the information provided."
+        actions = {
+            "crisis": [
+                "Activate the emergency response pathway immediately.",
+                "Do not wait for routine assessment or reassurance.",
+            ],
+            "urgent": [
+                "Arrange urgent clinician review and reassess observations promptly.",
+                "Escalate immediately if new red flags appear while awaiting assessment.",
+            ],
+            "elevated": [
+                "Arrange clinician review and safety-net for deterioration.",
+            ],
+            "routine": [
+                "Provide self-care guidance with clear safety-netting.",
+            ],
+        }
+        monitors = {
+            "crisis": ["Any deterioration while emergency help is being arranged"],
+            "urgent": ["Worsening symptoms, new red flags, or rising physiological concern"],
+            "elevated": ["Persistence, progression, or new red-flag symptoms"],
+            "routine": ["Whether symptoms settle, worsen, or new warning signs appear"],
+        }
+
+        return ClinicalDecision(
+            decision_id="general-triage-default",
+            pathway_id="general_triage",
+            pathway_label="General triage",
+            summary="No specific high-confidence deterministic pathway matched; use the computed acuity floor and clinical judgement.",
+            urgency_level=urgency_level,
+            next_step=next_step,
+            minimum_risk_level=risk_level,
+            escalation_reason=intent.escalation_reason or "",
+            rationale=rationale,
+            immediate_actions=actions.get(risk_level, actions["routine"]),
+            monitoring_priorities=monitors.get(risk_level, monitors["routine"]),
+            escalation_triggers=["Any new severe symptom, collapse, or rapid deterioration"],
+            communication_points=[],
+            likely_concerns=[],
+            triggered_rules=[],
+            guideline_references=[],
+            search_terms=[],
+            deterministic_response=False,
+        )

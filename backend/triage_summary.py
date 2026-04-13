@@ -3,8 +3,15 @@ from __future__ import annotations
 from typing import Dict
 
 
-TRIAGE_STEPS = {"self-care", "gp", "111", "999"}
-TRIAGE_STEP_RANK = {"self-care": 1, "gp": 2, "111": 3, "999": 4}
+TRIAGE_STEPS = {"self-care", "gp", "111", "same-day review", "immediate review", "999"}
+TRIAGE_STEP_RANK = {
+    "self-care": 1,
+    "gp": 2,
+    "same-day review": 3,
+    "111": 3,
+    "immediate review": 4,
+    "999": 5,
+}
 
 
 def build_default_triage(intent, policy_decision) -> Dict:
@@ -63,19 +70,26 @@ def normalize_triage_output(payload: Dict, fallback: Dict) -> Dict:
     fallback_step = str(fallback.get("next_step") or "Self-care").strip().lower()
     if TRIAGE_STEP_RANK.get(normalized_next_step, 0) < TRIAGE_STEP_RANK.get(fallback_step, 1):
         normalized_next_step = fallback_step
-    merged["next_step"] = (
-        "Self-care"
-        if normalized_next_step == "self-care"
-        else normalized_next_step.upper()
-        if normalized_next_step.isdigit()
-        else "GP"
-    )
+    merged["next_step"] = {
+        "self-care": "Self-care",
+        "gp": "GP",
+        "111": "111",
+        "same-day review": "Same-day review",
+        "immediate review": "Immediate review",
+        "999": "999",
+    }.get(normalized_next_step, "GP")
 
     monitor = merged.get("what_to_monitor", [])
     if not isinstance(monitor, list):
         monitor = []
     cleaned_monitor = [str(item).strip() for item in monitor if str(item).strip()]
     merged["what_to_monitor"] = cleaned_monitor or fallback.get("what_to_monitor", [])
+
+    for field in ("immediate_actions", "escalation_triggers", "communication_points"):
+        items = merged.get(field, [])
+        if not isinstance(items, list):
+            items = []
+        merged[field] = [str(item).strip() for item in items if str(item).strip()]
 
     merged["urgency_level"] = str(merged.get("urgency_level") or fallback.get("urgency_level") or "").strip()
     merged["rationale"] = str(merged.get("rationale") or fallback.get("rationale") or "").strip()

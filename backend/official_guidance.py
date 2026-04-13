@@ -17,6 +17,7 @@ class OfficialGuidanceEngine:
     rather than relying on hard-coded case-specific responses.
     """
 
+    NICE_SEARCH_URL = "https://www.nice.org.uk/search"
     NHS_SEARCH_URL = "https://www.nhs.uk/search/results"
     MEDLINEPLUS_SEARCH_URL = "https://wsearch.nlm.nih.gov/ws/query"
     USER_AGENT = f"{PRODUCT_NAME.replace(' ', '')}/1.0 (+https://www.nhs.uk/ https://medlineplus.gov/)"
@@ -43,6 +44,7 @@ class OfficialGuidanceEngine:
         futures = []
         with ThreadPoolExecutor(max_workers=max(2, len(normalized_queries) * 2)) as executor:
             for query in normalized_queries:
+                futures.append(executor.submit(self._search_nice, query, per_source_limit))
                 futures.append(executor.submit(self._search_nhs, query, per_source_limit))
                 futures.append(executor.submit(self._search_medlineplus, query, per_source_limit))
 
@@ -53,10 +55,54 @@ class OfficialGuidanceEngine:
             except Exception as exc:
                 print(f"OfficialGuidanceEngine search fallback: {exc}")
 
-        deduped = self._dedupe_and_number(collected)
+        preferred_ranked = self._apply_preferred_sources(collected, preferred_sources)
+        deduped = self._dedupe_and_number(preferred_ranked)
         enriched = self._enrich_with_page_content(deduped)
         self.search_cache[cache_key] = [dict(source) for source in enriched]
         return enriched
+
+    def _search_nice(self, query: str, limit: int) -> List[Dict]:
+        response = requests.get(
+            self.NICE_SEARCH_URL,
+            params={"q": query},
+            headers={"User-Agent": self.USER_AGENT},
+            timeout=6,
+        )
+        response.raise_for_status()
+
+        html_text = response.text
+        pattern = re.compile(
+            r'headinglink="(?P<href>/guidance/[^"]+)"[\s\S]*?'
+            r'<a href="(?P=href)"><span>(?P<title>.*?)</span></a>[\s\S]*?'
+            r'<p class="card__summary"><span>(?P<snippet>.*?)</span></p>',
+            re.IGNORECASE,
+        )
+
+        matches = []
+        for match in pattern.finditer(html_text):
+            href = html.unescape(match.group("href"))
+            title = self._clean_html(match.group("title"))
+            snippet = self._clean_html(match.group("snippet"))
+            if not href or not title:
+                continue
+
+            matches.append(
+                {
+                    "title": title,
+                    "journal": "NICE",
+                    "year": "",
+                    "section": "Guidance summary",
+                    "url": urljoin("https://www.nice.org.uk", href),
+                    "query": query,
+                    "snippet": snippet,
+                    "provider": "nice",
+                    "source_type": "official_guidance",
+                }
+            )
+            if len(matches) >= limit:
+                break
+
+        return matches
 
     @staticmethod
     def _normalize_queries(queries: str | List[str]) -> List[str]:
@@ -166,6 +212,36 @@ class OfficialGuidanceEngine:
         for index, source in enumerate(unique, start=1):
             source["source_id"] = f"S{index}"
         return unique
+
+    @staticmethod
+    def _apply_preferred_sources(sources: List[Dict], preferred_sources: List[str] | None) -> List[Dict]:
+        if not preferred_sources:
+            return sources
+
+        preferred_tokens = {
+            token.strip().lower()
+            for item in preferred_sources
+            for token in (item, item.replace("CKS", "").strip())
+            if token.strip()
+        }
+        if not preferred_tokens:
+            return sources
+
+        preferred = []
+        non_preferred = []
+        for source in sources:
+            haystack = " ".join(
+                [
+                    str(source.get("provider", "")),
+                    str(source.get("journal", "")),
+                    str(source.get("title", "")),
+                ]
+            ).lower()
+            if any(token in haystack for token in preferred_tokens):
+                preferred.append(source)
+            else:
+                non_preferred.append(source)
+        return preferred + non_preferred
 
     @staticmethod
     def _resolve_nhs_result_url(href: str) -> str:

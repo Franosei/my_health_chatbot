@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from backend.audit_models import ClinicalAuditTrace
+from backend.clinical_decision_support import ClinicalDecision, ClinicalDecisionSupportEngine
 from backend.evidence_ranker import EvidenceRanker
 from backend.intent_risk_classifier import IntentClassification, IntentRiskClassifier
 from backend.policy_engine import PolicyEngine, PolicyDecision
@@ -51,6 +52,7 @@ class ClinicalOrchestrator:
 
         self.role_router = RoleRouter()
         self.intent_classifier = IntentRiskClassifier()
+        self.decision_support = ClinicalDecisionSupportEngine()
         self.policy_engine = PolicyEngine()
         self.evidence_ranker = EvidenceRanker()
 
@@ -111,13 +113,20 @@ class ClinicalOrchestrator:
                 expanded_queries = [question]
 
         # ── Step 5: Policy gate ────────────────────────────────────────────────
+        clinical_decision = self.decision_support.assess(question, intent, role_config)
+        intent = self.decision_support.apply_to_intent(intent, clinical_decision)
+
         policy_decision = self.policy_engine.gate(intent, role_config, question)
         if policy_decision.action == "escalate_only" and policy_decision.crisis_response:
             return self._build_crisis_bundle(question, normalized_user, role_config)
 
         # ── Step 6: Pathway context → augment search queries ──────────────────
         pathway_context = self._get_pathway_context(intent, role_config)
-        search_queries = self._augment_queries_with_pathway(expanded_queries, pathway_context)
+        search_queries = self._augment_queries_with_pathway(
+            expanded_queries,
+            pathway_context,
+            clinical_decision,
+        )
 
         # ── Step 7: Parallel retrieval ─────────────────────────────────────────
         official_sources: List[Dict] = []
@@ -127,7 +136,10 @@ class ClinicalOrchestrator:
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             official_future = executor.submit(
-                self.official_guidance.search, search_queries, preferred or None
+                self.official_guidance.search,
+                search_queries,
+                1,
+                preferred or None,
             )
             pubmed_future = executor.submit(
                 self._retrieve_pubmed_for_queries, search_queries, normalized_user
@@ -167,6 +179,7 @@ class ClinicalOrchestrator:
             personal_context=personal_context,
             policy_decision=policy_decision,
             pathway_context=pathway_context,
+            clinical_decision=clinical_decision,
             no_sources=not combined_sources,
         )
 
@@ -187,6 +200,7 @@ class ClinicalOrchestrator:
             "intent": intent,
             "policy_decision": policy_decision,
             "pathway_context": pathway_context,
+            "clinical_decision": clinical_decision,
         }
 
     # ── Bundle builders ────────────────────────────────────────────────────────
@@ -295,6 +309,7 @@ class ClinicalOrchestrator:
         personal_context: List[Dict],
         policy_decision: PolicyDecision,
         pathway_context,
+        clinical_decision: ClinicalDecision,
         no_sources: bool = False,
     ) -> str:
         parts = []
@@ -305,6 +320,31 @@ class ClinicalOrchestrator:
                 f"- {item['title']}: {item['snippet']}" for item in personal_context
             )
             parts.append(f"Personal context:\n{personal_lines}")
+
+        if clinical_decision:
+            decision_lines = [
+                f"- Pathway: {clinical_decision.pathway_label}",
+                f"- Urgency: {clinical_decision.urgency_level}",
+                f"- Primary action: {clinical_decision.next_step}",
+                f"- Summary: {clinical_decision.summary}",
+            ]
+            decision_lines.extend(
+                f"- Immediate action: {item}"
+                for item in clinical_decision.immediate_actions[:4]
+            )
+            decision_lines.extend(
+                f"- Monitor now: {item}"
+                for item in clinical_decision.monitoring_priorities[:3]
+            )
+            if clinical_decision.triggered_rules:
+                decision_lines.extend(
+                    f"- Rule hit: {item.finding}"
+                    for item in clinical_decision.triggered_rules
+                )
+            parts.append(
+                "Deterministic clinical decision support output (must not be contradicted):\n"
+                + "\n".join(decision_lines)
+            )
 
         # Policy notes for LLM
         if policy_decision.context_notes:
@@ -369,16 +409,21 @@ class ClinicalOrchestrator:
         return list(dict.fromkeys(q for q in queries if q))[:3]
 
     def _augment_queries_with_pathway(
-        self, queries: List[str], pathway_context
+        self, queries: List[str], pathway_context, clinical_decision: Optional[ClinicalDecision] = None
     ) -> List[str]:
-        if not pathway_context or not pathway_context.additional_search_terms:
-            return queries
         augmented = list(queries)
+        if not pathway_context or not pathway_context.additional_search_terms:
+            augmented = list(queries)
         # Add up to 2 pathway-specific terms to the query list
-        for term in pathway_context.additional_search_terms[:2]:
-            combined = f"{queries[0]} {term}"
-            if combined not in augmented:
-                augmented.append(combined)
+        if pathway_context and pathway_context.additional_search_terms:
+            for term in pathway_context.additional_search_terms[:2]:
+                combined = f"{queries[0]} {term}"
+                if combined not in augmented:
+                    augmented.append(combined)
+        if clinical_decision:
+            for term in clinical_decision.search_terms[:2]:
+                if term not in augmented:
+                    augmented.append(term)
         return augmented[:5]
 
     # ── Source processing (mirrors RAGEngine helpers) ──────────────────────────
