@@ -32,6 +32,7 @@ def get_pathway_context(
         safety_rules=[
             "Always check for red flag symptoms before educational content: unexplained weight loss, "
             "haemoptysis, dysphagia, postmenopausal bleeding, rectal bleeding, severe headache.",
+            "After red flags are considered, give the clearest safe disposition and timeframe rather than broad caution alone.",
             "For fever: include serious bacterial infection red flags (petechial rash, neck stiffness, "
             "photophobia, purpuric rash).",
             "Sepsis red flags must always be escalated: confusion, tachycardia, hypotension, "

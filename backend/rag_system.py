@@ -1098,12 +1098,11 @@ class RAGEngine:
             )
 
         return (
-            "## Clinical Takeaway\n"
-            "I could not retrieve enough reliable live evidence for this question right now, "
-            "so I do not want to overstate an answer.\n\n"
-            "## Recommended Next Step\n"
-            "Please try rephrasing the question, narrowing it to a condition, treatment, or population, "
-            "or ask a clinician if you need a decision that affects immediate care."
+            "## Working Impression\n"
+            "I could not retrieve enough reliable live evidence for this question right now to give a fully sourced answer.\n\n"
+            "## What To Do Now\n"
+            "Please narrow the question to a specific symptom, condition, treatment, or population, "
+            "or contact a clinician directly if this affects a decision that needs to be made now."
             + personal_note
         )
 

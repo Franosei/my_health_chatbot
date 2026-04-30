@@ -370,8 +370,10 @@ class ClinicalOrchestrator:
         elif no_sources:
             parts.append(
                 "Note: No live evidence was retrieved for this query. "
-                "Answer from your clinical training knowledge, clearly indicating this is general guidance "
-                "and not based on retrieved literature. Advise the user to seek professional assessment where appropriate."
+                "Answer from your general clinical knowledge, clearly indicating this is general guidance "
+                "and not based on retrieved literature. Still provide a clear disposition and concrete next-step "
+                "management plan where possible. Do not present yourself as a senior specialist, and do not fall "
+                "back to generic hedging when a safer proportionate route can be stated."
             )
 
         return "\n\n".join(parts)
@@ -598,16 +600,16 @@ class ClinicalOrchestrator:
                 "Insufficient live evidence was retrieved for this query. "
                 "Please consult current local guidelines, BNF, or NICE CKS directly.\n\n"
                 "## Recommended Action\n"
-                "Try a more specific query or consult the relevant NICE guideline directly."
+                "Use the relevant local pathway or guideline now, or rephrase the query with the exact condition, "
+                "drug, population, or decision point you need."
                 + personal_note
             )
         return (
-            "## Clinical Takeaway\n"
-            "I could not retrieve enough reliable live evidence for this question right now, "
-            "so I do not want to overstate an answer.\n\n"
-            "## Recommended Next Step\n"
-            "Please try rephrasing the question, narrowing it to a condition, treatment, or population, "
-            "or ask a clinician if you need a decision that affects immediate care."
+            "## Working Impression\n"
+            "I could not retrieve enough reliable live evidence for this question right now to give a fully sourced answer.\n\n"
+            "## What To Do Now\n"
+            "Please narrow the question to a specific symptom, condition, treatment, or population, "
+            "or contact a clinician directly if this affects a decision that needs to be made now."
             + personal_note
         )
 

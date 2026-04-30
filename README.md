@@ -49,7 +49,7 @@ This repository is more than a simple chatbot demo. It includes account persiste
 8. The app expands the question into search-friendly variants.
 9. It retrieves live official guidance from NHS and MedlinePlus, open-access biomedical evidence from Europe PMC / PubMed Central, and medication label interaction data from openFDA when relevant.
 10. Retrieved material and personal context are ranked semantically with OpenAI embeddings.
-11. Sources are deduplicated, tiered, and passed to the LLM for a cited answer.
+11. Sources are deduplicated, tiered, and passed to the LLM for a cited answer that aims to be safe, competent, and management-specific rather than broadly cautious.
 12. The app generates a structured triage summary and stores it with the trace.
 13. The final answer, trace, triage summary, and refreshed longitudinal memory are saved back to the user account.
 
@@ -69,9 +69,10 @@ The main chat workspace is now designed around longitudinal use, not one-off pro
 The app does not answer every user in the same voice. It adapts response style, evidence framing, and escalation thresholds based on the selected role.
 
 - Patients and caregivers get plainer language and stronger escalation nudges
-- Doctors, nurses, midwives, and physiotherapists get more clinically structured responses
+- Doctors, nurses, midwives, and physiotherapists get more clinically structured responses with clearer disposition and initial management steps
 - Crisis patterns are screened early so emergency guidance can be returned immediately
 - Policy gates add extra caution for pregnancy, paediatrics, elderly polypharmacy, medication dosing, diagnosis-seeking questions, and mental health topics
+- The response layer is tuned to be safe and competent, but not to present itself as operating at a confident senior clinical or specialist level
 - Structured triage is normalized against a fallback safety floor so the final card cannot de-escalate below the minimum safe route
 - Moderation runs before retrieval so unsafe requests can be blocked early
 - AI-generated images and videos are only triggered by explicit user requests and are filtered away from unsafe visual topics

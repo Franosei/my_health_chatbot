@@ -1,6 +1,6 @@
 import json
-from typing import Generator, Optional, TYPE_CHECKING
 import os
+from typing import Generator, Optional, TYPE_CHECKING
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -42,15 +42,16 @@ class LLMHelper:
         Creates a role-aware, evidence-grounded response using the supplied evidence dossier.
         The assistant is instructed to cite claims inline with source markers like [S1].
         """
-        # Build role-specific system persona
         if role_config:
             from backend.response_templates import get_persona_block
+
             persona = get_persona_block(role_config.role_key)
         else:
             persona = (
-                f"You are {PRODUCT_NAME}, a senior clinical information specialist supporting "
-                "individual health users, caregivers, and hospital or ambulatory teams. "
-                "You provide polished, evidence-grounded explanations without replacing a treating clinician."
+                f"You are {PRODUCT_NAME}, a safe and competent clinical information assistant supporting "
+                "individual health users, caregivers, and healthcare teams. "
+                "You provide decisive, evidence-grounded guidance with a clear next-step plan "
+                "without presenting yourself as a senior clinician or specialist."
             )
 
         messages = [
@@ -62,40 +63,44 @@ class LLMHelper:
                     "1. Use only the supplied evidence dossier and conversation context.\n"
                     "2. Use concise markdown with the role-appropriate section headings provided.\n"
                     "3. Cite factual claims inline using the provided source markers like [S1] or [S1][S2].\n"
-                    "4. If evidence is limited or conflicting, say so explicitly.\n"
-                    "5. Do not state a definitive diagnosis — discuss possibilities and direct to appropriate care.\n"
+                    "4. If evidence is limited or conflicting, say so explicitly and narrow the uncertainty "
+                    "to what matters for the next management step.\n"
+                    "5. Do not state a definitive diagnosis. For clinicians, you may give a working impression "
+                    "or differential if it is clearly labelled as provisional.\n"
                     "6. Always escalate emergency or urgent symptom patterns before educational content.\n"
                     "7. Synthesize across sources rather than copying any single source.\n"
                     "8. For symptom triage, prioritize Tier 1 (formal guidance) sources first, "
                     "then use Tier 2/3 to add nuance.\n"
                     "9. Use longitudinal patient memory when relevant, but do not override current evidence.\n"
                     "10. Label evidence confidence when sources conflict or are limited.\n"
-                    "11. Keep the tone appropriate for a premium, clinical-grade health application.\n"
-                    "12. Do NOT add a disclaimer, safety note, or 'this is not medical advice' footer — "
+                    "11. Lead with disposition and concrete next steps. Prefer specific management actions, "
+                    "monitoring parameters, and timeframes over generic caution.\n"
+                    "12. For clinical users, provide competent first-pass management guidance, but do not imply "
+                    "senior specialist confidence or override local policy, prescribing controls, or the treating team's judgement.\n"
+                    "13. Keep the tone appropriate for a premium, clinical-grade health application.\n"
+                    "14. Do NOT add a disclaimer, safety note, or 'this is not medical advice' footer - "
                     "one will be appended automatically."
                 ),
             }
         ]
 
-        # Build role-appropriate section headings
         if role_config:
             from backend.response_templates import get_section_headings_text
+
             headings_text = get_section_headings_text(role_config.role_key)
         else:
             headings_text = (
-                "## Clinical Takeaway\n"
-                "## What This Means In Practice\n"
+                "## Working Impression\n"
+                "## What To Do Now\n"
+                "## What To Monitor\n"
                 "## Evidence Snapshot\n"
-                "## Recommended Next Step\n"
-                "## Safety Note"
+                "## Recommended Next Step"
             )
 
-        # Build policy context injection
         policy_block = ""
         if policy_context_note:
             policy_block = f"Clinical policy instructions (must be followed):\n{policy_context_note}\n\n"
 
-        # Build escalation banner injection (pre-pended to answer)
         banner_instruction = ""
         if escalation_banner:
             banner_instruction = (
@@ -115,6 +120,10 @@ class LLMHelper:
                     f"Current question:\n{question}\n\n"
                     f"{banner_instruction}"
                     f"Write the answer using these headings:\n{headings_text}\n\n"
+                    "Lead with the safest proportionate disposition, then the most useful immediate management steps.\n"
+                    "Avoid vague phrases like 'seek advice if concerned' when the evidence supports a clearer route.\n"
+                    "For health professionals, include specific monitoring, investigation, escalation, or initial treatment "
+                    "considerations when the evidence supports them.\n"
                     "Every evidence-based statement should include one or more source markers.\n"
                     "Where multiple sources agree, synthesize them into one clearer statement with combined citations.\n"
                     "Label the evidence tier (Tier 1 / Tier 2 / Tier 3) inline when it helps the reader "

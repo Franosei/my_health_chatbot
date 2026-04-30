@@ -50,7 +50,7 @@ def get_pathway_context(
     else:
         safety_rules.append(
             "Clinician-facing: include therapeutic range, monitoring parameters, "
-            "and evidence class for prescribing decisions."
+            "evidence class, and the clearest safe initial management action for prescribing decisions."
         )
 
     return PathwayContext(

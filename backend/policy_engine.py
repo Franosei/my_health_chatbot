@@ -135,7 +135,7 @@ class PolicyEngine:
             decision.add_gate(gate)
             decision.context_notes.append(
                 "POLICY NOTE: This question has been classified as urgent. "
-                "Prioritise red flag information and immediate action guidance in your response."
+                "Prioritise red flag information, disposition, and immediate action guidance in your response."
             )
         else:
             # Non-clinical roles — force escalation banner
@@ -149,7 +149,7 @@ class PolicyEngine:
             decision.escalation_banner = build_escalation_banner(reason, role_config.role_key)
             decision.context_notes.append(
                 f"POLICY NOTE: Urgent risk level. Always lead with escalation guidance. "
-                f"Reason: {reason}"
+                f"Then give the clearest safe next step and timeframe. Reason: {reason}"
             )
 
     def _gate_pregnancy(
@@ -176,7 +176,7 @@ class PolicyEngine:
             "Apply heightened caution for all medication, dosage, and intervention advice. "
             "Reference NICE/RCOG guidelines specifically. "
             "Never recommend stopping or starting prescription medication without explicit NICE guidance. "
-            "Always include obstetric red flags where relevant."
+            "Always include obstetric red flags where relevant and state the safest immediate care route."
         )
         if role_config.role_key not in ("midwife", "doctor"):
             decision.escalation_banner = build_escalation_banner(
@@ -228,7 +228,8 @@ class PolicyEngine:
             decision.context_notes.append(
                 "POLICY NOTE: Medication query for a clinician. "
                 "Reference BNF, NICE, or MHRA guidance. "
-                "Show evidence uncertainty for off-label or non-guideline uses explicitly."
+                "Show evidence uncertainty for off-label or non-guideline uses explicitly. "
+                "When the evidence supports it, state concrete monitoring parameters, contraindications, and escalation thresholds."
             )
         else:
             # Lay roles get pharmacist/GP referral note
@@ -242,7 +243,7 @@ class PolicyEngine:
                 "POLICY NOTE: Medication question from a patient or caregiver. "
                 "Do not provide specific dosage advice for prescription medicines. "
                 "Always recommend verification with a pharmacist or GP. "
-                "Use BNF/NICE as the source basis."
+                "Use BNF/NICE as the source basis and give the clearest safe care route."
             )
 
     def _gate_diagnosis_request(
@@ -266,7 +267,7 @@ class PolicyEngine:
             decision.context_notes.append(
                 "POLICY NOTE: Diagnostic question from a clinician. "
                 "Differential discussion is appropriate but must be clearly framed as hypothesis, "
-                "not definitive diagnosis. Label evidence quality explicitly."
+                "not definitive diagnosis. Label evidence quality explicitly and link the differential to immediate management priorities."
             )
         else:
             gate = PolicyGateRecord(
@@ -279,7 +280,7 @@ class PolicyEngine:
                 "POLICY NOTE: This user appears to be seeking a diagnosis. "
                 "You must NOT provide a definitive diagnosis. "
                 "Explain possible causes and what the symptoms may suggest, "
-                "but always direct them to see a clinician for diagnosis."
+                "but always direct them to the clearest appropriate care route for diagnosis."
             )
 
     def _gate_elderly_polypharmacy(

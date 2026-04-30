@@ -3,20 +3,20 @@ Role-specific response templates, escalation banners, evidence tier labels,
 and clinical safety disclaimers for the product UI.
 """
 from __future__ import annotations
+
 from typing import List
 
 from backend.product_config import PRODUCT_NAME
 
 
-# ── Crisis template ────────────────────────────────────────────────────────────
 CRISIS_RESPONSE = f"""\
-## ⚠ Urgent Safety Notice
+## Urgent Safety Notice
 
 Based on what you have described, this may be an emergency situation.
 
 **Please act immediately:**
 - **Call 999** (UK emergency services) or your local emergency number right now
-- If in the US, call **911**
+- If you are in the US, call **911**
 - If you are in immediate danger, go to your nearest Emergency Department
 - Tell them exactly what you have told me
 
@@ -33,11 +33,10 @@ Based on what you have described, this may be an emergency situation.
 {PRODUCT_NAME} is not able to provide emergency care. Please reach out to a real person right now.
 """
 
-# ── Evidence tier labels ───────────────────────────────────────────────────────
 TIER_LABELS = {
-    1: "Tier 1 — Formal Guidance",
-    2: "Tier 2 — Review Evidence",
-    3: "Tier 3 — Primary Research",
+    1: "Tier 1 - Formal Guidance",
+    2: "Tier 2 - Review Evidence",
+    3: "Tier 3 - Primary Research",
 }
 
 TIER_DESCRIPTIONS = {
@@ -56,7 +55,6 @@ def get_tier_description(tier: int) -> str:
     return TIER_DESCRIPTIONS.get(tier, "Evidence source")
 
 
-# ── Escalation banners ─────────────────────────────────────────────────────────
 def build_escalation_banner(reason: str, role_key: str = "patient") -> str:
     """Returns a prominent escalation notice to prepend to an answer."""
     if role_key in ("doctor", "nurse", "midwife", "physiotherapist"):
@@ -106,60 +104,59 @@ def build_no_diagnosis_disclaimer(role_key: str = "patient") -> str:
     )
 
 
-# ── Role-specific section headings ─────────────────────────────────────────────
 ROLE_SECTION_HEADINGS: dict[str, List[str]] = {
     "patient": [
-        "## What This May Mean",
+        "## Likely Explanation",
         "## What To Do Now",
-        "## When To Seek Urgent Help",
-        "## When To Book Routine Care",
+        "## What To Monitor",
+        "## Get Urgent Help If",
         "## Evidence Basis",
     ],
     "doctor": [
-        "## Clinical Summary",
-        "## Differential Considerations",
-        "## Red Flags",
+        "## Working Impression",
+        "## Immediate Management",
+        "## Investigations / Monitoring",
+        "## Escalate Now If",
         "## Evidence Summary",
-        "## Uncertainty & Limitations",
     ],
     "nurse": [
         "## Disposition",
-        "## Immediate Actions",
+        "## Immediate Nursing Actions",
         "## Monitor Right Now",
         "## Escalate Immediately If",
         "## What To Tell The Patient Or Family",
         "## Evidence Basis",
     ],
     "midwife": [
-        "## Clinical Interpretation",
-        "## Warning Signs & Red Flags",
-        "## Referral Triggers",
-        "## Patient Education Points",
+        "## Working Obstetric View",
+        "## Immediate Actions",
+        "## Monitor / Reassess",
+        "## Escalate Immediately If",
+        "## Patient Advice",
         "## Evidence Basis",
     ],
     "physiotherapist": [
-        "## Likely MSK Interpretation",
-        "## Red Flags & Contraindications",
-        "## Initial Management Principles",
-        "## Movement Advice",
-        "## Referral Triggers",
+        "## Working MSK Interpretation",
+        "## Immediate Management",
+        "## Loading / Movement Advice",
+        "## Escalate Or Refer If",
         "## Evidence Basis",
     ],
     "caregiver": [
-        "## What This May Mean",
+        "## What This Most Likely Means",
         "## What To Do Now",
-        "## When To Seek Urgent Help",
-        "## Caregiver Support Points",
+        "## What To Monitor",
+        "## Get Urgent Help If",
+        "## Caregiver Actions",
         "## Evidence Basis",
     ],
 }
 
-# Fallback headings for unknown roles
 DEFAULT_SECTION_HEADINGS = [
-    "## Clinical Takeaway",
-    "## What This Means In Practice",
+    "## Working Impression",
+    "## What To Do Now",
+    "## What To Monitor",
     "## Evidence Snapshot",
-    "## Recommended Next Step",
 ]
 
 
@@ -172,29 +169,32 @@ def get_section_headings_text(role_key: str) -> str:
     return "\n".join(headings)
 
 
-# ── Role-specific persona blocks ───────────────────────────────────────────────
 ROLE_PERSONA_BLOCKS: dict[str, str] = {
     "patient": (
         "You are speaking with a patient or individual seeking health information. "
-        "Use plain, accessible language — avoid unexplained medical jargon. "
-        "Structure your response with clear, actionable guidance on what to do. "
-        "Always include when to seek urgent help before detailed educational content. "
-        "Use a warm, reassuring, but honest tone."
+        "Use plain, accessible language and avoid unexplained medical jargon. "
+        "Give a clear working explanation without overstating certainty. "
+        "Be specific about what the person should do next, including timeframe and where to seek help. "
+        "Prefer a clear route such as self-care, pharmacist, GP, same-day review, 111, or emergency care over vague reassurance. "
+        "Use a warm, calm, and direct tone."
     ),
     "doctor": (
         "You are supporting a qualified medical doctor. "
         "Use precise clinical terminology. "
-        "Present differentials concisely, clearly label evidence quality, and surface "
-        "clinical uncertainty explicitly. "
+        "Act like a safe, competent clinical colleague, not a senior specialist giving definitive consultant-level direction. "
+        "Lead with the working impression, disposition, and practical initial management steps supported by the evidence. "
+        "Present key differentials concisely, clearly label evidence quality, and surface clinical uncertainty explicitly. "
+        "Be decisive when the evidence or deterministic pathway supports a clear route. "
         "Avoid over-explaining basic clinical concepts. "
         "Include relevant NICE/SIGN guideline references where applicable. "
-        "Do not overstate the strength of evidence — be explicit about limitations."
+        "Do not overstate the strength of evidence, and defer specialty-level or definitive decisions when the evidence is thin."
     ),
     "nurse": (
         "You are supporting a registered nurse. "
         "Use intermediate clinical language appropriate for nursing practice. "
-        "Lead with disposition and immediate actions before explanation. "
+        "Lead with disposition and immediate nursing actions before explanation. "
         "Focus on monitoring parameters, escalation thresholds, and what needs doing right now. "
+        "Give a specific, practical first-pass management plan rather than broad caution alone. "
         "Keep teaching brief and only include it when it changes the immediate decision. "
         "Include patient communication points that can be used directly with patients or families. "
         "Reference NICE guidelines and trust protocol considerations where relevant."
@@ -203,28 +203,32 @@ ROLE_PERSONA_BLOCKS: dict[str, str] = {
         "You are supporting a registered midwife. "
         "Apply heightened safety thresholds for all pregnancy, postpartum, and newborn-related content. "
         "Use maternity-specific clinical terminology. "
-        "Always include obstetric red flags, referral triggers, and RCOG or NICE guidelines where relevant. "
+        "Lead with the safest proportionate disposition and the immediate maternity actions required now. "
+        "Always include obstetric red flags, referral triggers, and RCOG or NICE guidance where relevant. "
         "For any medication or intervention question, specifically consider pregnancy safety."
     ),
     "physiotherapist": (
         "You are supporting a physiotherapist. "
         "Focus on MSK interpretation, functional movement, and rehabilitation principles. "
         "Use physiotherapy-specific terminology (ROM, load management, neural tension, etc.). "
+        "Give a specific initial management plan, including load advice, contraindications, and onward referral thresholds. "
         "Always include neurovascular red flags and non-mechanical warning signs that require "
         "onward referral. Reference NICE MSK guidelines and NICE CKS where relevant."
     ),
     "caregiver": (
         "You are speaking with a caregiver supporting a patient or family member. "
         "Use accessible language with empathetic framing. "
-        "Focus on what the caregiver can practically do and when to seek professional help. "
+        "Focus on what the caregiver can practically do next and when to seek professional help. "
+        "Prefer specific care routes and timeframes over general caution. "
         "Include caregiver-specific support considerations. "
         "Always include clear escalation guidance."
     ),
 }
 
 DEFAULT_PERSONA_BLOCK = (
-    f"You are {PRODUCT_NAME}, a senior clinical information specialist. "
-    "Provide polished, evidence-grounded explanations using the supplied evidence dossier."
+    f"You are {PRODUCT_NAME}, a safe and competent clinical information assistant. "
+    "Provide decisive, evidence-grounded guidance with a clear next-step plan, "
+    "but do not present yourself as operating at a confident senior clinical or specialist level."
 )
 
 
