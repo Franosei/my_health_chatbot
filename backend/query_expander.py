@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Optional
 
 import openai
 from dotenv import load_dotenv
@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 class QueryExpander:
     """
     Uses an LLM to turn a user's question into retrieval-friendly PubMed search phrases.
+    When patient history context is supplied, generates additional queries that capture
+    causal and dependency relationships between known conditions and the current question.
     """
 
     def __init__(self, model: str = "gpt-4o-mini"):
@@ -21,7 +23,7 @@ class QueryExpander:
 
     def expand(self, user_question: str) -> List[str]:
         """
-        Generates focused PubMed search topics from a user question.
+        Generates focused PubMed search topics from a user question (no patient history).
         """
         normalized_question = " ".join((user_question or "").split()).strip()
         cached = self.cache.get(normalized_question)
@@ -45,6 +47,57 @@ class QueryExpander:
         content = response.choices[0].message.content.strip()
         queries = self._parse_response(content) or [normalized_question]
         self.cache[normalized_question] = queries
+        return queries
+
+    def expand_with_patient_context(
+        self,
+        user_question: str,
+        patient_history_summary: str,
+    ) -> List[str]:
+        """
+        Generates history-enriched PubMed queries that capture causal and dependency
+        relationships between the patient's known conditions and their current question.
+        The LLM uses the patient's actual stored history to form combined queries —
+        no conditions or symptom pairs are hardcoded here.
+        """
+        normalized_question = " ".join((user_question or "").split()).strip()
+        cleaned_history = (patient_history_summary or "").strip()
+        if not cleaned_history:
+            return self.expand(normalized_question)
+
+        cache_key = f"{normalized_question}||{cleaned_history[:120]}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        prompt = (
+            "You are helping a clinical evidence platform search PubMed Central for a specific patient.\n\n"
+            "The patient has this known health background:\n"
+            f"{cleaned_history}\n\n"
+            "Their current question is:\n"
+            f"{normalized_question}\n\n"
+            "Generate exactly 3 short, precise PubMed search queries.\n"
+            "Rules:\n"
+            "- At least one query must reflect the interaction between the patient's known history and "
+            "their current presentation. Think: how does this patient's background change the clinical "
+            "picture, the differential, or the management of what they are asking about? Capture that "
+            "relationship in a specific combined query.\n"
+            "- The remaining queries should cover the current question from different evidence angles "
+            "(e.g. mechanism, management, risk stratification).\n"
+            "- Do not repeat the same concept across queries.\n"
+            "- Return only the bare queries, one per line, no numbering, no quotes.\n\n"
+            "Search queries:"
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+
+        content = response.choices[0].message.content.strip()
+        queries = self._parse_response(content) or [normalized_question]
+        self.cache[cache_key] = queries
         return queries
 
     def expand_with_pathway(self, user_question: str, pathway_terms: List[str]) -> List[str]:

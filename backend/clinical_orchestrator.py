@@ -14,6 +14,7 @@ from backend.audit_models import ClinicalAuditTrace
 from backend.clinical_decision_support import ClinicalDecision, ClinicalDecisionSupportEngine
 from backend.evidence_ranker import EvidenceRanker
 from backend.intent_risk_classifier import IntentClassification, IntentRiskClassifier
+from backend.patient_history import PatientHistoryContext, build_patient_history_context
 from backend.policy_engine import PolicyEngine, PolicyDecision
 from backend.response_templates import CRISIS_RESPONSE
 from backend.role_router import RoleConfig, RoleRouter
@@ -62,6 +63,10 @@ class ClinicalOrchestrator:
         user: Optional[str],
         user_profile: dict,
         longitudinal_memory_summary: str,
+        medications: Optional[List[Dict]] = None,
+        triage_summaries: Optional[List[Dict]] = None,
+        allergies: Optional[List[Dict]] = None,
+        vitals: Optional[List[Dict]] = None,
     ) -> Dict:
         """
         Full clinical orchestration pipeline.
@@ -73,6 +78,16 @@ class ClinicalOrchestrator:
         # ── Step 1: Role resolution (instant) ─────────────────────────────────
         clinical_role = user_profile.get("clinical_role") or user_profile.get("role", "")
         role_config = self.role_router.resolve(clinical_role)
+
+        # ── Step 1b: Build patient history context from previous visits ────────
+        patient_history: PatientHistoryContext = build_patient_history_context(
+            longitudinal_memory=longitudinal_memory_summary,
+            medications=medications or [],
+            triage_summaries=triage_summaries or [],
+            user_profile=user_profile,
+            allergies=allergies or [],
+            vitals=vitals or [],
+        )
 
         # ── Step 2: Crisis pre-screen (regex, instant) ─────────────────────────
         if self.intent_classifier._crisis_prescreen(question):
@@ -91,14 +106,19 @@ class ClinicalOrchestrator:
         intent: IntentClassification
         expanded_queries: List[str]
 
+        history_context = patient_history.as_prompt_block() if not patient_history.is_empty() else ""
+
         with ThreadPoolExecutor(max_workers=2) as executor:
             intent_future = executor.submit(
                 self.intent_classifier.classify,
                 question,
                 user_profile,
                 role_config.role_key,
+                patient_history,
             )
-            expand_future = executor.submit(self._build_search_queries, question)
+            expand_future = executor.submit(
+                self._build_search_queries, question, history_context
+            )
 
             try:
                 intent = intent_future.result()
@@ -116,7 +136,7 @@ class ClinicalOrchestrator:
         clinical_decision = self.decision_support.assess(question, intent, role_config)
         intent = self.decision_support.apply_to_intent(intent, clinical_decision)
 
-        policy_decision = self.policy_engine.gate(intent, role_config, question)
+        policy_decision = self.policy_engine.gate(intent, role_config, question, patient_history)
         if policy_decision.action == "escalate_only" and policy_decision.crisis_response:
             return self._build_crisis_bundle(question, normalized_user, role_config)
 
@@ -402,13 +422,20 @@ class ClinicalOrchestrator:
 
     # ── Query building ─────────────────────────────────────────────────────────
 
-    def _build_search_queries(self, question: str) -> List[str]:
+    def _build_search_queries(self, question: str, patient_history_context: str = "") -> List[str]:
         queries = [question]
         try:
-            queries.extend(self.query_expander.expand(question))
+            if patient_history_context:
+                queries.extend(
+                    self.query_expander.expand_with_patient_context(
+                        question, patient_history_context
+                    )
+                )
+            else:
+                queries.extend(self.query_expander.expand(question))
         except Exception as exc:
             print(f"Query expansion failed: {exc}")
-        return list(dict.fromkeys(q for q in queries if q))[:3]
+        return list(dict.fromkeys(q for q in queries if q))[:4]
 
     def _augment_queries_with_pathway(
         self, queries: List[str], pathway_context, clinical_decision: Optional[ClinicalDecision] = None

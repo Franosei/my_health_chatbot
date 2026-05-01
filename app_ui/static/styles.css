@@ -941,6 +941,22 @@ a:hover {
     text-transform: uppercase;
 }
 
+/* ── Sidebar form inputs: typed text must be dark against white background ── */
+[data-testid="stSidebar"] .stTextInput input,
+[data-testid="stSidebar"] .stTextArea textarea,
+[data-testid="stSidebar"] .stNumberInput input,
+[data-testid="stSidebar"] .stDateInput input {
+    color: var(--navy) !important;
+    -webkit-text-fill-color: var(--navy) !important;
+}
+
+[data-testid="stSidebar"] .stTextInput input::placeholder,
+[data-testid="stSidebar"] .stTextArea textarea::placeholder {
+    color: rgba(22, 59, 71, 0.45) !important;
+    -webkit-text-fill-color: rgba(22, 59, 71, 0.45) !important;
+    opacity: 1;
+}
+
 /* ── Vulnerability Notice ────────────────────────────────────────────────── */
 .vulnerability-notice {
     background: #fff9e8;

@@ -356,12 +356,19 @@ class RAGEngine:
         user_profile = UserStore.get_user_profile(normalized_user) if normalized_user else {}
         medications = UserStore.get_medications(normalized_user) if normalized_user else []
         symptom_logs = UserStore.get_symptom_logs(normalized_user, limit=None) if normalized_user else []
+        triage_summaries = UserStore.get_triage_summaries(normalized_user, limit=None) if normalized_user else []
+        allergies = UserStore.get_allergies(normalized_user) if normalized_user else []
+        vitals = UserStore.get_vitals(normalized_user) if normalized_user else []
 
         bundle = self._orchestrator.prepare_bundle(
             question=question,
             user=normalized_user,
             user_profile=user_profile,
             longitudinal_memory_summary=longitudinal_memory_summary,
+            medications=medications,
+            triage_summaries=triage_summaries,
+            allergies=allergies,
+            vitals=vitals,
         )
         if bundle.get("kind") == "answer":
             medication_check = self._build_medication_check(
@@ -463,28 +470,48 @@ class RAGEngine:
         if policy_decision and policy_decision.vulnerability_notice:
             answer_markdown = policy_decision.vulnerability_notice + answer_markdown
 
-        trace_id = f"trace-{uuid4().hex[:12]}"
         intent = bundle.get("intent")
         role_config = bundle.get("role_config")
-
-        from backend.evidence_ranker import EvidenceRanker
-        tiers_present = EvidenceRanker.get_tiers_present(bundle["combined_sources"])
+        risk_level = intent.risk_level if intent else "routine"
+        combined_sources = bundle.get("combined_sources", [])
         medication_check = bundle.get("medication_check", {})
         clinical_decision = bundle.get("clinical_decision")
+
+        # Build triage summary first so safety netting can use its LLM-derived triggers
         triage_summary = self._build_triage_summary(
             question=question,
             answer_markdown=answer_markdown,
-            intent=bundle.get("intent"),
+            intent=intent,
             policy_decision=policy_decision,
             clinical_decision=clinical_decision,
         )
+
+        # Append structured safety netting block — triggers come from triage_summary, no hardcoding
+        safety_net = self._build_safety_net_block(risk_level, triage_summary, role_config)
+        if safety_net and "**Return immediately if**" not in answer_markdown:
+            answer_markdown = answer_markdown + safety_net
+
+        # Claim-source alignment check (post-generation, only when sources exist)
+        claim_alignment = []
+        if combined_sources:
+            try:
+                claim_alignment = self.llm.check_claim_source_alignment(
+                    answer_markdown=raw_answer,
+                    source_briefings=combined_sources,
+                )
+            except Exception:
+                claim_alignment = []
+
+        trace_id = f"trace-{uuid4().hex[:12]}"
+        from backend.evidence_ranker import EvidenceRanker
+        tiers_present = EvidenceRanker.get_tiers_present(combined_sources)
 
         trace = {
             "trace_id": trace_id,
             "created_at": self._utc_now(),
             "question": question,
             "answer_preview": raw_answer[:280],
-            "sources": bundle["combined_sources"],
+            "sources": combined_sources,
             "personal_context": bundle["personal_context"],
             "retrieval_mode": bundle["retrieval_mode"],
             "expanded_queries": bundle["expanded_queries"],
@@ -509,6 +536,7 @@ class RAGEngine:
             "guideline_references": [
                 item.as_dict() for item in clinical_decision.guideline_references
             ] if clinical_decision else [],
+            "claim_alignment": claim_alignment,
         }
         if bundle["normalized_user"]:
             UserStore.save_interaction_trace(bundle["normalized_user"], trace)
@@ -523,7 +551,7 @@ class RAGEngine:
         return {
             "answer_markdown": answer_markdown,
             "answer_text": raw_answer,
-            "sources": bundle["combined_sources"],
+            "sources": combined_sources,
             "personal_context": bundle["personal_context"],
             "longitudinal_memory": bundle["longitudinal_memory_summary"],
             "triage_summary": triage_summary,
@@ -597,19 +625,33 @@ class RAGEngine:
             medication_summary=medication_summary,
         )
 
-    def build_gp_summary_pdf_for_user(self, user: Optional[str]) -> bytes:
+    def build_summary_pdf_for_user(self, user: Optional[str]) -> bytes:
         normalized_user = user.strip().lower() if user else None
         if not normalized_user:
             return b""
 
-        return build_gp_summary_pdf(
-            user_profile=UserStore.get_user_profile(normalized_user),
+        user_profile = UserStore.get_user_profile(normalized_user)
+        role_key = (
+            user_profile.get("clinical_role") or user_profile.get("role", "")
+        ).strip().lower()
+
+        from backend.gp_summary import build_summary_pdf
+        return build_summary_pdf(
+            user_profile=user_profile,
             symptom_logs=UserStore.get_symptom_logs(normalized_user, limit=None),
             medications=UserStore.get_medications(normalized_user),
             uploads=UserStore.get_uploads(normalized_user),
             longitudinal_memory=self.get_combined_longitudinal_memory(normalized_user),
-            latest_triage=UserStore.get_latest_triage_summary(normalized_user),
+            role_key=role_key,
+            triage_summaries=UserStore.get_triage_summaries(normalized_user, limit=None),
+            recent_chats=UserStore.get_chat_history(normalized_user),
+            allergies=UserStore.get_allergies(normalized_user),
+            vitals=UserStore.get_vitals(normalized_user),
         )
+
+    # Keep old name as a shim
+    def build_gp_summary_pdf_for_user(self, user: Optional[str]) -> bytes:
+        return self.build_summary_pdf_for_user(user)
 
     def _refresh_longitudinal_memory(
         self,
@@ -917,6 +959,54 @@ class RAGEngine:
         if not medication_lines:
             return ""
         return "Current medication list:\n" + "\n".join(f"- {item}" for item in medication_lines[:8])
+
+    @staticmethod
+    def _build_safety_net_block(risk_level: str, triage_summary: dict, role_config) -> str:
+        """
+        Appends a structured safety netting block for elevated/urgent/crisis answers.
+        Escalation triggers come entirely from the LLM-generated triage_summary — no
+        hardcoded clinical content here.
+        """
+        if risk_level not in ("elevated", "urgent", "crisis"):
+            return ""
+
+        is_clinical = role_config and role_config.role_key in (
+            "doctor", "nurse", "midwife", "physiotherapist"
+        )
+
+        # Use LLM-generated escalation triggers; fall back to what_to_monitor if absent
+        triggers = [
+            str(t).strip()
+            for t in (triage_summary.get("escalation_triggers") or [])
+            if str(t).strip()
+        ]
+        if not triggers:
+            triggers = [
+                str(t).strip()
+                for t in (triage_summary.get("what_to_monitor") or [])
+                if str(t).strip()
+            ]
+
+        if not triggers:
+            return ""
+
+        trigger_lines = "\n".join(f"- {t}" for t in triggers[:5])
+
+        if is_clinical:
+            return (
+                "\n\n---\n"
+                "**Safety Netting — Return Criteria**\n\n"
+                "Reassess or escalate if any of the following occur:\n"
+                f"{trigger_lines}\n\n"
+                "Document the safety-netting advice given and the agreed review timeframe."
+            )
+        else:
+            return (
+                "\n\n---\n"
+                "**Return immediately if:**\n\n"
+                f"{trigger_lines}\n\n"
+                "If in any doubt, call 111 or go to your nearest A&E."
+            )
 
     def _build_medication_check(
         self,

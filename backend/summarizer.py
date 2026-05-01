@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from backend.product_config import PRODUCT_NAME
+from backend.user_store import compute_current_age
 
 if TYPE_CHECKING:
     from backend.role_router import RoleConfig
@@ -71,7 +72,14 @@ class LLMHelper:
                     "7. Synthesize across sources rather than copying any single source.\n"
                     "8. For symptom triage, prioritize Tier 1 (formal guidance) sources first, "
                     "then use Tier 2/3 to add nuance.\n"
-                    "9. Use longitudinal patient memory when relevant, but do not override current evidence.\n"
+                    "9. CAUSAL REASONING FROM PATIENT HISTORY: Before composing your answer, review the "
+                    "longitudinal patient memory and reason explicitly about causal and dependency "
+                    "relationships between the patient's known conditions and their current question. "
+                    "Ask: does this patient's history raise the risk, change the differential, or modify "
+                    "the management of what they are asking about now? If yes, state the connection "
+                    "explicitly in your answer — do not silently ignore it. Apply this to whatever "
+                    "specific conditions and symptoms this patient actually has: the reasoning must come "
+                    "from their history, not from generic examples.\n"
                     "10. Label evidence confidence when sources conflict or are limited.\n"
                     "11. Lead with disposition and concrete next steps. Prefer specific management actions, "
                     "monitoring parameters, and timeframes over generic caution.\n"
@@ -124,6 +132,9 @@ class LLMHelper:
                     "Avoid vague phrases like 'seek advice if concerned' when the evidence supports a clearer route.\n"
                     "For health professionals, include specific monitoring, investigation, escalation, or initial treatment "
                     "considerations when the evidence supports them.\n"
+                    "If the patient has known conditions in their longitudinal memory that are relevant to this question, "
+                    "explicitly connect the history to the current presentation — show the clinical reasoning chain, "
+                    "not just a generic answer. The reasoning must be drawn entirely from what is actually in their history.\n"
                     "Every evidence-based statement should include one or more source markers.\n"
                     "Where multiple sources agree, synthesize them into one clearer statement with combined citations.\n"
                     "Label the evidence tier (Tier 1 / Tier 2 / Tier 3) inline when it helps the reader "
@@ -165,7 +176,9 @@ class LLMHelper:
                     "5. Use the exact headings below.\n"
                     "6. If a section has no reliable facts, write `None noted`.\n"
                     "7. If there is no durable patient-specific information at all, return the existing memory unchanged.\n"
-                    "8. Never invent medications, diagnoses, allergies, dates, or test results."
+                    "8. Never invent medications, diagnoses, allergies, dates, or test results.\n"
+                    "9. Write in plain text only — no markdown, no asterisks, no bold, no bullet dashes, "
+                    "no hyphens as list markers. Each fact should be a short plain sentence or phrase."
                 ),
             },
             {
@@ -284,6 +297,67 @@ class LLMHelper:
         )
         return json.loads(response.choices[0].message.content.strip())
 
+    def check_claim_source_alignment(
+        self,
+        answer_markdown: str,
+        source_briefings: list[dict],
+    ) -> list[dict]:
+        """
+        Reviews the answer and checks whether each factual claim is backed by
+        a retrieved source. Returns a list of dicts:
+          {"claim": "...", "status": "supported"|"general_knowledge", "source_ids": [...]}
+        Only the top 5 claims are checked to keep latency low.
+        """
+        if not answer_markdown or not source_briefings:
+            return []
+
+        source_block = "\n".join(
+            f"[{s['source_id']}] {s.get('title', '')} — {s.get('snippet', '')[:200]}"
+            for s in source_briefings[:8]
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You check whether factual claims in a clinical answer are backed by the listed sources. "
+                        "Extract up to 5 specific factual or clinical claims from the answer. "
+                        "For each claim, decide: "
+                        "'supported' (a listed source clearly backs it), or "
+                        "'general_knowledge' (plausible but not directly in any listed source). "
+                        "Return a JSON object with one key: claims. "
+                        "Each claim is: {\"claim\": str, \"status\": str, \"source_ids\": [str]}."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Sources:\n{source_block}\n\n"
+                        f"Answer (first 1200 chars):\n{answer_markdown[:1200]}\n\n"
+                        "Return only valid JSON."
+                    ),
+                },
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content.strip()
+        payload = json.loads(raw)
+        items = payload.get("claims", [])
+        if not isinstance(items, list):
+            return []
+        result = []
+        for item in items[:5]:
+            if isinstance(item, dict) and item.get("claim"):
+                result.append({
+                    "claim": str(item.get("claim", "")).strip(),
+                    "status": str(item.get("status", "general_knowledge")).strip(),
+                    "source_ids": [str(s) for s in item.get("source_ids", [])],
+                })
+        return result
+
     def _complete_response(self, messages) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
@@ -323,6 +397,16 @@ class LLMHelper:
             return "No additional user profile available."
 
         fragments = []
+
+        # Demographics — listed first as they modify almost every clinical guideline
+        dob = (user_profile.get("date_of_birth") or "").strip()
+        age = compute_current_age(dob)
+        if age is not None:
+            fragments.append(f"Age: {age} years")
+        sex = (user_profile.get("biological_sex") or "").strip()
+        if sex and sex != "Prefer not to say":
+            fragments.append(f"Biological sex: {sex}")
+
         for field in (
             "display_name",
             "role",

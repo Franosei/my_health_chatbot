@@ -257,6 +257,27 @@ def render_source_trace(message: dict) -> None:
                 unsafe_allow_html=True,
             )
 
+        claim_alignment = trace.get("claim_alignment", []) if trace else []
+        if claim_alignment:
+            st.markdown("#### Claim-source alignment")
+            for item in claim_alignment:
+                status = item.get("status", "general_knowledge")
+                claim = item.get("claim", "")
+                sids = item.get("source_ids", [])
+                badge = "supported" if status == "supported" else "general knowledge"
+                badge_class = "tier-badge tier-1" if status == "supported" else "tier-badge tier-3"
+                sid_str = ", ".join(sids) if sids else "—"
+                st.markdown(
+                    f"""
+                    <div class="source-card" style="margin-bottom:6px">
+                        <span class="{badge_class}">{badge}</span>
+                        <span style="margin-left:8px">{html.escape(claim)}</span>
+                        <span style="float:right;opacity:0.6;font-size:12px">{html.escape(sid_str)}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
         if trace:
             st.markdown("#### Audit trace")
             audit_display = {
@@ -291,6 +312,186 @@ def render_source_trace(message: dict) -> None:
             st.json(audit_display)
 
 
+_INTENT_LABELS = {
+    "symptom_triage": "Symptom triage",
+    "medication_query": "Medication query",
+    "chronic_condition": "Chronic condition management",
+    "maternity": "Maternity and pregnancy",
+    "msk": "Musculoskeletal",
+    "mental_health": "Mental health",
+    "general_health": "General health",
+    "education": "Health education",
+    "administrative": "Administrative",
+}
+
+_RISK_LABELS = {
+    "routine": "Routine",
+    "elevated": "Elevated",
+    "urgent": "Urgent",
+    "crisis": "Crisis — immediate action required",
+}
+
+_PATHWAY_LABELS = {
+    "general_triage": "General triage",
+    "maternity": "Maternity pathway",
+    "msk": "Musculoskeletal pathway",
+    "medications": "Medications pathway",
+    "chronic_conditions": "Chronic conditions pathway",
+}
+
+_ROLE_LABELS = {
+    "patient": "Patient",
+    "caregiver": "Caregiver",
+    "doctor": "Doctor",
+    "nurse": "Nurse",
+    "midwife": "Midwife",
+    "physiotherapist": "Physiotherapist",
+}
+
+_GATE_LABELS = {
+    "allergy_contraindication": "Allergy / contraindication check",
+    "medication_lay": "Medication safety (patient)",
+    "medication_clinical": "Medication guidance (clinician)",
+    "no_diagnosis": "No-diagnosis policy",
+    "diagnosis_clinical": "Differential discussion (clinician)",
+    "crisis": "Crisis escalation",
+    "pregnancy_safety": "Pregnancy safety",
+    "paediatric_safety": "Paediatric safety",
+    "elderly_polypharmacy": "Elderly polypharmacy",
+    "mental_health": "Mental health safety",
+    "urgent_escalation": "Urgent escalation",
+}
+
+_TIER_LABELS_FULL = {
+    1: "Tier 1 — NHS / NICE formal guidance",
+    2: "Tier 2 — Review evidence",
+    3: "Tier 3 — Primary research",
+}
+
+_FLAG_LABELS = {
+    "elderly": "Older adult",
+    "paediatric": "Paediatric",
+    "pregnancy": "Pregnancy",
+    "postpartum": "Postpartum",
+    "newborn": "Newborn",
+}
+
+
+def _fmt(raw: str, lookup: dict) -> str:
+    return lookup.get(raw, raw.replace("_", " ").title()) if raw else ""
+
+
+def render_reasoning_panel(trace: dict) -> None:
+    if not trace:
+        return
+
+    intent_cat = trace.get("intent_category", "")
+    risk_level = trace.get("risk_level", "")
+    pathway = trace.get("pathway_used", "")
+    role_key = trace.get("role_key", "")
+    gates = trace.get("policy_gates_applied", [])
+    tiers = trace.get("evidence_tiers_present", [])
+    sources = trace.get("sources", [])
+    expanded_queries = trace.get("expanded_queries", [])
+    vulnerable_flags = trace.get("vulnerable_flags", [])
+    escalation = trace.get("escalation_triggered", False)
+    crisis = trace.get("crisis_detected", False)
+
+    if not any([intent_cat, risk_level, pathway, gates, sources]):
+        return
+
+    tier_map = {1: 0, 2: 0, 3: 0}
+    for s in sources:
+        t = s.get("evidence_tier", 3)
+        if t in tier_map:
+            tier_map[t] += 1
+
+    tier_quality_parts = []
+    for t, count in tier_map.items():
+        if count:
+            tier_quality_parts.append(f"{count} {_TIER_LABELS_FULL[t]}")
+    tier_quality = "; ".join(tier_quality_parts) if tier_quality_parts else "Evidence tier not recorded"
+
+    with st.expander("Why this answer?", expanded=False):
+        rows = []
+
+        if intent_cat:
+            rows.append(("Intent detected", _fmt(intent_cat, _INTENT_LABELS)))
+
+        if risk_level:
+            rows.append(("Risk level", _fmt(risk_level, _RISK_LABELS)))
+
+        if escalation or crisis:
+            flag = "Yes — escalation notice included" if escalation else ("Yes — crisis response" if crisis else "No")
+            rows.append(("Escalation triggered", flag))
+
+        if role_key:
+            rows.append(("User role", _fmt(role_key, _ROLE_LABELS)))
+
+        if vulnerable_flags:
+            flag_labels = [_fmt(f, _FLAG_LABELS) for f in vulnerable_flags]
+            rows.append(("Vulnerable population flags", ", ".join(flag_labels)))
+
+        history_used = bool(
+            trace.get("memory_match_count", 0)
+            or any(trace.get("expanded_queries", []))
+        )
+        rows.append(("Patient history used", "Yes" if history_used else "No"))
+
+        if expanded_queries and len(expanded_queries) > 1:
+            rows.append(("Search queries generated", str(len(expanded_queries))))
+
+        if pathway:
+            rows.append(("Clinical pathway selected", _fmt(pathway, _PATHWAY_LABELS)))
+
+        if gates:
+            gate_labels = [_fmt(g.get("gate_name", ""), _GATE_LABELS) for g in gates[:6]]
+            rows.append(("Policy gates applied", "; ".join(gate_labels)))
+
+        if sources:
+            rows.append(("Evidence retrieved", f"{len(sources)} source(s)"))
+
+        if tier_quality_parts:
+            rows.append(("Evidence quality", tier_quality))
+
+        if tiers:
+            triage_outcome = trace.get("pathway_decision", {}).get("recommendation", "")
+            if not triage_outcome:
+                triage_outcome = trace.get("risk_level", "")
+            if triage_outcome:
+                rows.append(("Triage outcome", _fmt(triage_outcome, _RISK_LABELS)))
+
+        table_rows_html = "".join(
+            f"""
+            <tr>
+                <td style="padding:7px 14px 7px 0;color:#6b7280;font-size:13px;white-space:nowrap;
+                           vertical-align:top;border-bottom:1px solid #f0f0f0">{html.escape(label)}</td>
+                <td style="padding:7px 0 7px 14px;font-size:13px;font-weight:500;
+                           vertical-align:top;border-bottom:1px solid #f0f0f0">{html.escape(value)}</td>
+            </tr>
+            """
+            for label, value in rows
+        )
+
+        st.markdown(
+            f"""
+            <table style="width:100%;border-collapse:collapse;margin-top:4px">
+                {table_rows_html}
+            </table>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if gates:
+            with st.expander("Policy gate details", expanded=False):
+                for gate in gates[:6]:
+                    name = _fmt(gate.get("gate_name", ""), _GATE_LABELS)
+                    reason = gate.get("reason", "")
+                    st.markdown(f"**{name}**")
+                    if reason:
+                        st.caption(reason)
+
+
 def render_chat_history(history: list[dict]) -> None:
     for message in history:
         avatar = USER_AVATAR if message.get("role") == "user" else ASSISTANT_AVATAR
@@ -322,6 +523,7 @@ def render_chat_history(history: list[dict]) -> None:
                 render_source_links(message.get("sources", []))
             render_message_meta(message)
             if message.get("role") == "assistant":
+                render_reasoning_panel(meta.get("trace", {}))
                 render_source_trace(message)
 
 
@@ -374,9 +576,14 @@ user_profile = UserStore.get_user_profile(current_user)
 uploads = UserStore.get_uploads(current_user)
 symptom_logs = UserStore.get_symptom_logs(current_user, limit=None)
 medications = UserStore.get_medications(current_user)
+allergies = UserStore.get_allergies(current_user)
+vitals = UserStore.get_vitals(current_user)
 traces = UserStore.get_interaction_traces(current_user, limit=5)
 audit_records = UserStore.get_audit(current_user, limit=8)
 latest_triage = UserStore.get_latest_triage_summary(current_user)
+
+clinical_role_key = (user_profile.get("clinical_role") or "").lower()
+_is_clinical_user = clinical_role_key in ("doctor", "nurse", "midwife", "physiotherapist")
 
 with st.sidebar:
     clinical_role_display = user_profile.get("clinical_role") or user_profile.get("role", "Patient / Individual")
@@ -578,9 +785,150 @@ with st.sidebar:
         else:
             st.caption("No medications saved yet.")
 
-    st.markdown("### GP summary")
-    gp_pdf = rag_engine.build_gp_summary_pdf_for_user(current_user)
-    has_gp_content = bool(
+    with st.expander("Allergy and contraindication profile", expanded=False):
+        with st.form("allergy_form"):
+            allergy_name = st.text_input("Allergen name (drug, food, or substance)")
+            allergy_reaction = st.text_input("Reaction (e.g. rash, anaphylaxis)")
+            allergy_severity = st.selectbox("Severity", ["unknown", "mild", "moderate", "severe"])
+            allergy_type = st.selectbox("Type", ["drug", "food", "environmental", "other"])
+            allergy_confirmed = st.checkbox("Confirmed allergy (uncheck if suspected only)", value=True)
+            allergy_saved = st.form_submit_button(
+                "Save allergy", type="primary", use_container_width=True
+            )
+
+        if allergy_saved:
+            saved_allergy = UserStore.save_allergy(
+                current_user,
+                {
+                    "name": allergy_name,
+                    "reaction": allergy_reaction,
+                    "severity": allergy_severity,
+                    "allergy_type": allergy_type,
+                    "confirmed": allergy_confirmed,
+                },
+            )
+            if saved_allergy:
+                st.success("Allergy profile updated.")
+                st.rerun()
+            else:
+                st.error("Enter an allergen name to save it.")
+
+        if allergies:
+            for allergy in allergies:
+                label_parts = [allergy.get("name", "Allergen")]
+                if allergy.get("reaction"):
+                    label_parts.append(allergy["reaction"])
+                severity = allergy.get("severity", "")
+                confirmed_str = "" if allergy.get("confirmed", True) else " (suspected)"
+                st.markdown(
+                    f"""
+                    <div class="mini-record">
+                        <strong>{html.escape(" | ".join(label_parts))}{html.escape(confirmed_str)}</strong>
+                        <span>{html.escape(severity.title() if severity else "Severity not recorded")}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button("Remove", key=f"allergy_delete_{allergy['allergy_id']}", use_container_width=True):
+                    UserStore.delete_allergy(current_user, allergy["allergy_id"])
+                    st.rerun()
+        else:
+            st.caption("No allergies recorded. Add any known drug or food allergies here.")
+
+    _VITALS_ALL = [
+        ("blood_pressure", "Blood pressure", "mmHg", "e.g. 120/80"),
+        ("heart_rate", "Heart rate", "bpm", "e.g. 72"),
+        ("weight", "Weight", "kg", "e.g. 74"),
+        ("blood_glucose", "Blood glucose", "mmol/L", "e.g. 5.4"),
+        ("temperature", "Temperature", "°C", "e.g. 37.2"),
+        ("oxygen_saturation", "Oxygen saturation (SpO₂)", "%", "e.g. 98"),
+        ("peak_flow", "Peak flow", "L/min", "e.g. 420"),
+        ("hba1c", "HbA1c", "mmol/mol", "e.g. 48"),
+        ("egfr", "eGFR", "mL/min/1.73m²", "e.g. 65"),
+        ("creatinine", "Creatinine", "µmol/L", "e.g. 85"),
+    ]
+    _VITALS_LAY = {
+        "blood_pressure", "heart_rate", "weight", "blood_glucose",
+        "temperature", "oxygen_saturation",
+    }
+    vitals_options = _VITALS_ALL if _is_clinical_user else [
+        v for v in _VITALS_ALL if v[0] in _VITALS_LAY
+    ]
+    vitals_type_labels = {v[0]: v[1] for v in vitals_options}
+    vitals_units = {v[0]: v[2] for v in vitals_options}
+
+    with st.expander("Vitals and lab results", expanded=False):
+        with st.form("vitals_form"):
+            vitals_type = st.selectbox(
+                "Measurement type",
+                options=[v[0] for v in vitals_options],
+                format_func=lambda k: vitals_type_labels.get(k, k),
+            )
+            vitals_value = st.text_input(
+                "Value",
+                placeholder=next((v[3] for v in vitals_options if v[0] == vitals_type), ""),
+            )
+            vitals_date = st.date_input("Date recorded", value=datetime.now(timezone.utc).date())
+            vitals_notes = st.text_input("Notes (optional)")
+            vitals_saved = st.form_submit_button(
+                "Save reading", type="primary", use_container_width=True
+            )
+
+        if vitals_saved:
+            saved_vitals = UserStore.save_vitals_entry(
+                current_user,
+                {
+                    "type": vitals_type,
+                    "value": vitals_value,
+                    "unit": vitals_units.get(vitals_type, ""),
+                    "recorded_on": vitals_date.isoformat(),
+                    "notes": vitals_notes,
+                },
+            )
+            if saved_vitals:
+                rag_engine.restore_user_context(current_user)
+                st.success("Reading saved.")
+                st.rerun()
+            else:
+                st.error("Enter a value to save this reading.")
+
+        if vitals:
+            for entry in vitals[:8]:
+                vtype = vitals_type_labels.get(entry.get("type", ""), entry.get("type", ""))
+                val = entry.get("value", "")
+                unit = entry.get("unit", "")
+                date_str = entry.get("recorded_on", "")
+                st.markdown(
+                    f"""
+                    <div class="mini-record">
+                        <strong>{html.escape(vtype)}: {html.escape(val)} {html.escape(unit)}</strong>
+                        <span>{html.escape(date_str or "Date not recorded")}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button("Remove", key=f"vitals_delete_{entry['vitals_id']}", use_container_width=True):
+                    UserStore.delete_vitals_entry(current_user, entry["vitals_id"])
+                    rag_engine.restore_user_context(current_user)
+                    st.rerun()
+        else:
+            st.caption("No readings saved yet.")
+
+    _SUMMARY_LABELS = {
+        "patient":          ("Personal Health Summary",        "personal-health-summary"),
+        "caregiver":        ("Personal Health Summary",        "personal-health-summary"),
+        "doctor":           ("GP Summary",                     "gp-summary"),
+        "nurse":            ("Nursing Handover Note",          "nursing-handover"),
+        "midwife":          ("Maternity Care Summary",         "maternity-care-summary"),
+        "physiotherapist":  ("Physiotherapy Assessment",       "physio-assessment"),
+    }
+    _summary_label, _summary_slug = _SUMMARY_LABELS.get(
+        clinical_role_key, ("Health Summary", "health-summary")
+    )
+
+    st.markdown(f"### {_summary_label}")
+    summary_pdf = rag_engine.build_summary_pdf_for_user(current_user)
+    has_summary_content = bool(
         symptom_logs
         or medications
         or uploads
@@ -588,16 +936,16 @@ with st.sidebar:
         or latest_triage
     )
     st.download_button(
-        "Download GP summary PDF",
-        data=gp_pdf,
-        file_name=f"{current_user}-gp-summary.pdf",
+        f"Download {_summary_label} PDF",
+        data=summary_pdf,
+        file_name=f"{current_user}-{_summary_slug}.pdf",
         mime="application/pdf",
         use_container_width=True,
-        disabled=not has_gp_content,
+        disabled=not has_summary_content,
     )
     if latest_triage:
         st.caption(
-            f"Latest triage: {latest_triage.get('urgency_level', 'Routine')} -> "
+            f"Latest triage: {latest_triage.get('urgency_level', 'Routine')} — "
             f"{latest_triage.get('next_step', 'Self-care')}"
         )
 

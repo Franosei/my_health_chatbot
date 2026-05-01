@@ -79,7 +79,33 @@ def _default_profile(username: str, display_name: Optional[str] = None) -> Dict[
         "terms_accepted_at": "",
         "privacy_accepted_at": "",
         "last_video_generated_at": "",  # ISO-8601 UTC; enforces 1-video-per-hour rate limit
+        "date_of_birth": "",            # YYYY-MM-DD; used to compute current age at runtime
+        "biological_sex": "",           # Male | Female | Other | Prefer not to say
+        "dob_recorded_at": "",          # ISO-8601 UTC timestamp when DOB was first entered
     }
+
+
+_VALID_SEX_OPTIONS = {"Male", "Female", "Other", "Prefer not to say"}
+
+
+def compute_current_age(date_of_birth: str) -> Optional[int]:
+    """
+    Compute the patient's current age from their stored date of birth (YYYY-MM-DD).
+    Returns None if the DOB is absent or unparseable.
+    Age auto-updates every year — no manual refresh needed.
+    """
+    dob_str = (date_of_birth or "").strip()[:10]
+    if not dob_str:
+        return None
+    try:
+        dob = datetime.strptime(dob_str, "%Y-%m-%d").date()
+        today = datetime.now(timezone.utc).date()
+        age = today.year - dob.year - (
+            (today.month, today.day) < (dob.month, dob.day)
+        )
+        return age if 0 <= age <= 130 else None
+    except ValueError:
+        return None
 
 
 def _default_longitudinal_memory() -> Dict[str, Optional[str]]:
@@ -120,6 +146,37 @@ def _normalize_medication(entry: Dict) -> Dict:
         "notes": str(entry.get("notes") or "").strip(),
         "created_at": entry.get("created_at") or _utc_now(),
         "updated_at": entry.get("updated_at") or _utc_now(),
+    }
+
+
+def _normalize_allergy(entry: Dict) -> Dict:
+    severity = (entry.get("severity") or "").strip().lower()
+    if severity not in ("mild", "moderate", "severe"):
+        severity = "unknown"
+    allergy_type = (entry.get("allergy_type") or "").strip().lower()
+    if allergy_type not in ("drug", "food", "environmental", "other"):
+        allergy_type = "other"
+    return {
+        "allergy_id": entry.get("allergy_id") or f"alg-{uuid4().hex[:12]}",
+        "name": str(entry.get("name") or "").strip(),
+        "reaction": str(entry.get("reaction") or "").strip(),
+        "severity": severity,
+        "allergy_type": allergy_type,
+        "confirmed": bool(entry.get("confirmed", True)),
+        "notes": str(entry.get("notes") or "").strip(),
+        "created_at": entry.get("created_at") or _utc_now(),
+    }
+
+
+def _normalize_vitals_entry(entry: Dict) -> Dict:
+    return {
+        "vitals_id": entry.get("vitals_id") or f"vit-{uuid4().hex[:12]}",
+        "recorded_on": str(entry.get("recorded_on") or "").strip(),
+        "type": str(entry.get("type") or "").strip(),
+        "value": str(entry.get("value") or "").strip(),
+        "unit": str(entry.get("unit") or "").strip(),
+        "notes": str(entry.get("notes") or "").strip(),
+        "created_at": entry.get("created_at") or _utc_now(),
     }
 
 
@@ -186,6 +243,8 @@ def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized.setdefault("symptom_logs", [])
     normalized.setdefault("medications", [])
     normalized.setdefault("triage_summaries", [])
+    normalized.setdefault("allergies", [])
+    normalized.setdefault("vitals", [])
     normalized.setdefault("active_conversation_id", f"conv-{uuid4().hex[:12]}")
 
     normalized["conversation"] = [
@@ -221,6 +280,16 @@ def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized["triage_summaries"] = [
         _normalize_triage_summary(entry)
         for entry in normalized.get("triage_summaries", [])
+        if isinstance(entry, dict)
+    ]
+    normalized["allergies"] = [
+        _normalize_allergy(entry)
+        for entry in normalized.get("allergies", [])
+        if isinstance(entry, dict)
+    ]
+    normalized["vitals"] = [
+        _normalize_vitals_entry(entry)
+        for entry in normalized.get("vitals", [])
         if isinstance(entry, dict)
     ]
 
@@ -464,6 +533,8 @@ class UserStore:
         terms_role: str = "",
         terms_accepted_at: str = "",
         privacy_accepted_at: str = "",
+        date_of_birth: str = "",
+        biological_sex: str = "",
     ) -> bool:
         key = username.strip().lower()
         normalized_email = _normalize_email(email)
@@ -479,6 +550,11 @@ class UserStore:
 
         pwh = _hash_password(password)
         profile = _default_profile(key, display_name)
+        cleaned_dob = (date_of_birth or "").strip()[:10]
+        cleaned_sex = (biological_sex or "").strip()
+        if cleaned_sex not in _VALID_SEX_OPTIONS:
+            cleaned_sex = ""
+
         profile.update(
             {
                 "email": normalized_email,
@@ -490,6 +566,9 @@ class UserStore:
                 "terms_role": (terms_role or clinical_role or role).strip(),
                 "terms_accepted_at": terms_accepted_at or _utc_now(),
                 "privacy_accepted_at": privacy_accepted_at or _utc_now(),
+                "date_of_birth": cleaned_dob,
+                "biological_sex": cleaned_sex,
+                "dob_recorded_at": _utc_now() if cleaned_dob else "",
             }
         )
 
@@ -579,6 +658,8 @@ class UserStore:
             "organization",
             "follow_up_preferences",
             "last_video_generated_at",
+            "date_of_birth",
+            "biological_sex",
         }
         applied_updates = {}
         for field, value in updates.items():
@@ -749,6 +830,100 @@ class UserStore:
             "Removed medication from list",
             metadata={"medication_id": medication_id},
         )
+        _save_user_record(username, user)
+        return True
+
+    @staticmethod
+    def save_allergy(username: str, allergy: Dict) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+        normalized = _normalize_allergy(allergy)
+        if not normalized["name"]:
+            return None
+        allergies = user.setdefault("allergies", [])
+        updated = False
+        for index, existing in enumerate(allergies):
+            same_id = existing.get("allergy_id") == normalized.get("allergy_id")
+            same_name = existing.get("name", "").strip().lower() == normalized["name"].lower()
+            if same_id or same_name:
+                normalized["created_at"] = existing.get("created_at") or normalized["created_at"]
+                allergies[index] = normalized
+                updated = True
+                break
+        if not updated:
+            allergies.append(normalized)
+        _append_audit(
+            user,
+            "allergy_saved",
+            f"Saved allergy: {normalized['name']}",
+            metadata={"allergy_id": normalized["allergy_id"], "severity": normalized["severity"]},
+        )
+        _save_user_record(username, user)
+        return normalized
+
+    @staticmethod
+    def get_allergies(username: str) -> List[Dict]:
+        user = _get_user_record(username)
+        allergies = deepcopy(user.get("allergies", [])) if user else []
+        allergies.sort(key=lambda item: item.get("name", "").lower())
+        return allergies
+
+    @staticmethod
+    def delete_allergy(username: str, allergy_id: str) -> bool:
+        user = _get_user_record(username)
+        if not user:
+            return False
+        allergies = user.setdefault("allergies", [])
+        kept = [entry for entry in allergies if entry.get("allergy_id") != allergy_id]
+        if len(kept) == len(allergies):
+            return False
+        user["allergies"] = kept
+        _append_audit(user, "allergy_deleted", "Removed allergy entry", metadata={"allergy_id": allergy_id})
+        _save_user_record(username, user)
+        return True
+
+    @staticmethod
+    def save_vitals_entry(username: str, entry: Dict) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+        normalized = _normalize_vitals_entry(entry)
+        if not normalized["type"] or not normalized["value"]:
+            return None
+        user.setdefault("vitals", []).append(normalized)
+        _append_audit(
+            user,
+            "vitals_saved",
+            f"Recorded {normalized['type']}: {normalized['value']} {normalized['unit']}",
+            metadata={"vitals_id": normalized["vitals_id"], "type": normalized["type"]},
+        )
+        _save_user_record(username, user)
+        return normalized
+
+    @staticmethod
+    def get_vitals(username: str, limit: Optional[int] = 50) -> List[Dict]:
+        user = _get_user_record(username)
+        vitals = deepcopy(user.get("vitals", [])) if user else []
+        vitals.sort(
+            key=lambda item: (item.get("recorded_on", ""), item.get("created_at", "")),
+            reverse=True,
+        )
+        if limit is None:
+            return vitals
+        return vitals[:limit]
+
+    @staticmethod
+    def delete_vitals_entry(username: str, vitals_id: str) -> bool:
+        user = _get_user_record(username)
+        if not user:
+            return False
+        vitals = user.setdefault("vitals", [])
+        kept = [entry for entry in vitals if entry.get("vitals_id") != vitals_id]
+        if len(kept) == len(vitals):
+            return False
+        user["vitals"] = kept
+        _append_audit(user, "vitals_deleted", "Removed vitals entry", metadata={"vitals_id": vitals_id})
         _save_user_record(username, user)
         return True
 

@@ -69,6 +69,7 @@ class PolicyEngine:
         intent: IntentClassification,
         role_config: RoleConfig,
         question: str,
+        patient_history=None,
     ) -> PolicyDecision:
         decision = PolicyDecision()
 
@@ -80,9 +81,17 @@ class PolicyEngine:
         if decision.action == "escalate_only":
             return decision
 
+        # Known-condition gate runs before other gates so it can raise risk_level
+        # in time for _gate_urgent_escalation to act on it
+        if patient_history is not None and not patient_history.is_empty():
+            self._gate_known_condition_risk(intent, role_config, question, patient_history, decision)
+            if decision.action == "escalate_only":
+                return decision
+
         self._gate_urgent_escalation(intent, role_config, decision)
         self._gate_pregnancy(intent, role_config, question, decision)
         self._gate_paediatric(intent, all_flags, decision)
+        self._gate_allergy_contraindication(intent, role_config, patient_history, decision)
         self._gate_medication_dosage(intent, role_config, question, decision)
         self._gate_diagnosis_request(intent, role_config, question, decision)
         self._gate_elderly_polypharmacy(intent, all_flags, decision)
@@ -204,6 +213,35 @@ class PolicyEngine:
             "All dosing, weight-based recommendations, and growth milestones must be explicitly age-qualified. "
             "Never extrapolate adult guidance to children without stating it. "
             "Refer to BNFC and NICE paediatric pathways."
+        )
+
+    def _gate_allergy_contraindication(
+        self,
+        intent: IntentClassification,
+        role_config: RoleConfig,
+        patient_history,
+        decision: PolicyDecision,
+    ) -> None:
+        if patient_history is None or not patient_history.known_allergies:
+            return
+        if intent.intent_category not in ("medication_query", "symptom_triage", "chronic_condition"):
+            return
+
+        allergy_list = "; ".join(patient_history.known_allergies[:10])
+        gate = PolicyGateRecord(
+            gate_name="allergy_contraindication",
+            applied=True,
+            reason=f"Patient has recorded allergies/contraindications: {allergy_list}",
+        )
+        decision.add_gate(gate)
+        decision.context_notes.append(
+            f"SAFETY FLAG — PATIENT ALLERGIES / CONTRAINDICATIONS: {allergy_list}\n"
+            "Before recommending, mentioning, or discussing any medication, treatment, or substance:\n"
+            "1. Check whether it or any cross-reactive agent appears in the allergy list above.\n"
+            "2. If there is any match or plausible cross-reaction, flag it prominently at the top of your answer.\n"
+            "3. Recommend verification with the prescribing clinician or pharmacist before use.\n"
+            "4. If no conflict is identified, state explicitly that the recommendations do not appear to conflict "
+            "with the recorded allergies — but remind the patient that the list reflects only what has been entered."
         )
 
     def _gate_medication_dosage(
@@ -328,3 +366,313 @@ class PolicyEngine:
             "Never minimise distress. "
             "If any self-harm or suicidal ideation is implied, apply crisis response."
         )
+
+    def _gate_known_condition_risk(
+        self,
+        intent: IntentClassification,
+        role_config: RoleConfig,
+        question: str,
+        patient_history,
+        decision: PolicyDecision,
+    ) -> None:
+        """
+        Applies condition-aware safety rules based on the patient's known history.
+
+        Critically: this gate does NOT inspect the raw question text for symptoms.
+        The LLM intent classifier already received the full patient history context
+        and produced intent.risk_level / intent.intent_category / intent.escalation_required
+        accordingly. This gate trusts that output and applies three types of action:
+
+        REINFORCE   — when the LLM already flagged elevated/urgent risk and the patient
+                      has a known condition that makes those symptoms more dangerous,
+                      confirm escalation_required and add condition-specific context.
+
+        ELEVATE     — for high-risk condition + intent category combinations where ANY
+                      relevant clinical question carries a higher baseline risk (e.g.
+                      immunocompromised + any symptom question), bump routine → elevated
+                      even if the LLM did not.
+
+        CONTEXT     — inject condition-specific clinical guidance into the LLM prompt
+                      for every relevant combination regardless of risk level, so the
+                      response covers the right red flags, recommends BP checks, lists
+                      monitoring advice, etc. — without us hardcoding what those flags are.
+        """
+        is_clinical = role_config.role_key in ("doctor", "nurse", "midwife", "physiotherapist")
+
+        escalate_notes: List[str] = []
+        context_notes: List[str] = []
+
+        # Shorthand for intent categories
+        is_symptom   = intent.intent_category in ("symptom_triage", "chronic_condition", "maternity", "msk")
+        is_med_query = intent.intent_category == "medication_query"
+        is_mental    = intent.intent_category == "mental_health"
+        llm_risk     = intent.risk_level  # what the LLM decided (already saw history)
+
+        # ── CARDIAC ──────────────────────────────────────────────────────────────
+        # The LLM already had cardiac history context. If it still flagged elevated+
+        # risk on a symptom question, reinforce escalation. Otherwise add guidance.
+        if patient_history.has_cardiac_history and is_symptom:
+            if llm_risk in ("urgent", "crisis"):
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "Known cardiac history: LLM classified this as urgent — escalation confirmed."
+                )
+            elif llm_risk == "elevated":
+                if is_clinical:
+                    context_notes.append(
+                        "CLINICAL CONTEXT (cardiac history): Elevated-risk symptom in a patient with known "
+                        "cardiac disease. Consider atypical ACS, arrhythmia, and heart failure exacerbation. "
+                        "Do not dismiss without clinical assessment."
+                    )
+                else:
+                    context_notes.append(
+                        "CLINICAL CONTEXT (cardiac history): Patient has known heart disease. "
+                        "Advise clinical review for any new or worsening symptoms. "
+                        "Instruct the patient on when to seek emergency care."
+                    )
+            else:
+                # routine — add a general awareness note; do not escalate
+                context_notes.append(
+                    "CLINICAL CONTEXT (cardiac history): Patient has a known cardiac condition. "
+                    "Ensure the response covers relevant red flags for this patient group and "
+                    "advises when to seek urgent review."
+                )
+
+        # ── HYPERTENSION ─────────────────────────────────────────────────────────
+        # Do NOT escalate based on risk level alone. The LLM should ask about red flags.
+        # We inject guidance so the response covers: BP check, what warrants emergency,
+        # what warrants GP review, and what is self-manageable.
+        if patient_history.has_hypertension and is_symptom:
+            if llm_risk in ("urgent", "crisis"):
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "Known hypertension + urgent classification: confirm escalation and cover "
+                    "hypertensive emergency red flags in response."
+                )
+            else:
+                if is_clinical:
+                    context_notes.append(
+                        "CLINICAL CONTEXT (hypertension): Patient has known hypertension. "
+                        "For any symptom question: consider whether BP is controlled and whether "
+                        "red flags for hypertensive emergency are present (end-organ symptoms: "
+                        "visual disturbance, confusion, focal neurology, chest pain, oliguria). "
+                        "If absent and BP controlled: reassurance + routine GP follow-up. "
+                        "If absent but BP uncontrolled: same-day GP review. "
+                        "Do not classify a headache as a hypertensive emergency without red flags."
+                    )
+                else:
+                    context_notes.append(
+                        "CLINICAL CONTEXT (hypertension): Patient has known high blood pressure. "
+                        "The response should: recommend checking BP if possible, explain which "
+                        "symptoms in this patient warrant same-day GP review versus emergency care, "
+                        "and clearly state that not every headache or dizzy spell is an emergency. "
+                        "Include red flags that should prompt calling 999."
+                    )
+
+        # ── DIABETES ─────────────────────────────────────────────────────────────
+        # If the LLM flagged elevated+ risk, reinforce and add diabetes-specific context.
+        # For routine questions still add monitoring guidance.
+        if patient_history.has_diabetes and is_symptom:
+            if llm_risk in ("urgent", "crisis"):
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "Known diabetes + urgent classification: confirm escalation. Cover DKA / "
+                    "hypoglycaemia / diabetic emergency signs in the response."
+                )
+            elif llm_risk == "elevated":
+                intent.risk_level = _escalate_risk(intent.risk_level)
+                if is_clinical:
+                    context_notes.append(
+                        "CLINICAL CONTEXT (diabetes): Elevated-risk symptom in a diabetic patient. "
+                        "Ensure the response covers relevant diabetic complications for this symptom "
+                        "(e.g. hypoglycaemia, DKA, diabetic foot, retinopathy, nephropathy). "
+                        "Recommend HbA1c and organ complication review where appropriate."
+                    )
+                else:
+                    context_notes.append(
+                        "CLINICAL CONTEXT (diabetes): Patient has diabetes. Ensure the response "
+                        "explains how this symptom may relate to diabetes, when to seek prompt "
+                        "GP review, and what constitutes an emergency."
+                    )
+            else:
+                context_notes.append(
+                    "CLINICAL CONTEXT (diabetes): Patient has known diabetes. The response should "
+                    "note any relevant diabetes-specific considerations for this symptom and advise "
+                    "appropriate monitoring or clinical review."
+                )
+
+        # ── ANTICOAGULANTS ───────────────────────────────────────────────────────
+        # Any symptom question OR medication question in an anticoagulated patient
+        # carries additional risk. If the LLM flagged elevated+, confirm escalation.
+        # Always add anticoagulant-specific guidance regardless of risk level.
+        if patient_history.on_anticoagulants and (is_symptom or is_med_query):
+            if llm_risk in ("elevated", "urgent", "crisis"):
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "On anticoagulants: elevated-risk question — over-anticoagulation and bleeding "
+                    "risk must be considered and addressed in the response."
+                )
+            context_notes.append(
+                "CLINICAL CONTEXT (anticoagulants): Patient is on anticoagulant therapy. "
+                "The response must cover anticoagulant-specific considerations: bleeding risk, "
+                "drug interactions, signs of over-anticoagulation, and when same-day clinical "
+                "review is required. Do not recommend medications that increase bleeding risk "
+                "without appropriate caveats."
+            )
+
+        # ── IMMUNOCOMPROMISED ────────────────────────────────────────────────────
+        # Any symptom question in an immunocompromised patient carries a higher baseline.
+        # Bump routine → elevated regardless of LLM output; confirm escalation if higher.
+        if patient_history.immunocompromised and is_symptom:
+            if llm_risk in ("urgent", "crisis"):
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "Immunocompromised + urgent classification: infections deteriorate rapidly — "
+                    "escalation confirmed."
+                )
+            else:
+                if intent.risk_level == "routine":
+                    intent.risk_level = "elevated"
+                if is_clinical:
+                    context_notes.append(
+                        "CLINICAL CONTEXT (immunocompromised): Patient is immunocompromised. "
+                        "Apply a lower threshold for escalation. Cover neutropenic sepsis risk, "
+                        "atypical infection presentations, and need for same-day review for "
+                        "any new infection symptoms."
+                    )
+                else:
+                    context_notes.append(
+                        "CLINICAL CONTEXT (immunocompromised): Patient has a weakened immune system. "
+                        "The response should advise that infections can become serious more quickly "
+                        "and recommend prompt clinical review for any infection-related symptoms."
+                    )
+
+        # ── RENAL DISEASE ────────────────────────────────────────────────────────
+        # Context only. No risk escalation — medication safety and monitoring guidance.
+        if patient_history.has_renal_disease and (is_symptom or is_med_query):
+            context_notes.append(
+                "CLINICAL CONTEXT (renal disease): Patient has known CKD/renal impairment. "
+                "The response must flag any nephrotoxic medications (NSAIDs, aminoglycosides, "
+                "contrast agents) as contraindicated or requiring dose adjustment. "
+                "Cover eGFR and electrolyte monitoring. Note that new fluid retention, "
+                "reduced urine output, or acute breathlessness in a renal patient warrants "
+                "urgent review."
+            )
+
+        # ── RESPIRATORY DISEASE ──────────────────────────────────────────────────
+        # Elevate if the LLM flagged elevated on a symptom question; add exacerbation context.
+        if patient_history.has_respiratory_disease and is_symptom:
+            if llm_risk in ("urgent", "crisis"):
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "Known respiratory disease + urgent classification: possible acute exacerbation — "
+                    "escalation confirmed."
+                )
+            elif llm_risk == "elevated":
+                context_notes.append(
+                    "CLINICAL CONTEXT (respiratory disease): Elevated-risk symptom in a patient "
+                    "with known respiratory disease. Cover acute exacerbation features, "
+                    "rescue inhaler use, when to seek emergency care, and escalation thresholds "
+                    "(peak flow, sentence completion, cyanosis)."
+                )
+            else:
+                context_notes.append(
+                    "CLINICAL CONTEXT (respiratory disease): Patient has known respiratory disease. "
+                    "Ensure the response notes relevant respiratory considerations and advises "
+                    "when worsening symptoms require clinical review."
+                )
+
+        # ── STROKE / TIA ─────────────────────────────────────────────────────────
+        # Any elevated+ symptom question → confirm escalation and mandate FAST guidance.
+        # Routine symptom questions → always include FAST red flag instruction.
+        if patient_history.has_stroke_history and is_symptom:
+            if llm_risk in ("elevated", "urgent", "crisis"):
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "Previous stroke/TIA + elevated-risk symptom: stroke recurrence must be excluded — "
+                    "FAST assessment required."
+                )
+            context_notes.append(
+                "CLINICAL CONTEXT (stroke/TIA history): Patient has a previous stroke or TIA. "
+                "The response MUST include FAST assessment guidance (Face, Arms, Speech, Time to call 999) "
+                "for any neurological, cardiovascular, or unexplained symptom. "
+                "Be explicit about which symptoms require emergency response versus GP review."
+            )
+
+        # ── LIVER DISEASE ────────────────────────────────────────────────────────
+        # Context-driven: medication safety + decompensation awareness.
+        if patient_history.has_liver_disease and (is_symptom or is_med_query):
+            if llm_risk in ("urgent", "crisis"):
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "Known liver disease + urgent classification: possible decompensation — "
+                    "escalation confirmed."
+                )
+            context_notes.append(
+                "CLINICAL CONTEXT (liver disease): Patient has known liver disease. "
+                "Cover hepatotoxicity risk for any medication discussed. "
+                "Note reduced paracetamol dose ceiling. Flag signs of decompensation "
+                "(jaundice, encephalopathy, ascites, haematemesis) as requiring emergency review."
+            )
+
+        # ── MENTAL HEALTH HISTORY ────────────────────────────────────────────────
+        # If the LLM already flagged mental_health or crisis intent, reinforce.
+        # For all mental health questions with history, add safety-net context.
+        if patient_history.has_mental_health_history and (is_symptom or is_mental):
+            if llm_risk == "crisis" or intent.crisis_detected:
+                intent.escalation_required = True
+                escalate_notes.append(
+                    "Known mental health history + crisis-level classification: applying crisis response."
+                )
+            elif is_mental:
+                context_notes.append(
+                    "CLINICAL CONTEXT (mental health history): Patient has a known mental health "
+                    "history. The response must include crisis support resources, use non-stigmatising "
+                    "language, and clearly state when to seek urgent mental health support."
+                )
+
+        # ── Repeated previous escalations ────────────────────────────────────────
+        # If this patient has been escalated urgently before, raise routine → elevated
+        # for symptom questions. Do not over-ride elevated or higher.
+        if patient_history.previous_escalation_count >= 2 and is_symptom:
+            if intent.risk_level == "routine":
+                intent.risk_level = "elevated"
+                context_notes.append(
+                    f"CLINICAL CONTEXT: Patient has {patient_history.previous_escalation_count} previous "
+                    "urgent clinical escalations. Applying cautious baseline — the response should "
+                    "include clear guidance on when to seek review and not underplay symptoms."
+                )
+
+        # ── Write to decision ────────────────────────────────────────────────────
+        if not escalate_notes and not context_notes:
+            return
+
+        for note in escalate_notes:
+            decision.add_gate(PolicyGateRecord(
+                gate_name="known_condition_risk",
+                applied=True,
+                reason=note,
+            ))
+
+        if escalate_notes:
+            decision.context_notes.append(
+                "POLICY NOTE (patient history): " + " | ".join(escalate_notes)
+            )
+        for note in context_notes:
+            decision.context_notes.append(note)
+
+        # Escalation banner for non-clinical users only, and only when required
+        if intent.escalation_required and not is_clinical and escalate_notes:
+            decision.escalation_banner = build_escalation_banner(
+                escalate_notes[0], role_config.role_key
+            )
+
+
+def _escalate_risk(current: str) -> str:
+    """Bump risk level up one step, capped at 'urgent'."""
+    order = ["routine", "elevated", "urgent", "crisis"]
+    try:
+        idx = order.index(current)
+        return order[min(idx + 1, 2)]  # cap at urgent; crisis only via crisis gate
+    except ValueError:
+        return "elevated"

@@ -1,13 +1,13 @@
-"""Deterministic clinical decision support for high-risk triage questions.
+"""Clinical decision support: maps LLM-detected presentation hints to structured
+ClinicalDecision objects containing evidence-based triage guidance.
 
-This module keeps pathway selection, urgency classification, and immediate
-actions in rule-based Python so the LLM is not left to infer critical
-disposition or escalation steps on its own.
+Presentation detection is handled entirely by the LLM intent classifier, which
+populates IntentClassification.presentation_hint using natural-language understanding.
+No keyword lists, regex, or hardcoded symptom terms are used here.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import re
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from backend.role_router import RoleConfig
 
 
-CLINICAL_LOGIC_VERSION = "2026.04.13-general-triage-v1"
+CLINICAL_LOGIC_VERSION = "2026.04.13-general-triage-v2"
 
 RISK_LEVEL_RANK = {
     "routine": 1,
@@ -147,8 +147,7 @@ class ClinicalDecision:
             if self.likely_concerns:
                 reasoning_items.append("Key concerns: " + ", ".join(self.likely_concerns))
             for trigger in self.triggered_rules:
-                matched = f" ({', '.join(trigger.matched_terms)})" if trigger.matched_terms else ""
-                reasoning_items.append(f"{trigger.finding}{matched}")
+                reasoning_items.append(trigger.finding)
             reasoning_items.append(self.rationale)
             sections.append(self._bullet_section("## Why This Pathway Was Selected", reasoning_items))
 
@@ -196,26 +195,15 @@ class ClinicalDecision:
         return "".join(markers)
 
 
-@dataclass
-class _ParsedQuestion:
-    text: str
-    lower: str
-    age: Optional[int]
-    duration_weeks: Optional[int]
-
-
 class ClinicalDecisionSupportEngine:
-    """Rule-based triage engine used before any answer generation."""
+    """
+    Maps the LLM-detected presentation_hint from IntentClassification to a
+    structured ClinicalDecision with evidence-based triage guidance.
 
-    _AGE_PATTERNS = [
-        re.compile(r"\b(\d{1,3})\s*-\s*year\s*-\s*old\b", re.IGNORECASE),
-        re.compile(r"\b(\d{1,3})\s*year\s*old\b", re.IGNORECASE),
-        re.compile(r"\baged?\s*(\d{1,3})\b", re.IGNORECASE),
-    ]
-    _WEEK_PATTERNS = [
-        re.compile(r"\bfor\s+(\d{1,2})\s+weeks?\b", re.IGNORECASE),
-        re.compile(r"\b(\d{1,2})\s+weeks?\b", re.IGNORECASE),
-    ]
+    No text parsing, no regex, no keyword lists. The LLM intent classifier
+    identifies the clinical presentation pattern using natural-language
+    understanding; this engine provides the corresponding clinical response.
+    """
 
     def assess(
         self,
@@ -223,17 +211,18 @@ class ClinicalDecisionSupportEngine:
         intent: "IntentClassification",
         role_config: "RoleConfig",
     ) -> ClinicalDecision:
-        parsed = self._parse_question(question)
-        matches = [
-            self._rule_thunderclap_headache(parsed),
-            self._rule_possible_sepsis(parsed),
-            self._rule_recurrent_blackout(parsed),
-            self._rule_chronic_cough(parsed),
-        ]
-        for decision in matches:
-            if decision is not None:
-                return decision
-        return self._build_default_decision(parsed, intent, role_config)
+        presentation = getattr(intent, "presentation_hint", "none") or "none"
+        dispatch = {
+            "thunderclap_headache":      self._decision_thunderclap_headache,
+            "possible_sepsis":           self._decision_possible_sepsis,
+            "recurrent_blackout":        self._decision_recurrent_blackout,
+            "chronic_cough_red_flags":   self._decision_chronic_cough_red_flags,
+            "chronic_cough_no_red_flags": self._decision_chronic_cough_no_red_flags,
+        }
+        builder = dispatch.get(presentation)
+        if builder:
+            return builder(intent)
+        return self._build_default_decision(intent, role_config)
 
     def apply_to_intent(
         self,
@@ -244,7 +233,11 @@ class ClinicalDecisionSupportEngine:
             intent.risk_level = decision.minimum_risk_level
             intent.escalation_required = decision.minimum_risk_level in {"urgent", "crisis"}
             intent.escalation_reason = decision.escalation_reason
-        if decision.pathway_id in {"thunderclap_headache", "possible_sepsis", "recurrent_blackout", "chronic_cough"}:
+        high_acuity_pathways = {
+            "thunderclap_headache", "possible_sepsis",
+            "recurrent_blackout", "chronic_cough_red_flags", "chronic_cough_no_red_flags",
+        }
+        if decision.pathway_id in high_acuity_pathways:
             intent.pathway_hint = "general_triage"
             if intent.intent_category == "general_info":
                 intent.intent_category = "symptom_triage"
@@ -255,45 +248,9 @@ class ClinicalDecisionSupportEngine:
             intent.crisis_detected = True
         return intent
 
-    @classmethod
-    def _parse_question(cls, question: str) -> _ParsedQuestion:
-        text = " ".join((question or "").split()).strip()
-        lower = text.lower()
+    # ── Clinical decision builders ─────────────────────────────────────────────
 
-        age = None
-        for pattern in cls._AGE_PATTERNS:
-            match = pattern.search(lower)
-            if match:
-                age = int(match.group(1))
-                break
-
-        duration_weeks = None
-        for pattern in cls._WEEK_PATTERNS:
-            match = pattern.search(lower)
-            if match:
-                duration_weeks = int(match.group(1))
-                break
-
-        return _ParsedQuestion(text=text, lower=lower, age=age, duration_weeks=duration_weeks)
-
-    def _rule_thunderclap_headache(self, parsed: _ParsedQuestion) -> Optional[ClinicalDecision]:
-        headache_terms = [
-            term for term in (
-                "severe headache",
-                "worst headache",
-                "headache",
-                "suddenly",
-                "sudden",
-                "hour ago",
-            )
-            if term in parsed.lower
-        ]
-        has_headache = "headache" in parsed.lower
-        sudden_onset = any(term in parsed.lower for term in ("came on suddenly", "sudden", "suddenly"))
-        worst_ever = any(term in parsed.lower for term in ("worst headache", "worst headache i have ever had"))
-        if not (has_headache and sudden_onset and worst_ever):
-            return None
-
+    def _decision_thunderclap_headache(self, intent: "IntentClassification") -> ClinicalDecision:
         return ClinicalDecision(
             decision_id="general-triage-thunderclap-headache",
             pathway_id="thunderclap_headache",
@@ -304,8 +261,8 @@ class ClinicalDecisionSupportEngine:
             minimum_risk_level="urgent",
             escalation_reason="Sudden severe headache / possible intracranial emergency.",
             rationale=(
-                "Sudden onset severe headache described as the worst ever should be managed as a red-flag "
-                "neurological presentation until serious intracranial causes are excluded."
+                "Sudden onset severe headache described as the worst ever should be managed as a "
+                "red-flag neurological presentation until serious intracranial causes are excluded."
             ),
             immediate_actions=[
                 "Escalate now for emergency department or acute medical review; do not manage as routine headache care.",
@@ -326,17 +283,13 @@ class ClinicalDecisionSupportEngine:
                 "This pattern needs emergency assessment because a sudden severe headache can signal a bleed or another acute neurological event.",
                 "Please tell us immediately if there is any confusion, weakness, speech change, or visual change while help is being arranged.",
             ],
-            likely_concerns=[
-                "subarachnoid haemorrhage",
-                "other acute intracranial pathology",
-            ],
+            likely_concerns=["subarachnoid haemorrhage", "other acute intracranial pathology"],
             triggered_rules=[
                 RuleTrigger(
                     rule_id="thunderclap_headache_red_flag",
-                    finding="Sudden severe headache with worst-ever description",
+                    finding="Sudden severe headache — worst-ever description identified by clinical classifier",
                     severity="urgent",
                     rationale="Red-flag headache pattern requires emergency exclusion of intracranial causes.",
-                    matched_terms=headache_terms,
                 )
             ],
             guideline_references=[
@@ -360,16 +313,8 @@ class ClinicalDecisionSupportEngine:
             deterministic_response=True,
         )
 
-    def _rule_possible_sepsis(self, parsed: _ParsedQuestion) -> Optional[ClinicalDecision]:
-        confusion_terms = [term for term in ("confused", "confusion", "increasingly confused", "delirium") if term in parsed.lower]
-        fever_terms = [term for term in ("temperature", "fever", "38.", "39.") if term in parsed.lower]
-        urine_terms = [term for term in ("very little urine", "passing very little urine", "reduced urine", "not had a pee", "oliguria") if term in parsed.lower]
-        age = parsed.age or 0
-        elderly = age >= 65 or "elderly" in parsed.lower
-        if not (confusion_terms and fever_terms and urine_terms):
-            return None
-
-        vulnerable_flags = ["elderly"] if elderly else []
+    def _decision_possible_sepsis(self, intent: "IntentClassification") -> ClinicalDecision:
+        elderly = "elderly" in (intent.vulnerable_flags or [])
         return ClinicalDecision(
             decision_id="general-triage-possible-sepsis",
             pathway_id="possible_sepsis",
@@ -380,13 +325,13 @@ class ClinicalDecisionSupportEngine:
             minimum_risk_level="urgent",
             escalation_reason="Confusion, fever, and reduced urine output suggest possible sepsis.",
             rationale=(
-                "Confusion plus fever plus reduced urine output indicates possible sepsis or another acute "
-                "cause of organ dysfunction and needs immediate escalation rather than watchful waiting."
+                "Confusion plus fever plus reduced urine output indicates possible sepsis or another "
+                "acute cause of organ dysfunction — needs immediate escalation rather than watchful waiting."
             ),
             immediate_actions=[
                 "Escalate immediately to the acute medical or senior review pathway and treat as possible sepsis until assessed.",
                 "Calculate NEWS2 now and repeat observations at a frequency dictated by deterioration risk.",
-                "Start the local sepsis bundle if criteria are met, including cultures, bloods, fluids, oxygen, and antibiotics as directed by protocol.",
+                "Start the local sepsis bundle if criteria are met: cultures, bloods, fluids, oxygen, and antibiotics as directed.",
                 "Strictly monitor urine output and seek the likely source of infection while escalation is underway.",
             ],
             monitoring_priorities=[
@@ -403,18 +348,13 @@ class ClinicalDecisionSupportEngine:
                 "The combination of confusion, fever, and reduced urine output can indicate sepsis, so we are escalating immediately.",
                 "We need to monitor observations closely and may need urgent blood tests, fluids, oxygen, and antibiotics.",
             ],
-            likely_concerns=[
-                "sepsis",
-                "acute delirium",
-                "acute kidney injury",
-            ],
+            likely_concerns=["sepsis", "acute delirium", "acute kidney injury"],
             triggered_rules=[
                 RuleTrigger(
                     rule_id="sepsis_red_flags",
-                    finding="Confusion with fever and reduced urine output",
+                    finding="Confusion with fever and reduced urine output — identified by clinical classifier",
                     severity="urgent",
                     rationale="This combination suggests infection with possible organ dysfunction.",
-                    matched_terms=confusion_terms + fever_terms + urine_terms,
                 )
             ],
             guideline_references=[
@@ -433,7 +373,7 @@ class ClinicalDecisionSupportEngine:
                 GuidelineReference(
                     authority="NHS England",
                     title="National Early Warning Score (NEWS)",
-                    url="https://www.england.nhs.uk/ourwork/clinical-policy/sepsis/nationalearlywarningscore/",
+                    url="https://www.england.nhs.uk/ourwork/clinical-policy/sepsis/nationalearningscore/",
                     note="NEWS2 is endorsed to identify deterioration and support early escalation.",
                 ),
             ],
@@ -441,30 +381,11 @@ class ClinicalDecisionSupportEngine:
                 "suspected sepsis adults confusion reduced urine output NICE NG253",
                 "sepsis confusion oliguria NEWS2 NHS",
             ],
-            vulnerable_flags=vulnerable_flags,
+            vulnerable_flags=["elderly"] if elderly else [],
             deterministic_response=True,
         )
 
-    def _rule_recurrent_blackout(self, parsed: _ParsedQuestion) -> Optional[ClinicalDecision]:
-        blackout_terms = [
-            term for term in (
-                "everything goes black",
-                "goes black",
-                "blackout",
-                "blacking out",
-                "nearly fall",
-                "nearly fell",
-                "faint",
-                "passed out",
-            )
-            if term in parsed.lower
-        ]
-        recurrent = any(term in parsed.lower for term in ("three times", "twice", "recurrent", "episodes", "past two weeks", "last two weeks"))
-        if not blackout_terms:
-            return None
-        if not recurrent and "few seconds" not in parsed.lower:
-            return None
-
+    def _decision_recurrent_blackout(self, intent: "IntentClassification") -> ClinicalDecision:
         return ClinicalDecision(
             decision_id="general-triage-recurrent-blackout",
             pathway_id="recurrent_blackout",
@@ -475,8 +396,8 @@ class ClinicalDecisionSupportEngine:
             minimum_risk_level="urgent",
             escalation_reason="Recurrent blackouts or near-syncope require urgent assessment.",
             rationale=(
-                "Recurrent episodes of transient visual blackout or near-collapse need urgent assessment for "
-                "arrhythmia, syncope, orthostatic hypotension, or neurological causes."
+                "Recurrent episodes of transient visual blackout or near-collapse need urgent assessment "
+                "for arrhythmia, syncope, orthostatic hypotension, or neurological causes."
             ),
             immediate_actions=[
                 "Keep the patient safe from falls and do not dismiss the episodes as benign without assessment.",
@@ -497,19 +418,13 @@ class ClinicalDecisionSupportEngine:
                 "Repeated blackouts or near-blackouts need urgent assessment because they can be caused by heart rhythm or blood pressure problems.",
                 "Please report any chest pain, palpitations, weakness, speech change, or a full loss of consciousness immediately.",
             ],
-            likely_concerns=[
-                "syncope or presyncope",
-                "arrhythmia",
-                "orthostatic hypotension",
-                "neurological event",
-            ],
+            likely_concerns=["syncope or presyncope", "arrhythmia", "orthostatic hypotension", "neurological event"],
             triggered_rules=[
                 RuleTrigger(
                     rule_id="recurrent_blackout_red_flag",
-                    finding="Recurrent transient blackout or near-collapse episodes",
+                    finding="Recurrent transient blackout or near-collapse episodes — identified by clinical classifier",
                     severity="urgent",
                     rationale="Recurrent blackout presentations need structured syncope assessment and cardiac screening.",
-                    matched_terms=blackout_terms,
                 )
             ],
             guideline_references=[
@@ -527,46 +442,21 @@ class ClinicalDecisionSupportEngine:
             deterministic_response=True,
         )
 
-    def _rule_chronic_cough(self, parsed: _ParsedQuestion) -> Optional[ClinicalDecision]:
-        if "cough" not in parsed.lower:
-            return None
-        duration_weeks = parsed.duration_weeks or 0
-        if duration_weeks < 8 and "eight weeks" not in parsed.lower:
-            return None
-
-        red_flags = any(
-            self._present_without_negation(parsed.lower, term)
-            for term in ("weight loss", "lost weight", "night sweats", "coughing up blood", "haemoptysis")
-        )
-        next_step = "GP"
-        urgency = "Prompt"
-        risk = "elevated"
-        reason = "Persistent cough lasting 8 weeks requires structured outpatient review."
-        rationale = (
-            "A cough lasting 8 weeks meets the threshold for chronic cough assessment. "
-            "Without emergency red flags in the history given, this is usually a prompt outpatient workup rather than emergency care."
-        )
-        if red_flags:
-            urgency = "Urgent"
-            next_step = "Same-day review"
-            risk = "urgent"
-            reason = "Persistent cough with red-flag features requires urgent assessment."
-            rationale = "Chronic cough plus red-flag features needs urgent assessment rather than routine follow-up."
-
+    def _decision_chronic_cough_red_flags(self, intent: "IntentClassification") -> ClinicalDecision:
         return ClinicalDecision(
-            decision_id="general-triage-chronic-cough",
-            pathway_id="chronic_cough",
-            pathway_label="Chronic cough assessment pathway",
-            summary="Arrange clinician review for chronic cough rather than continuing simple self-care alone.",
-            urgency_level=urgency,
-            next_step=next_step,
-            minimum_risk_level=risk,
-            escalation_reason=reason,
-            rationale=rationale,
+            decision_id="general-triage-chronic-cough-red-flags",
+            pathway_id="chronic_cough_red_flags",
+            pathway_label="Chronic cough with red-flag features",
+            summary="Arrange urgent clinician review for persistent cough with red-flag features.",
+            urgency_level="Urgent",
+            next_step="Same-day review",
+            minimum_risk_level="urgent",
+            escalation_reason="Persistent cough with red-flag features requires urgent assessment.",
+            rationale="Chronic cough plus red-flag features needs urgent assessment rather than routine follow-up.",
             immediate_actions=[
-                "Arrange GP or appropriate clinician review for chronic cough assessment.",
-                "Take a focused history for asthma, rhinitis/postnasal drip, reflux, ACE inhibitor use, and infection exposure.",
-                "Escalate faster if new red flags appear or if examination suggests respiratory compromise.",
+                "Arrange same-day GP or appropriate clinician review — do not defer to routine appointment.",
+                "Take a focused history for haemoptysis, weight loss, night sweats, and systemic features.",
+                "Escalate faster if examination suggests respiratory compromise or new acute features.",
             ],
             monitoring_priorities=[
                 "Breathlessness, chest pain, haemoptysis, fever, or systemic symptoms",
@@ -579,29 +469,81 @@ class ClinicalDecisionSupportEngine:
                 "Oxygen desaturation, respiratory distress, or inability to maintain oral intake",
             ],
             communication_points=[
-                "A cough lasting 8 weeks needs clinician review to look for common causes such as asthma, reflux, upper airway causes, or less commonly something more serious.",
-                "Please seek help sooner if you develop breathlessness, chest pain, coughing up blood, weight loss, or fevers.",
+                "A persistent cough with these features needs prompt assessment to look for serious causes.",
+                "Please seek help sooner if breathlessness, chest pain, or coughing blood worsens.",
             ],
-            likely_concerns=[
-                "upper airway cough syndrome",
-                "asthma",
-                "gastro-oesophageal reflux",
-            ],
+            likely_concerns=["lung malignancy", "tuberculosis", "other serious respiratory pathology"],
             triggered_rules=[
                 RuleTrigger(
-                    rule_id="chronic_cough_threshold",
-                    finding="Cough duration at or beyond 8 weeks",
-                    severity=risk,
-                    rationale="Persistent cough needs structured assessment rather than generic reassurance.",
-                    matched_terms=[f"{duration_weeks} weeks" if duration_weeks else "eight weeks"],
+                    rule_id="chronic_cough_red_flags",
+                    finding="Chronic cough with red-flag features — identified by clinical classifier",
+                    severity="urgent",
+                    rationale="Red-flag features alongside chronic cough require urgent exclusion of serious pathology.",
                 )
             ],
             guideline_references=[
                 GuidelineReference(
                     authority="NHS",
-                    title="Cough - when to see a GP and when urgent review is needed",
+                    title="Cough — when to see a GP and when urgent review is needed",
                     url="https://www.nhs.uk/symptoms/cough/",
-                    note="NHS advises GP review for persistent cough and urgent escalation for breathing difficulty, chest pain, or haemoptysis.",
+                    note="NHS advises urgent escalation for haemoptysis, breathlessness, chest pain, and unexplained weight loss.",
+                ),
+            ],
+            search_terms=[
+                "persistent cough red flags haemoptysis weight loss NHS guideline",
+                "chronic cough urgent review adult primary care",
+            ],
+            deterministic_response=True,
+        )
+
+    def _decision_chronic_cough_no_red_flags(self, intent: "IntentClassification") -> ClinicalDecision:
+        return ClinicalDecision(
+            decision_id="general-triage-chronic-cough-no-red-flags",
+            pathway_id="chronic_cough_no_red_flags",
+            pathway_label="Chronic cough assessment pathway",
+            summary="Arrange GP review for persistent cough — prompt but not emergency.",
+            urgency_level="Prompt",
+            next_step="GP",
+            minimum_risk_level="elevated",
+            escalation_reason="Persistent cough lasting 8+ weeks requires structured outpatient review.",
+            rationale=(
+                "A cough lasting 8 weeks meets the threshold for chronic cough assessment. "
+                "Without red-flag features, this warrants a prompt outpatient workup rather than emergency care."
+            ),
+            immediate_actions=[
+                "Arrange GP review for chronic cough assessment — do not continue self-care alone.",
+                "Take a focused history for asthma, rhinitis, reflux, ACE inhibitor use, and infection exposure.",
+                "Escalate faster if new red flags appear or examination suggests respiratory compromise.",
+            ],
+            monitoring_priorities=[
+                "Breathlessness, chest pain, haemoptysis, fever, or systemic symptoms",
+                "Any change in cough pattern, sputum, wheeze, or exercise tolerance",
+                "Weight loss, voice change, or other new red-flag features",
+            ],
+            escalation_triggers=[
+                "Coughing up blood, chest pain, breathlessness, or rapidly worsening symptoms",
+                "Unexplained weight loss, night sweats, or persistent fever",
+                "Oxygen desaturation, respiratory distress, or inability to maintain oral intake",
+            ],
+            communication_points=[
+                "A cough lasting 8 weeks needs clinician review to look for common causes such as asthma, reflux, or upper airway issues.",
+                "Please seek help sooner if you develop breathlessness, chest pain, coughing blood, weight loss, or fevers.",
+            ],
+            likely_concerns=["upper airway cough syndrome", "asthma", "gastro-oesophageal reflux"],
+            triggered_rules=[
+                RuleTrigger(
+                    rule_id="chronic_cough_threshold",
+                    finding="Cough duration at or beyond 8 weeks — identified by clinical classifier",
+                    severity="elevated",
+                    rationale="Persistent cough needs structured assessment rather than generic reassurance.",
+                )
+            ],
+            guideline_references=[
+                GuidelineReference(
+                    authority="NHS",
+                    title="Cough — when to see a GP and when urgent review is needed",
+                    url="https://www.nhs.uk/symptoms/cough/",
+                    note="NHS advises GP review for persistent cough.",
                 ),
             ],
             search_terms=[
@@ -611,23 +553,11 @@ class ClinicalDecisionSupportEngine:
             deterministic_response=True,
         )
 
-    @staticmethod
-    def _present_without_negation(text: str, term: str) -> bool:
-        if term not in text:
-            return False
-        negated_pattern = re.compile(
-            rf"(?:no|not|without|denies)\s+(?:\w+\s+){{0,3}}{re.escape(term)}",
-            re.IGNORECASE,
-        )
-        return not bool(negated_pattern.search(text))
-
     def _build_default_decision(
         self,
-        parsed: _ParsedQuestion,
         intent: "IntentClassification",
         role_config: "RoleConfig",
     ) -> ClinicalDecision:
-        del parsed
         risk_level = (intent.risk_level or "routine").lower()
         if risk_level == "crisis":
             urgency_level = "Emergency"
@@ -642,35 +572,27 @@ class ClinicalDecisionSupportEngine:
             urgency_level = "Routine"
             next_step = "Self-care"
 
-        rationale = intent.escalation_reason or "No deterministic red-flag pathway was triggered from the information provided."
+        rationale = intent.escalation_reason or "No specific high-acuity presentation pattern identified."
         actions = {
-            "crisis": [
-                "Activate the emergency response pathway immediately.",
-                "Do not wait for routine assessment or reassurance.",
-            ],
-            "urgent": [
-                "Arrange urgent clinician review and reassess observations promptly.",
-                "Escalate immediately if new red flags appear while awaiting assessment.",
-            ],
-            "elevated": [
-                "Arrange clinician review and safety-net for deterioration.",
-            ],
-            "routine": [
-                "Provide self-care guidance with clear safety-netting.",
-            ],
+            "crisis":   ["Activate the emergency response pathway immediately.",
+                         "Do not wait for routine assessment or reassurance."],
+            "urgent":   ["Arrange urgent clinician review and reassess observations promptly.",
+                         "Escalate immediately if new red flags appear while awaiting assessment."],
+            "elevated": ["Arrange clinician review and safety-net for deterioration."],
+            "routine":  ["Provide self-care guidance with clear safety-netting."],
         }
         monitors = {
-            "crisis": ["Any deterioration while emergency help is being arranged"],
-            "urgent": ["Worsening symptoms, new red flags, or rising physiological concern"],
+            "crisis":   ["Any deterioration while emergency help is being arranged"],
+            "urgent":   ["Worsening symptoms, new red flags, or rising physiological concern"],
             "elevated": ["Persistence, progression, or new red-flag symptoms"],
-            "routine": ["Whether symptoms settle, worsen, or new warning signs appear"],
+            "routine":  ["Whether symptoms settle, worsen, or new warning signs appear"],
         }
 
         return ClinicalDecision(
             decision_id="general-triage-default",
             pathway_id="general_triage",
             pathway_label="General triage",
-            summary="No specific high-confidence deterministic pathway matched; use the computed acuity floor and clinical judgement.",
+            summary="No specific high-acuity presentation matched; using computed acuity floor and clinical judgement.",
             urgency_level=urgency_level,
             next_step=next_step,
             minimum_risk_level=risk_level,

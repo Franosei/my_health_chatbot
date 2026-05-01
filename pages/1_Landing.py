@@ -227,6 +227,24 @@ with main_right:
         if is_clinician_role(selected_role):
             signup_org = st.text_input("Organisation (optional)", key="signup_org")
 
+        dob_col, sex_col = st.columns(2, gap="medium")
+        with dob_col:
+            signup_dob = st.date_input(
+                "Date of birth (optional)",
+                value=None,
+                min_value=datetime(1900, 1, 1).date(),
+                max_value=datetime.now(timezone.utc).date(),
+                key="signup_dob",
+                help="Used to compute your current age in clinical assessments. Updates automatically each year.",
+            )
+        with sex_col:
+            signup_sex = st.selectbox(
+                "Biological sex",
+                options=["Prefer not to say", "Male", "Female", "Other"],
+                key="signup_sex",
+                help="Used to apply sex-specific clinical guidelines where relevant.",
+            )
+
         signup_password = st.text_input("Password", type="password", key="signup_password")
         signup_confirm = st.text_input("Confirm password", type="password", key="signup_confirm")
 
@@ -271,6 +289,8 @@ with main_right:
 
         if signup_submitted:
             accepted_at = datetime.now(timezone.utc).isoformat()
+            clean_username = signup_username.strip().lower()
+            clean_email = signup_email.strip().lower()
 
             if not signup_email or not signup_username or not signup_password or not signup_confirm:
                 st.error("Email, username, password, and password confirmation are required.")
@@ -280,6 +300,10 @@ with main_right:
                 st.error("The password and confirmation fields must match.")
             elif len(signup_password) < 8:
                 st.error("Use a password with at least 8 characters.")
+            elif UserStore.resolve_login_username(clean_username):
+                st.error(f"The username '{signup_username.strip()}' is already taken. Please choose a different username.")
+            elif UserStore.resolve_login_username(clean_email):
+                st.error("That email address is already registered. Please sign in or use a different email address.")
             else:
                 created = UserStore.create_user(
                     signup_username,
@@ -294,10 +318,12 @@ with main_right:
                     terms_role=selected_role,
                     terms_accepted_at=accepted_at,
                     privacy_accepted_at=accepted_at,
+                    date_of_birth=signup_dob.isoformat() if signup_dob else "",
+                    biological_sex=signup_sex if signup_sex != "Prefer not to say" else "",
                 )
 
                 if not created:
-                    st.error("That username or email is already in use, or the account details do not meet policy.")
+                    st.error("Account creation failed unexpectedly. Please try again or contact support.")
                 else:
                     resolved_user = UserStore.resolve_login_username(signup_username)
                     if resolved_user:

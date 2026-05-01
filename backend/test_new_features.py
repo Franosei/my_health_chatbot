@@ -124,12 +124,13 @@ def test_gp_summary_pdf_is_created():
         medications=[{"name": "Warfarin", "dose": "5 mg", "schedule": "daily", "reason": "AF"}],
         uploads=[{"file": "discharge-letter.pdf"}],
         longitudinal_memory="Patient Summary:\nAtrial fibrillation.\nRecent symptoms or active concerns:\nHeadaches.",
-        latest_triage={
+        triage_summaries=[{
             "urgency_level": "Prompt",
             "next_step": "GP",
             "what_to_monitor": ["worsening headache"],
             "rationale": "Needs review if persistent.",
-        },
+            "created_at": "2025-01-01T10:00:00Z",
+        }],
     )
 
     assert pdf_bytes.startswith(b"%PDF")
@@ -149,7 +150,7 @@ def test_gp_summary_uses_medications_mentioned_in_longitudinal_memory():
             "Recent symptoms or active concerns:\n"
             "Increasing confusion and reduced urine output.\n"
         ),
-        latest_triage={},
+        triage_summaries=[],
     )
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")

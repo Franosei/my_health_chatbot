@@ -30,6 +30,9 @@ class IntentClassification:
     pathway_hint: str = "general_triage"
     # general_triage | maternity | msk | medications | chronic_conditions
     confidence: float = 0.8
+    presentation_hint: str = "none"
+    # none | thunderclap_headache | possible_sepsis | recurrent_blackout
+    # | chronic_cough_red_flags | chronic_cough_no_red_flags
 
 
 # ── Fast regex crisis patterns ─────────────────────────────────────────────────
@@ -106,6 +109,7 @@ class IntentRiskClassifier:
         question: str,
         user_profile: Optional[dict] = None,
         role_key: str = "patient",
+        patient_history=None,
     ) -> IntentClassification:
         """
         Full classification pipeline. Run this concurrently with query expansion
@@ -125,10 +129,10 @@ class IntentRiskClassifier:
 
         # Stage 2: LLM classification
         try:
-            return self._llm_classify(question, user_profile or {}, role_key)
+            return self._llm_classify(question, user_profile or {}, role_key, patient_history)
         except Exception as exc:
             print(f"IntentRiskClassifier LLM call failed, using safe defaults: {exc}")
-            return self._safe_default(question)
+            return self._safe_default()
 
     def _crisis_prescreen(self, question: str) -> bool:
         """Fast regex check — runs synchronously before any LLM call."""
@@ -136,16 +140,30 @@ class IntentRiskClassifier:
         return any(pattern.search(text) for pattern in _CRISIS_PATTERNS)
 
     def _llm_classify(
-        self, question: str, user_profile: dict, role_key: str
+        self, question: str, user_profile: dict, role_key: str, patient_history=None
     ) -> IntentClassification:
         role_hint = f"The user's clinical role is: {role_key}." if role_key else ""
         pregnancy_hint = ""
         if "pregnan" in question.lower() or role_key == "midwife":
             pregnancy_hint = " Note: pregnancy context may be present — apply maternity flags carefully."
 
+        history_block = ""
+        if patient_history is not None:
+            history_text = patient_history.as_prompt_block()
+            if history_text:
+                history_block = (
+                    "\n\nPatient's known medical history:\n"
+                    + history_text
+                    + "\n\nCRITICAL: A symptom that appears routine in isolation may be elevated "
+                    "or urgent given this history. Examples: headache in a hypertensive patient, "
+                    "any bleeding in a patient on anticoagulants, fever in an immunocompromised "
+                    "patient, chest tightness in a patient with cardiac history. "
+                    "Always consider whether this history raises the risk level of the current question."
+                )
+
         prompt = (
             "You are a clinical intent classifier for a health information system.\n"
-            f"{role_hint}{pregnancy_hint}\n\n"
+            f"{role_hint}{pregnancy_hint}{history_block}\n\n"
             "Classify the following health question and return a JSON object with these exact keys:\n"
             "- intent_category: one of [symptom_triage, medication_query, chronic_condition, "
             "maternity, msk, mental_health, general_info, crisis, administrative]\n"
@@ -156,7 +174,19 @@ class IntentRiskClassifier:
             "- escalation_reason: short string (≤60 chars) explaining why escalation is needed, "
             "or empty string if not required\n"
             "- pathway_hint: one of [general_triage, maternity, msk, medications, chronic_conditions]\n"
-            "- confidence: float 0.0–1.0\n\n"
+            "- confidence: float 0.0–1.0\n"
+            "- presentation_hint: one of the following — set ONLY if the description clearly matches, "
+            "otherwise use 'none':\n"
+            "  'thunderclap_headache' — sudden-onset severe headache described as the worst ever, "
+            "coming on in seconds; the patient does not need to use those exact words.\n"
+            "  'possible_sepsis' — ALL THREE present: altered mental state/confusion AND "
+            "fever/high temperature AND reduced urine output.\n"
+            "  'recurrent_blackout' — multiple episodes of transient loss of consciousness, "
+            "near-fainting, or vision going black; must be recurrent (more than once).\n"
+            "  'chronic_cough_red_flags' — cough lasting 8+ weeks WITH any of: coughing blood, "
+            "unexplained weight loss, or drenching night sweats.\n"
+            "  'chronic_cough_no_red_flags' — cough lasting 8+ weeks WITHOUT those red flags.\n"
+            "  'none' — none of the above clearly apply.\n\n"
             f"Question: {question}\n\n"
             "Return only valid JSON, no other text."
         )
@@ -170,6 +200,13 @@ class IntentRiskClassifier:
         raw = response.choices[0].message.content.strip()
         data = json.loads(raw)
 
+        valid_presentations = {
+            "none", "thunderclap_headache", "possible_sepsis", "recurrent_blackout",
+            "chronic_cough_red_flags", "chronic_cough_no_red_flags",
+        }
+        raw_presentation = data.get("presentation_hint", "none")
+        presentation_hint = raw_presentation if raw_presentation in valid_presentations else "none"
+
         return IntentClassification(
             intent_category=data.get("intent_category", "general_info"),
             risk_level=data.get("risk_level", "routine"),
@@ -181,33 +218,20 @@ class IntentRiskClassifier:
                 data.get("pathway_hint", "general_triage"), "general_triage"
             ),
             confidence=float(data.get("confidence", 0.8)),
+            presentation_hint=presentation_hint,
         )
 
     @staticmethod
-    def _safe_default(question: str) -> IntentClassification:
-        """Fallback when LLM classification fails — conservative safe defaults."""
-        lower = question.lower()
-        if any(word in lower for word in ("pregnan", "trimester", "antenatal", "postnatal", "labour")):
-            return IntentClassification(
-                intent_category="maternity",
-                risk_level="elevated",
-                vulnerable_flags=["pregnancy"],
-                escalation_required=False,
-                pathway_hint="maternity",
-                confidence=0.5,
-            )
-        if any(word in lower for word in ("pain", "ache", "muscle", "joint", "back", "neck", "physio")):
-            return IntentClassification(
-                intent_category="msk",
-                risk_level="routine",
-                pathway_hint="msk",
-                confidence=0.5,
-            )
-        if any(word in lower for word in ("medication", "drug", "tablet", "dose", "prescription")):
-            return IntentClassification(
-                intent_category="medication_query",
-                risk_level="routine",
-                pathway_hint="medications",
-                confidence=0.5,
-            )
-        return IntentClassification(confidence=0.4)
+    def _safe_default() -> IntentClassification:
+        """
+        Fallback when LLM classification fails.
+        Returns the most conservative safe default without any keyword or symptom matching —
+        downstream systems (policy gate, clinical decision support) apply their own logic.
+        """
+        return IntentClassification(
+            intent_category="symptom_triage",
+            risk_level="elevated",
+            escalation_required=False,
+            pathway_hint="general_triage",
+            confidence=0.3,
+        )
