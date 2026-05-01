@@ -492,6 +492,40 @@ def render_reasoning_panel(trace: dict) -> None:
                         st.caption(reason)
 
 
+def render_feedback_buttons(message: dict) -> None:
+    trace = message.get("metadata", {}).get("trace", {})
+    trace_id = trace.get("trace_id", "")
+    if not trace_id:
+        return
+
+    rated_key = f"feedback_rated_{trace_id}"
+    if st.session_state.get(rated_key):
+        rating_given = st.session_state[rated_key]
+        icon = "thumbs_up" if rating_given == "thumbs_up" else "thumbs_down"
+        label = "Helpful" if rating_given == "thumbs_up" else "Not helpful"
+        st.markdown(
+            f'<div class="meta-pill-row" style="margin-top:4px">'
+            f'<span style="opacity:0.65;font-size:12px">Rated: {label}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    cols = st.columns([1, 1, 8], gap="small")
+    with cols[0]:
+        if st.button("👍", key=f"fb_up_{trace_id}", help="Helpful response", use_container_width=True):
+            from backend.feedback_store import save_feedback
+            save_feedback("thumbs_up", trace)
+            st.session_state[rated_key] = "thumbs_up"
+            st.rerun()
+    with cols[1]:
+        if st.button("👎", key=f"fb_down_{trace_id}", help="Not helpful", use_container_width=True):
+            from backend.feedback_store import save_feedback
+            save_feedback("thumbs_down", trace)
+            st.session_state[rated_key] = "thumbs_down"
+            st.rerun()
+
+
 def render_chat_history(history: list[dict]) -> None:
     for message in history:
         avatar = USER_AVATAR if message.get("role") == "user" else ASSISTANT_AVATAR
@@ -523,6 +557,7 @@ def render_chat_history(history: list[dict]) -> None:
                 render_source_links(message.get("sources", []))
             render_message_meta(message)
             if message.get("role") == "assistant":
+                render_feedback_buttons(message)
                 render_reasoning_panel(meta.get("trace", {}))
                 render_source_trace(message)
 
