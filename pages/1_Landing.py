@@ -40,9 +40,20 @@ def render_feature_card(title: str, body: str) -> None:
     )
 
 
+def unique_points(points: list[str]) -> list[str]:
+    seen = set()
+    unique = []
+    for point in points:
+        cleaned = str(point).strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            unique.append(cleaned)
+    return unique
+
+
 def render_role_terms(role_label: str) -> None:
     terms = get_terms_for_role(role_label)
-    bullets_html = "".join(f"<li>{item}</li>" for item in terms["bullets"])
+    bullets_html = "".join(f"<li>{item}</li>" for item in unique_points(terms["bullets"]))
     st.markdown(
         f"""
         <div class="surface-card terms-card">
@@ -60,12 +71,12 @@ def render_role_terms(role_label: str) -> None:
 
 
 def render_privacy_notice() -> None:
-    bullets_html = "".join(f"<li>{item}</li>" for item in PRIVACY_NOTICE_POINTS)
+    bullets_html = "".join(f"<li>{item}</li>" for item in unique_points(PRIVACY_NOTICE_POINTS))
     st.markdown(
         f"""
         <div class="surface-card support-card">
             <div class="feature-eyebrow">Privacy Notice</div>
-            <h3>Account, privacy, and support information</h3>
+            <h3>Data, ratings, and support information</h3>
             <ul class="legal-list">
                 {bullets_html}
             </ul>
@@ -124,37 +135,53 @@ if current_user:
         if st.button("Continue", type="primary", use_container_width=True):
             st.switch_page("pages/2_Chatbot.py")
 
+if st.session_state.get("signup_role_reference") not in ROLE_OPTIONS:
+    st.session_state.signup_role_reference = ROLE_OPTIONS[0]
+
+if st.session_state.get("signup_role_selector") not in ROLE_OPTIONS:
+    st.session_state.signup_role_selector = st.session_state.signup_role_reference
+
+if st.session_state.get("auth_panel") not in ("Sign in", "Create account"):
+    st.session_state.auth_panel = "Sign in"
+
+active_auth_panel = st.session_state.auth_panel
+active_signup_role = st.session_state.signup_role_selector
+
 main_left, main_right = st.columns([1.08, 0.92], gap="large")
 
 with main_left:
-    card_cols = st.columns(2, gap="medium")
-    with card_cols[0]:
-        render_feature_card(
-            "How access works",
-            "Choose your role, review the matching terms, create your account, and return later with the same sign-in details.",
-        )
-    with card_cols[1]:
-        render_feature_card(
-            "What stays with your account",
-            "Your saved conversation history, profile details, uploads, and account records remain attached to your sign-in.",
-        )
+    if active_auth_panel == "Create account":
+        render_role_terms(active_signup_role)
+        render_privacy_notice()
+    else:
+        card_cols = st.columns(2, gap="medium")
+        with card_cols[0]:
+            render_feature_card(
+                "How access works",
+                "Choose your role, review the matching terms, create your account, and return later with the same sign-in details.",
+            )
+        with card_cols[1]:
+            render_feature_card(
+                "What stays with your account",
+                "Your saved conversation history, profile details, uploads, and account records remain attached to your sign-in.",
+            )
 
-    st.markdown(
-        """
-        <div class="surface-card checklist-card">
-            <div class="feature-eyebrow">Using Dr. Charlotte</div>
-            <h3>Account access and continuity</h3>
-            <ul class="legal-list">
-                <li>Sign in using either a username or an email address</li>
-                <li>Select the role that reflects how you will use the service</li>
-                <li>Accept the terms and conditions written for that role before account creation</li>
-                <li>Keep your account history available when you return</li>
-                <li>Contact Francis Osei directly for support, privacy, or account questions</li>
-            </ul>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        st.markdown(
+            """
+            <div class="surface-card checklist-card">
+                <div class="feature-eyebrow">Using Dr. Charlotte</div>
+                <h3>Account access and continuity</h3>
+                <ul class="legal-list">
+                    <li>Sign in using either a username or an email address</li>
+                    <li>Select the role that reflects how you will use the service</li>
+                    <li>Accept the terms and conditions written for that role before account creation</li>
+                    <li>Keep your account history available when you return</li>
+                    <li>Contact Francis Osei directly for support, privacy, or account questions</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 #    st.markdown(
 #        f"""
@@ -167,23 +194,26 @@ with main_left:
 #    )
 
 with main_right:
-    if st.session_state.get("signup_role_reference") not in ROLE_OPTIONS:
-        st.session_state.signup_role_reference = ROLE_OPTIONS[0]
+    auth_panel = st.radio(
+        "Account access",
+        ["Sign in", "Create account"],
+        key="auth_panel",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
-    tab_login, tab_signup = st.tabs(["Sign in", "Create account"])
-
-    with tab_login:
+    if auth_panel == "Sign in":
         st.markdown("### Sign in to Dr. Charlotte")
         st.caption("Use your username or email address together with your password.")
 
-        login_identifier = st.text_input("Email or username", key="login_identifier")
-        login_password = st.text_input("Password", type="password", key="login_password")
-        login_submitted = st.button(
-            "Sign in",
-            type="primary",
-            use_container_width=True,
-            key="login_submit",
-        )
+        with st.form("login_form"):
+            login_identifier = st.text_input("Email or username", key="login_identifier")
+            login_password = st.text_input("Password", type="password", key="login_password")
+            login_submitted = st.form_submit_button(
+                "Sign in",
+                type="primary",
+                use_container_width=True,
+            )
 
         if login_submitted:
             if not login_identifier or not login_password:
@@ -201,7 +231,7 @@ with main_right:
             else:
                 st.error("The email, username, or password you entered is incorrect.")
 
-    with tab_signup:
+    else:
         st.markdown("### Create your account")
         st.caption("Choose the role that best describes how this account will be used.")
 
@@ -216,76 +246,72 @@ with main_right:
             st.session_state.signup_role_reference = selected_role
             st.session_state.signup_accept_role_terms = False
 
-        render_role_terms(selected_role)
-        render_privacy_notice()
+        with st.form("signup_form"):
+            signup_name = st.text_input("Full name (optional)", key="signup_name")
+            signup_email = st.text_input("Email address", key="signup_email")
+            signup_username = st.text_input("Username", key="signup_username")
 
-        signup_name = st.text_input("Full name (optional)", key="signup_name")
-        signup_email = st.text_input("Email address", key="signup_email")
-        signup_username = st.text_input("Username", key="signup_username")
+            signup_org = ""
+            if is_clinician_role(selected_role):
+                signup_org = st.text_input("Organisation (optional)", key="signup_org")
 
-        signup_org = ""
-        if is_clinician_role(selected_role):
-            signup_org = st.text_input("Organisation (optional)", key="signup_org")
+            dob_col, sex_col = st.columns(2, gap="medium")
+            with dob_col:
+                signup_dob = st.date_input(
+                    "Date of birth (optional)",
+                    value=None,
+                    min_value=datetime(1900, 1, 1).date(),
+                    max_value=datetime.now(timezone.utc).date(),
+                    key="signup_dob",
+                    help="Used to compute your current age in clinical assessments. Updates automatically each year.",
+                )
+            with sex_col:
+                signup_sex = st.selectbox(
+                    "Biological sex",
+                    options=["Prefer not to say", "Male", "Female", "Other"],
+                    key="signup_sex",
+                    help="Used to apply sex-specific clinical guidelines where relevant.",
+                )
 
-        dob_col, sex_col = st.columns(2, gap="medium")
-        with dob_col:
-            signup_dob = st.date_input(
-                "Date of birth (optional)",
-                value=None,
-                min_value=datetime(1900, 1, 1).date(),
-                max_value=datetime.now(timezone.utc).date(),
-                key="signup_dob",
-                help="Used to compute your current age in clinical assessments. Updates automatically each year.",
+            signup_password = st.text_input("Password", type="password", key="signup_password")
+            signup_confirm = st.text_input("Confirm password", type="password", key="signup_confirm")
+
+            st.markdown(
+                """
+                <div class="pw-requirements-box">
+                    <div class="pw-req-header">Password requirements</div>
+                    <div class="pw-req-row">
+                        <span class="pw-req-badge">&#10003;</span>
+                        <span>Minimum <strong>8 characters</strong></span>
+                    </div>
+                    <div class="pw-req-row">
+                        <span class="pw-req-badge">&#10003;</span>
+                        <span>Must match the confirmation field exactly</span>
+                    </div>
+                    <div class="pw-req-row">
+                        <span class="pw-req-badge"></span>
+                        <span>Stored using a one-way cryptographic hash</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-        with sex_col:
-            signup_sex = st.selectbox(
-                "Biological sex",
-                options=["Prefer not to say", "Male", "Female", "Other"],
-                key="signup_sex",
-                help="Used to apply sex-specific clinical guidelines where relevant.",
+
+            role_terms = get_terms_for_role(selected_role)
+            accept_role_terms = st.checkbox(
+                role_terms["acknowledgement"],
+                key="signup_accept_role_terms",
+            )
+            accept_privacy = st.checkbox(
+                f"I have read the privacy notice and I understand that support and account questions can be sent to {SUPPORT_EMAIL}.",
+                key="signup_accept_privacy",
             )
 
-        signup_password = st.text_input("Password", type="password", key="signup_password")
-        signup_confirm = st.text_input("Confirm password", type="password", key="signup_confirm")
-
-        st.markdown(
-            """
-            <div class="pw-requirements-box">
-                <div class="pw-req-header">Password requirements</div>
-                <div class="pw-req-row">
-                    <span class="pw-req-badge">&#10003;</span>
-                    <span>Minimum <strong>8 characters</strong></span>
-                </div>
-                <div class="pw-req-row">
-                    <span class="pw-req-badge">&#10003;</span>
-                    <span>Must match the confirmation field exactly</span>
-                </div>
-                <div class="pw-req-row">
-                    <span class="pw-req-badge"></span>
-                    <span>Stored using a one-way cryptographic hash</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        role_terms = get_terms_for_role(selected_role)
-        accept_role_terms = st.checkbox(
-            role_terms["acknowledgement"],
-            key="signup_accept_role_terms",
-        )
-        accept_privacy = st.checkbox(
-            f"I have read the privacy notice and I understand that support and account questions can be sent to {SUPPORT_EMAIL}.",
-            key="signup_accept_privacy",
-        )
-
-        signup_submitted = st.button(
-            "Create account",
-            type="primary",
-            use_container_width=True,
-            key="signup_submit",
-            disabled=not (accept_role_terms and accept_privacy),
-        )
+            signup_submitted = st.form_submit_button(
+                "Create account",
+                type="primary",
+                use_container_width=True,
+            )
 
         if signup_submitted:
             accepted_at = datetime.now(timezone.utc).isoformat()
@@ -300,6 +326,8 @@ with main_right:
                 st.error("The password and confirmation fields must match.")
             elif len(signup_password) < 8:
                 st.error("Use a password with at least 8 characters.")
+            elif not accept_role_terms or not accept_privacy:
+                st.error("Please accept the role terms and privacy notice before creating the account.")
             elif UserStore.resolve_login_username(clean_username):
                 st.error(f"The username '{signup_username.strip()}' is already taken. Please choose a different username.")
             elif UserStore.resolve_login_username(clean_email):
@@ -335,13 +363,14 @@ with main_right:
                     else:
                         st.success("Account created successfully. Please sign in to continue.")
 
-    st.markdown(
-        f"""
-        <div class="surface-card trust-card">
-            <div class="feature-eyebrow">Contact</div>
-            <h3>{FOUNDER_NAME}</h3>
-            <p>Support contact: <a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a></p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if auth_panel == "Sign in":
+        st.markdown(
+            f"""
+            <div class="surface-card trust-card">
+                <div class="feature-eyebrow">Contact</div>
+                <h3>{FOUNDER_NAME}</h3>
+                <p>Support contact: <a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a></p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )

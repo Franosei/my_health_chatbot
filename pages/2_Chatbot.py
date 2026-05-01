@@ -587,6 +587,7 @@ inject_custom_css()
 current_user = st.session_state.get("current_user")
 if not current_user:
     st.warning("Please sign in to continue.")
+    st.session_state.auth_panel = "Sign in"
     st.switch_page("pages/1_Landing.py")
 
 if "rag_engine" not in st.session_state:
@@ -646,6 +647,7 @@ with st.sidebar:
             st.session_state.current_user = None
             st.session_state.history_user = None
             st.session_state.chat_history = []
+            st.session_state.auth_panel = "Sign in"
             st.switch_page("pages/1_Landing.py")
 
     with st.expander("Account settings", expanded=False):
@@ -686,6 +688,7 @@ with st.sidebar:
             st.session_state.current_user = None
             st.session_state.history_user = None
             st.session_state.chat_history = []
+            st.session_state.auth_panel = "Sign in"
             st.switch_page("pages/1_Landing.py")
 
     st.markdown("### Documents")

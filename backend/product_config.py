@@ -38,12 +38,6 @@ DEFAULT_CARE_CONTEXT_BY_ROLE = {
     "other clinician": "Clinical decision support",
 }
 
-_FEEDBACK_TERMS_BULLET = (
-    "When you rate a response, only the rating and anonymised clinical metadata "
-    "(intent category, risk level, evidence tiers) are stored. No question text, "
-    "answer text, or personal identifiers are retained in the feedback record."
-)
-
 ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
     "Patient / Individual": {
         "title": "Patient and Individual Terms",
@@ -52,7 +46,6 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
             "The service provides informational guidance only and does not diagnose conditions, prescribe medicines, or replace a licensed clinician.",
             "Do not rely on the service for emergencies. If symptoms are severe, worsening, or urgent, contact emergency services or a qualified clinician immediately.",
             "Only upload or enter information that belongs to you, or that you are permitted to use.",
-            _FEEDBACK_TERMS_BULLET,
         ],
         "acknowledgement": "I understand this patient account is for personal health information and education, not diagnosis or emergency care.",
     },
@@ -63,7 +56,6 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
             "Use the service to support communication, preparation, and understanding, not as a substitute for professional clinical advice.",
             "You are responsible for ensuring you are permitted to share or review another person's information before using it here.",
             "If the person you support has urgent symptoms or immediate safety concerns, contact emergency or clinical services without delay.",
-            _FEEDBACK_TERMS_BULLET,
         ],
         "acknowledgement": "I understand this caregiver account supports care coordination and education and does not replace professional advice or emergency services.",
     },
@@ -74,7 +66,6 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
             "Outputs are supportive and must not be used as the sole basis for diagnosis, treatment, prescribing, referral, or discharge decisions.",
             "You remain responsible for clinical judgement, patient-specific assessment, and compliance with local policy, supervision, and documentation requirements.",
             "Only enter patient information when you have a lawful basis and organisational authorisation to access and process it.",
-            _FEEDBACK_TERMS_BULLET,
         ],
         "acknowledgement": "I will use this physician account as decision support only and will verify outputs using my own clinical judgement and local policy.",
     },
@@ -85,7 +76,6 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
             "Outputs support nursing interpretation, communication, and escalation planning, but do not replace clinical assessment or local nursing policy.",
             "You remain responsible for confirming medicines, escalation pathways, and patient-specific actions with the relevant clinical team and approved workflows.",
             "Only use patient information that you are authorised to access, discuss, and document in your professional role.",
-            _FEEDBACK_TERMS_BULLET,
         ],
         "acknowledgement": "I will use this nursing account within my scope of practice and will verify recommendations against clinical assessment and local protocol.",
     },
@@ -96,7 +86,6 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
             "Outputs do not replace maternity assessment, safeguarding duties, escalation to obstetric teams, or emergency referral pathways.",
             "Pregnancy, postpartum, and newborn care require heightened caution, and all recommendations must be reviewed within the full clinical context.",
             "You are responsible for ensuring any patient information entered is used lawfully and in line with maternity governance requirements.",
-            _FEEDBACK_TERMS_BULLET,
         ],
         "acknowledgement": "I will use this midwifery account as a support tool only and will apply maternity-specific safety judgement and escalation standards.",
     },
@@ -107,7 +96,6 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
             "Outputs support rehabilitation planning and MSK education, but do not replace full assessment, contraindication screening, or referral judgement.",
             "You remain responsible for checking red flags, neurovascular issues, exercise tolerance, and suitability for any intervention before acting.",
             "Only use patient information that you are authorised to review and record within your clinical role.",
-            _FEEDBACK_TERMS_BULLET,
         ],
         "acknowledgement": "I will use this physiotherapy account as clinical support only and will verify all exercise and management decisions against my assessment.",
     },
@@ -118,17 +106,18 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
             "Outputs are for professional support only and must not replace regulated judgement, supervision, or approved organisational policy.",
             "You remain responsible for validating accuracy, relevance, and applicability before using any output in clinical work.",
             "Only process patient information when you have permission and a lawful basis to do so.",
-            _FEEDBACK_TERMS_BULLET,
         ],
         "acknowledgement": "I will use this clinician account as support only and will verify any output before applying it in practice.",
     },
 }
 
 PRIVACY_NOTICE_POINTS = [
-    "We store your account profile, password hash, conversation history, uploads, and audit events so your account can persist across sessions.",
+    "We store your account profile, role, consent records, password hash, conversation history, uploads, symptom logs, medication list, allergy and vitals entries, triage summaries, traces, and audit events so your account can persist across sessions.",
+    "We use saved account data to restore your workspace, personalise educational context, support safety checks, prepare exports such as health summaries, and maintain an audit trail.",
+    "When you use a thumbs-up or thumbs-down rating, we store only the rating and anonymised quality metadata such as intent category, risk level, user role, pathway used, evidence tiers, source count, policy gates, and alignment flags.",
+    "Feedback records do not store your question text, answer text, username, email address, uploaded documents, or other direct personal identifiers.",
     "Passwords are stored as one-way cryptographic hashes and are never written in plain text.",
     "You should only upload information you are entitled to use and share.",
-    "When you rate a response, we record only the rating and anonymised clinical metadata (intent category, risk level, evidence tiers used). No question text, answer text, or personal identifiers are stored in the feedback record.",
     f"Support, privacy, and account questions can be sent to {SUPPORT_EMAIL}.",
 ]
 
