@@ -963,6 +963,34 @@ class UserStore:
         return summaries[0] if summaries else {}
 
     @staticmethod
+    def save_trial_search_result(username: str, result: Dict) -> None:
+        """Persist the most recent trial search result so it survives app restarts."""
+        user = _get_user_record(username)
+        if not user:
+            return
+        user["last_trial_search"] = deepcopy(result)
+        _append_audit(
+            user,
+            "trial_search_saved",
+            "Saved trial search result",
+            metadata={
+                "location": result.get("location", ""),
+                "trial_count": len(result.get("trials", [])),
+                "searched_at": result.get("searched_at", ""),
+            },
+        )
+        _save_user_record(username, user)
+
+    @staticmethod
+    def get_trial_search_result(username: str) -> Optional[Dict]:
+        """Load the most recent persisted trial search result, or None if absent."""
+        user = _get_user_record(username)
+        if not user:
+            return None
+        result = user.get("last_trial_search")
+        return deepcopy(result) if result else None
+
+    @staticmethod
     def get_longitudinal_memory(username: str) -> Dict:
         user = _get_user_record(username)
         if not user:

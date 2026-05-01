@@ -142,71 +142,102 @@ def render_trial_card(trial: dict, index: int) -> None:
     with st.expander("Why this score? How was this trial matched?", expanded=False):
         coverage_count = trial.get("condition_coverage", 0)
         total_searched = trial.get("total_conditions_searched", 0) or 1
-        health = trial.get("health_score", 0)
-        location_sc = trial.get("location_score", 0)
-        demographic = trial.get("demographic_score", 0)
-        contact_sc = trial.get("contact_score", 0)
+        ali = trial.get("alignment_score", 0)
+        cov = trial.get("coverage_score", 0)
+        loc = trial.get("location_score", 0)
 
         def _bar(value: int, maximum: int) -> str:
             pct = min(100, int(value / maximum * 100))
             return (
-                f'<div style="background:rgba(22,59,71,.08);border-radius:999px;height:8px;margin:3px 0 8px">'
+                f'<div style="background:rgba(22,59,71,.08);border-radius:999px;'
+                f'height:8px;margin:3px 0 10px">'
                 f'<div style="width:{pct}%;height:100%;border-radius:999px;'
-                f'background:linear-gradient(90deg,var(--primary,#163b47),var(--accent,#2ab5a0))"></div></div>'
+                f'background:linear-gradient(90deg,var(--primary,#163b47),var(--accent,#2ab5a0))'
+                f'"></div></div>'
             )
+
+        def _status_badge(status: str) -> str:
+            colours = {
+                "included": ("background:#d4edda;color:#155724", "INCLUDED"),
+                "excluded": ("background:#f8d7da;color:#721c24", "EXCLUDED"),
+                "unknown":  ("background:#fff3cd;color:#856404", "UNKNOWN"),
+            }
+            style, label = colours.get(status, colours["unknown"])
+            return (
+                f'<span style="{style};padding:2px 8px;border-radius:4px;'
+                f'font-size:.75rem;font-weight:700">{label}</span>'
+            )
+
+        age_status = trial.get("age_status", "unknown")
+        sex_status = trial.get("sex_status", "unknown")
+        age_reason = html.escape(trial.get("age_reason", ""))
+        sex_reason = html.escape(trial.get("sex_reason", ""))
 
         st.markdown(
             f"""
-<div style="font-size:.9rem;line-height:1.7">
+<div style="font-size:.9rem;line-height:1.8">
 
-<strong>Multi-condition coverage</strong><br>
-This trial appeared in <strong>{coverage_count} of {total_searched}</strong> separate condition searches.
-Trials that match more of your conditions rank higher.
-{_bar(coverage_count, total_searched)}
+<strong>How the score is calculated</strong>
+<table style="width:100%;border-collapse:collapse;margin:.5rem 0 1rem">
+<tr><td style="padding:2px 8px 2px 0;color:#555;white-space:nowrap">Condition alignment (LLM)</td>
+    <td style="width:100%">{_bar(ali, 50)}</td>
+    <td style="padding:2px 0 2px 12px;white-space:nowrap;font-weight:600">{ali}/50</td></tr>
+<tr><td style="padding:2px 8px 2px 0;color:#555;white-space:nowrap">Multi-condition coverage</td>
+    <td>{_bar(cov, 30)}</td>
+    <td style="padding:2px 0 2px 12px;white-space:nowrap;font-weight:600">{cov}/30</td></tr>
+<tr><td style="padding:2px 8px 2px 0;color:#555;white-space:nowrap">Location</td>
+    <td>{_bar(loc, 20)}</td>
+    <td style="padding:2px 0 2px 12px;white-space:nowrap;font-weight:600">{loc}/20</td></tr>
+</table>
 
-<strong>Clinical alignment</strong> &nbsp;<span style="color:var(--text-soft,.6)">({health}/55)</span><br>
-How much of your health profile (conditions, symptoms, medications) appears in the trial's
-eligibility criteria, aims, and interventions.
-{_bar(health, 55)}
+<strong>Condition alignment</strong><br>
+This trial appeared in <strong>{coverage_count} of {total_searched}</strong> separate condition
+searches. The LLM assessed how clinically relevant this trial is to your health profile.
+<br><br>
 
-<strong>Location</strong> &nbsp;<span style="color:var(--text-soft,.6)">({location_sc}/25)</span><br>
-Whether a trial site is listed in your selected country.
-{_bar(location_sc, 25)}
+<strong>Age eligibility</strong> &nbsp;{_status_badge(age_status)}<br>
+<span style="color:#555">{age_reason}</span>
+<br><br>
 
-<strong>Age &amp; sex eligibility</strong> &nbsp;<span style="color:var(--text-soft,.6)">({demographic}/15)</span><br>
-Whether your age and biological sex fall within the trial's stated eligibility criteria.
-{_bar(demographic, 15)}
+<strong>Biological sex eligibility</strong> &nbsp;{_status_badge(sex_status)}<br>
+<span style="color:#555">{sex_reason}</span>
+<br><br>
 
-<strong>Contact available</strong> &nbsp;<span style="color:var(--text-soft,.6)">({contact_sc}/5)</span><br>
-Whether a public phone number or email address is listed for this trial.
-{_bar(contact_sc, 5)}
+<strong>Contact availability</strong> (not scored — for action only)<br>
+<span style="color:#555">{"Public contact details are listed for this trial." if contacts else "No public contact details are listed."}</span>
 
 </div>
 """,
             unsafe_allow_html=True,
         )
 
+        reasoning = trial.get("llm_reasoning", "")
+        if reasoning:
+            st.info(f"**Clinical assessment:** {reasoning}")
+
+        aligned = trial.get("aligned_conditions", [])
+        if aligned:
+            st.markdown("**Your conditions that align with this trial's inclusion criteria:**")
+            for item in aligned:
+                st.markdown(f"- {item}")
+
+        exclusion_risks = trial.get("exclusion_risks", [])
+        if exclusion_risks:
+            st.warning("**Potential exclusion factors to discuss with the study team:**")
+            for item in exclusion_risks:
+                st.markdown(f"- {item}")
+
         if found_for:
-            st.markdown("**Your conditions that found this trial:**")
+            st.markdown("**Your condition searches that found this trial:**")
             for term in found_for:
                 st.markdown(f"- {term}")
-
-        if trial.get("matched_terms"):
-            st.markdown(
-                "**Your health terms found in the trial text:** "
-                + ", ".join(trial["matched_terms"][:8])
-            )
-        if trial.get("demographic_flags"):
-            for flag in trial["demographic_flags"]:
-                st.warning(flag)
 
         if trial.get("interventions"):
             st.markdown("**Interventions being studied:** " + ", ".join(trial["interventions"]))
 
         eligibility_text = clean(trial.get("eligibility"), "")
         if eligibility_text:
-            st.markdown("**Eligibility criteria**")
-            # Render as plain text to avoid raw * Markdown leaking
+            st.markdown("**Full eligibility criteria**")
             st.text(eligibility_text[:2500])
 
         if trial.get("locations"):
@@ -233,6 +264,14 @@ medications = UserStore.get_medications(current_user)
 allergies = UserStore.get_allergies(current_user)
 vitals = UserStore.get_vitals(current_user, limit=None)
 triage_summaries = UserStore.get_triage_summaries(current_user, limit=None)
+
+# Restore persisted search result into session state on page load
+# so results survive app restarts without requiring a new search
+if "trial_search_result" not in st.session_state or st.session_state.get("_trial_result_user") != current_user:
+    persisted = UserStore.get_trial_search_result(current_user)
+    st.session_state.trial_search_result = persisted
+    st.session_state["_trial_result_user"] = current_user
+
 trial_profile = build_trial_search_profile(
     profile=profile,
     memory=memory,
@@ -321,18 +360,23 @@ with st.form("clinical_trial_search_form"):
 if submitted:
     with st.spinner("Analysing your health data and searching ClinicalTrials.gov..."):
         try:
-            st.session_state.trial_search_result = find_matching_trials(
+            result_new = find_matching_trials(
                 profile=trial_profile,
                 location_query=location,
                 max_results=10,
             )
+            st.session_state.trial_search_result = result_new
+            UserStore.save_trial_search_result(current_user, result_new)
         except requests.RequestException as exc:
-            st.session_state.trial_search_result = {
+            error_result = {
                 "error": f"ClinicalTrials.gov search failed: {exc}",
                 "trials": [],
-                "cond_query": trial_profile.cond_query,
+                "condition_terms": [],
+                "medication_terms": [],
                 "location": location,
+                "searched_at": "",
             }
+            st.session_state.trial_search_result = error_result
 
 result = st.session_state.get("trial_search_result")
 if result:
@@ -340,7 +384,6 @@ if result:
         st.error(result["error"])
     else:
         searched_at = format_timestamp(result.get("searched_at", ""))
-        cond_used = result.get("cond_query", "")
         st.markdown(
             f"""
             <div class="toolbar-card">
