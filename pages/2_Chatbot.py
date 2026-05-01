@@ -189,9 +189,9 @@ def render_source_trace(message: dict) -> None:
     if trace.get("trace_id"):
         trace_title_parts.append(trace["trace_id"])
 
-    expander_title = "Source trace"
+    expander_title = "Why this answer?"
     if trace_title_parts:
-        expander_title = "Source trace: " + " | ".join(trace_title_parts)
+        expander_title = "Why this answer? " + " | ".join(trace_title_parts)
 
     with st.expander(expander_title, expanded=False):
         if sources:
@@ -576,6 +576,10 @@ def submit_prompt_draft() -> None:
     st.session_state.prompt_draft = ""
 
 
+def record_summary_export(username: str, summary_label: str) -> None:
+    UserStore.add_audit(username, "summary_generated", f"{summary_label} generated")
+
+
 st.set_page_config(
     page_title=PRODUCT_NAME,
     page_icon=":material/monitor_heart:",
@@ -634,6 +638,9 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
+
+    if st.button("Health timeline", use_container_width=True):
+        st.switch_page("pages/3_Health_Timeline.py")
 
     sidebar_actions = st.columns(2, gap="small")
     with sidebar_actions[0]:
@@ -980,6 +987,8 @@ with st.sidebar:
         mime="application/pdf",
         use_container_width=True,
         disabled=not has_summary_content,
+        on_click=record_summary_export,
+        args=(current_user, _summary_label),
     )
     if latest_triage:
         st.caption(
