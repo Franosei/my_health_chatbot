@@ -133,7 +133,7 @@ if current_user:
         )
     with status_cols[1]:
         if st.button("Continue", type="primary", use_container_width=True):
-            st.switch_page("pages/2_Chatbot.py")
+            st.switch_page("pages/2_Workspace.py")
 
 if st.session_state.get("signup_role_reference") not in ROLE_OPTIONS:
     st.session_state.signup_role_reference = ROLE_OPTIONS[0]
@@ -226,8 +226,8 @@ with main_right:
                     UserStore.update_last_login(resolved_user)
                     st.session_state.current_user = resolved_user
                     st.session_state.history_user = None
-                    st.success("Sign-in successful. Opening your account...")
-                    st.switch_page("pages/2_Chatbot.py")
+                    st.success("Sign-in successful. Opening your workspace...")
+                    st.switch_page("pages/2_Workspace.py")
             else:
                 st.error("The email, username, or password you entered is incorrect.")
 
@@ -358,8 +358,8 @@ with main_right:
                         UserStore.update_last_login(resolved_user)
                         st.session_state.current_user = resolved_user
                         st.session_state.history_user = None
-                        st.success("Account created successfully. Opening your account...")
-                        st.switch_page("pages/2_Chatbot.py")
+                        st.success("Account created successfully. Opening your workspace...")
+                        st.switch_page("pages/2_Workspace.py")
                     else:
                         st.success("Account created successfully. Please sign in to continue.")
 

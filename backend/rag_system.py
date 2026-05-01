@@ -9,6 +9,7 @@ import re
 import numpy as np
 
 from backend.anonymizer import DocumentAnonymizer
+from backend.document_extractor import extract_health_data_from_document
 from backend.clinical_orchestrator import ClinicalOrchestrator
 from backend.gp_summary import build_gp_summary_pdf
 from backend.image_generator import ImageGenerator
@@ -152,6 +153,7 @@ class RAGEngine:
             if not path.exists() or path.suffix.lower() != ".pdf":
                 continue
 
+            is_new_upload = path.name not in known_uploads
             raw_text = extract_text_from_pdf(path)
             anonymized = self.anonymizer.anonymize(raw_text)
             summary = self.llm.summarize_user_health_record(anonymized)
@@ -175,10 +177,71 @@ class RAGEngine:
                 ]
             )
 
+            extracted: Dict = {}
             if normalized_user:
-                if path.name not in known_uploads:
+                if is_new_upload:
                     UserStore.add_upload(normalized_user, path.name, stored_path=str(path))
                     known_uploads.add(path.name)
+
+                    # Auto-populate health data from the document (new uploads only)
+                    extracted = extract_health_data_from_document(raw_text, path.name)
+                    source_note = f"Auto-extracted from {path.name}"
+
+                    # Vitals / lab results — content-based dedup (type + value + date)
+                    existing_vitals = UserStore.get_vitals(normalized_user, limit=None)
+                    existing_keys = {
+                        (v.get("type", "").lower(), v.get("value", "").lower(), v.get("recorded_on", ""))
+                        for v in existing_vitals
+                    }
+                    for vital in extracted.get("vitals", []):
+                        vtype = str(vital.get("type") or "").strip().lower()
+                        vval = str(vital.get("value") or "").strip().lower()
+                        vdate = str(vital.get("recorded_on") or "").strip()
+                        if not vtype or not vval:
+                            continue
+                        if (vtype, vval, vdate) in existing_keys:
+                            continue
+                        existing_keys.add((vtype, vval, vdate))
+                        UserStore.save_vitals_entry(normalized_user, {
+                            "type": vtype,
+                            "value": str(vital.get("value") or "").strip(),
+                            "unit": str(vital.get("unit") or "").strip(),
+                            "recorded_on": vdate,
+                            "notes": (
+                                f"{vital.get('notes', '').strip()} [{source_note}]"
+                                if vital.get("notes") else f"[{source_note}]"
+                            ).strip(),
+                        })
+
+                    # Medications — UserStore.save_medication deduplicates by name
+                    for med in extracted.get("medications", []):
+                        if not str(med.get("name") or "").strip():
+                            continue
+                        UserStore.save_medication(normalized_user, {
+                            "name": str(med.get("name") or "").strip(),
+                            "dose": str(med.get("dose") or "").strip(),
+                            "schedule": str(med.get("schedule") or "").strip(),
+                            "reason": str(med.get("reason") or "").strip(),
+                            "started_on": str(med.get("started_on") or "").strip(),
+                            "notes": (
+                                f"{med.get('notes', '').strip()} [{source_note}]"
+                                if med.get("notes") else f"[{source_note}]"
+                            ).strip(),
+                        })
+
+                    # Allergies — UserStore.save_allergy deduplicates by name
+                    for allergy in extracted.get("allergies", []):
+                        if not str(allergy.get("name") or "").strip():
+                            continue
+                        UserStore.save_allergy(normalized_user, {
+                            "name": str(allergy.get("name") or "").strip(),
+                            "reaction": str(allergy.get("reaction") or "").strip(),
+                            "severity": str(allergy.get("severity") or "unknown").strip(),
+                            "allergy_type": str(allergy.get("allergy_type") or "other").strip(),
+                            "confirmed": bool(allergy.get("confirmed", True)),
+                            "notes": f"[{source_note}]",
+                        })
+
                 UserStore.save_document_summary(
                     normalized_user,
                     path.name,
@@ -191,6 +254,8 @@ class RAGEngine:
                     "file": path.name,
                     "stored_path": str(path),
                     "summary": summary,
+                    "extracted": extracted,
+                    "is_new": is_new_upload,
                 }
             )
 

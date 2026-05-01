@@ -639,8 +639,14 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+    if st.button("Workspace", use_container_width=True):
+        st.switch_page("pages/2_Workspace.py")
+
     if st.button("Health timeline", use_container_width=True):
         st.switch_page("pages/3_Health_Timeline.py")
+
+    if st.button("Find clinical trials", use_container_width=True):
+        st.switch_page("pages/4_Find_Clinical_Trials.py")
 
     sidebar_actions = st.columns(2, gap="small")
     with sidebar_actions[0]:
@@ -701,9 +707,37 @@ with st.sidebar:
     st.markdown("### Documents")
     saved_paths = upload_documents(current_user)
     if saved_paths:
-        with st.spinner("Indexing uploaded documents for future questions..."):
+        with st.spinner("Indexing and extracting health data from uploaded documents..."):
             indexed = rag_engine.ingest_documents(user=current_user, file_paths=saved_paths)
-        st.success(f"Indexed {len(indexed)} document(s).")
+
+        # Show what was auto-populated from each new document
+        for doc in indexed:
+            if not doc.get("is_new"):
+                continue
+            extracted = doc.get("extracted") or {}
+            vitals = extracted.get("vitals", [])
+            medications = extracted.get("medications", [])
+            allergies = extracted.get("allergies", [])
+            conditions = extracted.get("conditions", [])
+
+            parts = []
+            if vitals:
+                parts.append(f"{len(vitals)} vital/lab result(s)")
+            if medications:
+                parts.append(f"{len(medications)} medication(s)")
+            if allergies:
+                parts.append(f"{len(allergies)} allergy/allergies")
+            if conditions:
+                parts.append(f"{len(conditions)} condition(s) noted")
+
+            if parts:
+                st.success(
+                    f"**{doc['file']}** — auto-populated: {', '.join(parts)}. "
+                    "Review in the trackers below."
+                )
+            else:
+                st.success(f"**{doc['file']}** indexed. No structured data found to extract.")
+
         st.rerun()
 
     if uploads:

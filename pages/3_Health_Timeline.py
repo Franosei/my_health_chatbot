@@ -627,8 +627,14 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    if st.button("Back to chat", use_container_width=True):
+    if st.button("Workspace", use_container_width=True):
+        st.switch_page("pages/2_Workspace.py")
+
+    if st.button("Open chat", use_container_width=True):
         st.switch_page("pages/2_Chatbot.py")
+
+    if st.button("Find clinical trials", use_container_width=True):
+        st.switch_page("pages/4_Find_Clinical_Trials.py")
 
     if st.button("Sign out", use_container_width=True):
         st.session_state.current_user = None

@@ -113,7 +113,7 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
 
 PRIVACY_NOTICE_POINTS = [
     "We store your account profile, role, consent records, password hash, conversation history, uploads, symptom logs, medication list, allergy and vitals entries, triage summaries, traces, and audit events so your account can persist across sessions.",
-    "We use saved account data to restore your workspace, personalise educational context, support safety checks, prepare exports such as health summaries, and maintain an audit trail.",
+    "We use saved account data to restore your workspace, personalise educational context, support safety checks, prepare exports such as health summaries, match recruiting clinical-trial records when you use the trial finder, and maintain an audit trail.",
     "When you use a thumbs-up or thumbs-down rating, we store only the rating and anonymised quality metadata such as intent category, risk level, user role, pathway used, evidence tiers, source count, policy gates, and alignment flags.",
     "Feedback records do not store your question text, answer text, username, email address, uploaded documents, or other direct personal identifiers.",
     "Passwords are stored as one-way cryptographic hashes and are never written in plain text.",
