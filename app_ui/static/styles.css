@@ -1212,3 +1212,26 @@ a:hover {
     color: #6b4f00;
     margin-bottom: 0.75rem;
 }
+
+/* Keep Streamlit's editable select/input text visible inside the dark sidebar. */
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] textarea,
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] input,
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] div {
+    color: var(--navy) !important;
+    -webkit-text-fill-color: var(--navy) !important;
+    caret-color: var(--navy) !important;
+}
+
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] svg {
+    color: var(--navy) !important;
+    fill: var(--navy) !important;
+}
+
+[data-testid="stSidebar"] input::placeholder,
+[data-testid="stSidebar"] textarea::placeholder,
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] input::placeholder {
+    color: rgba(22, 59, 71, 0.45) !important;
+    -webkit-text-fill-color: rgba(22, 59, 71, 0.45) !important;
+    opacity: 1;
+}

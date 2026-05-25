@@ -168,6 +168,21 @@ def _normalize_allergy(entry: Dict) -> Dict:
     }
 
 
+def _normalize_condition(entry: Dict) -> Dict:
+    status = (entry.get("status") or "").strip().lower()
+    if status not in ("active", "past", "resolved", "unknown"):
+        status = "unknown"
+    return {
+        "condition_id": entry.get("condition_id") or f"cond-{uuid4().hex[:12]}",
+        "name": str(entry.get("name") or "").strip(),
+        "status": status,
+        "recorded_on": str(entry.get("recorded_on") or "").strip(),
+        "notes": str(entry.get("notes") or "").strip(),
+        "created_at": entry.get("created_at") or _utc_now(),
+        "updated_at": entry.get("updated_at") or _utc_now(),
+    }
+
+
 def _normalize_vitals_entry(entry: Dict) -> Dict:
     return {
         "vitals_id": entry.get("vitals_id") or f"vit-{uuid4().hex[:12]}",
@@ -244,6 +259,7 @@ def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized.setdefault("medications", [])
     normalized.setdefault("triage_summaries", [])
     normalized.setdefault("allergies", [])
+    normalized.setdefault("conditions", [])
     normalized.setdefault("vitals", [])
     normalized.setdefault("active_conversation_id", f"conv-{uuid4().hex[:12]}")
 
@@ -285,6 +301,11 @@ def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized["allergies"] = [
         _normalize_allergy(entry)
         for entry in normalized.get("allergies", [])
+        if isinstance(entry, dict)
+    ]
+    normalized["conditions"] = [
+        _normalize_condition(entry)
+        for entry in normalized.get("conditions", [])
         if isinstance(entry, dict)
     ]
     normalized["vitals"] = [
@@ -880,6 +901,71 @@ class UserStore:
             return False
         user["allergies"] = kept
         _append_audit(user, "allergy_deleted", "Removed allergy entry", metadata={"allergy_id": allergy_id})
+        _save_user_record(username, user)
+        return True
+
+    @staticmethod
+    def save_condition(username: str, condition: Dict) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+        normalized = _normalize_condition(condition)
+        if not normalized["name"]:
+            return None
+
+        conditions = user.setdefault("conditions", [])
+        updated = False
+        for index, existing in enumerate(conditions):
+            same_id = existing.get("condition_id") == normalized.get("condition_id")
+            same_name = existing.get("name", "").strip().lower() == normalized["name"].lower()
+            if same_id or same_name:
+                normalized["created_at"] = existing.get("created_at") or normalized["created_at"]
+                conditions[index] = normalized
+                updated = True
+                break
+
+        if not updated:
+            conditions.append(normalized)
+
+        _append_audit(
+            user,
+            "condition_saved",
+            f"Saved condition: {normalized['name']}",
+            metadata={"condition_id": normalized["condition_id"], "status": normalized["status"]},
+        )
+        _save_user_record(username, user)
+        return normalized
+
+    @staticmethod
+    def get_conditions(username: str) -> List[Dict]:
+        user = _get_user_record(username)
+        conditions = deepcopy(user.get("conditions", [])) if user else []
+        conditions.sort(
+            key=lambda item: (
+                item.get("status", "unknown") != "active",
+                item.get("name", "").lower(),
+            )
+        )
+        return conditions
+
+    @staticmethod
+    def delete_condition(username: str, condition_id: str) -> bool:
+        user = _get_user_record(username)
+        if not user:
+            return False
+
+        conditions = user.setdefault("conditions", [])
+        kept = [entry for entry in conditions if entry.get("condition_id") != condition_id]
+        if len(kept) == len(conditions):
+            return False
+
+        user["conditions"] = kept
+        _append_audit(
+            user,
+            "condition_deleted",
+            "Removed condition from history",
+            metadata={"condition_id": condition_id},
+        )
         _save_user_record(username, user)
         return True
 

@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import html
+import inspect
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,25 @@ STARTER_PROMPTS = [
     "Summarize the most important themes from my uploaded records in plain language.",
     "What symptoms would make chest pain an urgent medical review issue?",
 ]
+CUSTOM_VITALS_OPTION = "Other measurement..."
+
+
+def selectbox_accepts_new_options() -> bool:
+    try:
+        return "accept_new_options" in inspect.signature(st.selectbox).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def format_vitals_type(vitals_type: str, labels: dict[str, str]) -> str:
+    cleaned = (vitals_type or "").strip()
+    if not cleaned:
+        return "Measurement"
+    if cleaned in labels:
+        return labels[cleaned]
+    if "_" in cleaned or cleaned.islower():
+        return cleaned.replace("_", " ").title()
+    return cleaned
 
 
 def resolve_image_source(
@@ -617,6 +637,7 @@ uploads = UserStore.get_uploads(current_user)
 symptom_logs = UserStore.get_symptom_logs(current_user, limit=None)
 medications = UserStore.get_medications(current_user)
 allergies = UserStore.get_allergies(current_user)
+conditions = UserStore.get_conditions(current_user)
 vitals = UserStore.get_vitals(current_user)
 traces = UserStore.get_interaction_traces(current_user, limit=5)
 audit_records = UserStore.get_audit(current_user, limit=8)
@@ -808,6 +829,63 @@ with st.sidebar:
         else:
             st.caption("No symptom logs yet.")
 
+    with st.expander("Conditions and medical history", expanded=False):
+        with st.form("condition_history_form"):
+            condition_name = st.text_input("Condition or diagnosis")
+            condition_status = st.selectbox("Status", ["unknown", "active", "past", "resolved"])
+            condition_date = st.date_input(
+                "Date recorded",
+                value=datetime.now(timezone.utc).date(),
+                key="condition_recorded_on",
+            )
+            condition_notes = st.text_input("Notes (optional)")
+            condition_saved = st.form_submit_button(
+                "Save condition",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if condition_saved:
+            saved_condition = UserStore.save_condition(
+                current_user,
+                {
+                    "name": condition_name,
+                    "status": condition_status,
+                    "recorded_on": condition_date.isoformat(),
+                    "notes": condition_notes,
+                },
+            )
+            if saved_condition:
+                rag_engine.restore_user_context(current_user)
+                st.success("Condition history updated.")
+                st.rerun()
+            else:
+                st.error("Enter a condition or diagnosis to save it.")
+
+        if conditions:
+            for condition in conditions[:8]:
+                label_parts = [condition.get("name", "Condition")]
+                status = condition.get("status", "")
+                if status and status != "unknown":
+                    label_parts.append(status.title())
+                if condition.get("recorded_on"):
+                    label_parts.append(condition["recorded_on"])
+                st.markdown(
+                    f"""
+                    <div class="mini-record">
+                        <strong>{html.escape(" | ".join(label_parts))}</strong>
+                        <span>{html.escape(condition.get('notes', 'On file') or 'On file')}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button("Remove condition", key=f"condition_delete_{condition['condition_id']}", use_container_width=True):
+                    UserStore.delete_condition(current_user, condition["condition_id"])
+                    rag_engine.restore_user_context(current_user)
+                    st.rerun()
+        else:
+            st.caption("No conditions or past history saved yet.")
+
     with st.expander("Medication list", expanded=False):
         with st.form("medication_list_form"):
             medication_name = st.text_input("Medication name")
@@ -918,6 +996,9 @@ with st.sidebar:
         ("blood_pressure", "Blood pressure", "mmHg", "e.g. 120/80"),
         ("heart_rate", "Heart rate", "bpm", "e.g. 72"),
         ("weight", "Weight", "kg", "e.g. 74"),
+        ("height", "Height", "cm", "e.g. 170"),
+        ("bmi", "BMI", "kg/m2", "e.g. 24.5"),
+        ("respiratory_rate", "Respiratory rate", "breaths/min", "e.g. 16"),
         ("blood_glucose", "Blood glucose", "mmol/L", "e.g. 5.4"),
         ("temperature", "Temperature", "°C", "e.g. 37.2"),
         ("oxygen_saturation", "Oxygen saturation (SpO₂)", "%", "e.g. 98"),
@@ -928,24 +1009,48 @@ with st.sidebar:
     ]
     _VITALS_LAY = {
         "blood_pressure", "heart_rate", "weight", "blood_glucose",
-        "temperature", "oxygen_saturation",
+        "height", "bmi", "temperature", "oxygen_saturation",
+        "respiratory_rate",
     }
     vitals_options = _VITALS_ALL if _is_clinical_user else [
         v for v in _VITALS_ALL if v[0] in _VITALS_LAY
     ]
     vitals_type_labels = {v[0]: v[1] for v in vitals_options}
+    vitals_label_to_key = {v[1].lower(): v[0] for v in vitals_options}
     vitals_units = {v[0]: v[2] for v in vitals_options}
+    vitals_placeholders = {v[0]: v[3] for v in vitals_options}
 
     with st.expander("Vitals and lab results", expanded=False):
         with st.form("vitals_form"):
-            vitals_type = st.selectbox(
-                "Measurement type",
-                options=[v[0] for v in vitals_options],
-                format_func=lambda k: vitals_type_labels.get(k, k),
-            )
+            vitals_type_options = [v[1] for v in vitals_options]
+            if selectbox_accepts_new_options():
+                selected_vitals_label = st.selectbox(
+                    "Measurement type",
+                    options=vitals_type_options,
+                    index=None,
+                    placeholder="Select or type a measurement",
+                    accept_new_options=True,
+                )
+                custom_vitals_label = ""
+            else:
+                selected_vitals_label = st.selectbox(
+                    "Measurement type",
+                    options=[*vitals_type_options, CUSTOM_VITALS_OPTION],
+                )
+                custom_vitals_label = (
+                    st.text_input(
+                        "Custom measurement type",
+                        placeholder="e.g. Waist circumference",
+                    )
+                    if selected_vitals_label == CUSTOM_VITALS_OPTION
+                    else ""
+                )
+            vitals_label = (custom_vitals_label or selected_vitals_label or "").strip()
+            vitals_type = vitals_label_to_key.get(vitals_label.lower(), vitals_label)
+            known_vitals_key = vitals_label_to_key.get(vitals_label.lower(), "")
             vitals_value = st.text_input(
                 "Value",
-                placeholder=next((v[3] for v in vitals_options if v[0] == vitals_type), ""),
+                placeholder=vitals_placeholders.get(known_vitals_key, "e.g. 5.4, 120/80, positive"),
             )
             vitals_date = st.date_input("Date recorded", value=datetime.now(timezone.utc).date())
             vitals_notes = st.text_input("Notes (optional)")
@@ -954,26 +1059,29 @@ with st.sidebar:
             )
 
         if vitals_saved:
-            saved_vitals = UserStore.save_vitals_entry(
-                current_user,
-                {
-                    "type": vitals_type,
-                    "value": vitals_value,
-                    "unit": vitals_units.get(vitals_type, ""),
-                    "recorded_on": vitals_date.isoformat(),
-                    "notes": vitals_notes,
-                },
-            )
-            if saved_vitals:
-                rag_engine.restore_user_context(current_user)
-                st.success("Reading saved.")
-                st.rerun()
+            if not vitals_type or not vitals_value.strip():
+                st.error("Enter a measurement type and value to save this reading.")
             else:
-                st.error("Enter a value to save this reading.")
+                saved_vitals = UserStore.save_vitals_entry(
+                    current_user,
+                    {
+                        "type": vitals_type,
+                        "value": vitals_value,
+                        "unit": vitals_units.get(vitals_type, ""),
+                        "recorded_on": vitals_date.isoformat(),
+                        "notes": vitals_notes,
+                    },
+                )
+                if saved_vitals:
+                    rag_engine.restore_user_context(current_user)
+                    st.success("Reading saved.")
+                    st.rerun()
+                else:
+                    st.error("Enter a measurement type and value to save this reading.")
 
         if vitals:
             for entry in vitals[:8]:
-                vtype = vitals_type_labels.get(entry.get("type", ""), entry.get("type", ""))
+                vtype = format_vitals_type(entry.get("type", ""), vitals_type_labels)
                 val = entry.get("value", "")
                 unit = entry.get("unit", "")
                 date_str = entry.get("recorded_on", "")

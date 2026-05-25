@@ -21,6 +21,7 @@ from backend.role_router import RoleConfig, RoleRouter
 from backend.utils import build_excerpt
 
 if TYPE_CHECKING:
+    from backend.context_graph import ContextGraph
     from backend.memory_store import MemoryStore
     from backend.moderation_ml import ModerationEnsemble
     from backend.official_guidance import OfficialGuidanceEngine
@@ -66,7 +67,9 @@ class ClinicalOrchestrator:
         medications: Optional[List[Dict]] = None,
         triage_summaries: Optional[List[Dict]] = None,
         allergies: Optional[List[Dict]] = None,
+        conditions: Optional[List[Dict]] = None,
         vitals: Optional[List[Dict]] = None,
+        context_graph: Optional["ContextGraph"] = None,
     ) -> Dict:
         """
         Full clinical orchestration pipeline.
@@ -86,6 +89,7 @@ class ClinicalOrchestrator:
             triage_summaries=triage_summaries or [],
             user_profile=user_profile,
             allergies=allergies or [],
+            conditions=conditions or [],
             vitals=vitals or [],
         )
 
@@ -108,6 +112,11 @@ class ClinicalOrchestrator:
 
         history_context = patient_history.as_prompt_block() if not patient_history.is_empty() else ""
 
+        # Patient-specific search hints from the context graph: combines the user's
+        # known conditions/medications with the question's key terms so PubMed
+        # retrieval is anchored to their actual health background.
+        graph_hints: List[str] = list(context_graph.search_hints) if context_graph else []
+
         with ThreadPoolExecutor(max_workers=2) as executor:
             intent_future = executor.submit(
                 self.intent_classifier.classify,
@@ -117,7 +126,7 @@ class ClinicalOrchestrator:
                 patient_history,
             )
             expand_future = executor.submit(
-                self._build_search_queries, question, history_context
+                self._build_search_queries, question, history_context, graph_hints
             )
 
             try:
@@ -422,7 +431,9 @@ class ClinicalOrchestrator:
 
     # ── Query building ─────────────────────────────────────────────────────────
 
-    def _build_search_queries(self, question: str, patient_history_context: str = "") -> List[str]:
+    def _build_search_queries(
+        self, question: str, patient_history_context: str = "", graph_hints: Optional[List[str]] = None
+    ) -> List[str]:
         queries = [question]
         try:
             if patient_history_context:
@@ -435,7 +446,13 @@ class ClinicalOrchestrator:
                 queries.extend(self.query_expander.expand(question))
         except Exception as exc:
             print(f"Query expansion failed: {exc}")
-        return list(dict.fromkeys(q for q in queries if q))[:4]
+        # Inject patient-specific search hints from the context graph.
+        # These combine the patient's known conditions/medications with the
+        # question's key terms, making PubMed retrieval more targeted.
+        for hint in (graph_hints or []):
+            if hint and hint not in queries:
+                queries.append(hint)
+        return list(dict.fromkeys(q for q in queries if q))[:5]
 
     def _augment_queries_with_pathway(
         self, queries: List[str], pathway_context, clinical_decision: Optional[ClinicalDecision] = None

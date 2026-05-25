@@ -15,6 +15,9 @@ VITAL_LABELS = {
     "blood_pressure": "Blood pressure",
     "heart_rate": "Heart rate",
     "weight": "Weight",
+    "height": "Height",
+    "bmi": "BMI",
+    "respiratory_rate": "Respiratory rate",
     "blood_glucose": "Blood glucose",
     "temperature": "Temperature",
     "oxygen_saturation": "Oxygen saturation",
@@ -100,7 +103,9 @@ def parse_blood_pressure(value: str) -> tuple[Optional[float], Optional[float]]:
 
 
 def vital_label(vital_type: str) -> str:
-    return VITAL_LABELS.get(vital_type, vital_type.replace("_", " ").title())
+    if vital_type in VITAL_LABELS:
+        return VITAL_LABELS[vital_type]
+    return vital_type.replace("_", " ").title() if "_" in vital_type or vital_type.islower() else vital_type
 
 
 def format_vital(entry: dict) -> str:
@@ -312,6 +317,7 @@ def build_timeline_events(
     symptom_logs: list[dict],
     medications: list[dict],
     allergies: list[dict],
+    conditions: list[dict],
     vitals: list[dict],
     triage_summaries: list[dict],
     audit_records: list[dict],
@@ -376,6 +382,20 @@ def build_timeline_events(
                 "type": "Allergy recorded",
                 "title": clean_text(allergy.get("name"), "Allergy"),
                 "detail": " - ".join(unique_nonempty(detail_parts)) or "Allergy profile updated",
+            }
+        )
+
+    for condition in conditions:
+        detail_parts = [
+            condition.get("status", ""),
+            condition.get("recorded_on", ""),
+        ]
+        events.append(
+            {
+                "when": condition.get("recorded_on") or condition.get("created_at", ""),
+                "type": "Condition recorded",
+                "title": clean_text(condition.get("name"), "Condition"),
+                "detail": " - ".join(unique_nonempty(detail_parts)) or "Condition history updated",
             }
         )
 
@@ -461,13 +481,15 @@ def render_health_summary(
     symptom_logs: list[dict],
     medications: list[dict],
     allergies: list[dict],
+    conditions: list[dict],
     vitals: list[dict],
     latest_triage: dict,
     memory: dict,
     trend_insights: list[dict],
 ) -> None:
     condition_context = unique_nonempty(
-        [medication.get("reason", "") for medication in medications]
+        [condition.get("name", "") for condition in conditions]
+        + [medication.get("reason", "") for medication in medications]
         + [latest_triage.get("pathway_label", "") if latest_triage else ""]
     )
     recent_vitals = [
@@ -481,7 +503,7 @@ def render_health_summary(
         render_summary_card(
             "Current conditions",
             render_list(condition_context, "No current condition context has been recorded yet."),
-            "Derived from saved medication reasons and triage context.",
+            f"{len(conditions)} saved",
         )
     with card_cols[1]:
         render_summary_card(
@@ -597,6 +619,7 @@ document_summaries = UserStore.get_document_summaries(current_user)
 symptom_logs = UserStore.get_symptom_logs(current_user, limit=None)
 medications = UserStore.get_medications(current_user)
 allergies = UserStore.get_allergies(current_user)
+conditions = UserStore.get_conditions(current_user)
 vitals = UserStore.get_vitals(current_user, limit=None)
 triage_summaries = UserStore.get_triage_summaries(current_user, limit=None)
 audit_records = UserStore.get_audit(current_user, limit=None)
@@ -609,6 +632,7 @@ timeline_events = build_timeline_events(
     symptom_logs=symptom_logs,
     medications=medications,
     allergies=allergies,
+    conditions=conditions,
     vitals=vitals,
     triage_summaries=triage_summaries,
     audit_records=audit_records,
@@ -658,12 +682,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-top_metrics = st.columns(5, gap="small")
+top_metrics = st.columns(6, gap="small")
 top_metrics[0].metric("Documents", len(uploads))
 top_metrics[1].metric("Symptoms", len(symptom_logs))
-top_metrics[2].metric("Medications", len(medications))
-top_metrics[3].metric("Allergies", len(allergies))
-top_metrics[4].metric("Vitals/labs", len(vitals))
+top_metrics[2].metric("Conditions", len(conditions))
+top_metrics[3].metric("Medications", len(medications))
+top_metrics[4].metric("Allergies", len(allergies))
+top_metrics[5].metric("Vitals/labs", len(vitals))
 
 st.session_state.setdefault("timeline_view", "Health Summary")
 view = st.radio(
@@ -681,6 +706,7 @@ if view == "Health Summary":
         symptom_logs=symptom_logs,
         medications=medications,
         allergies=allergies,
+        conditions=conditions,
         vitals=vitals,
         latest_triage=latest_triage,
         memory=memory,

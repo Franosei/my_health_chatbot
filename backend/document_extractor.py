@@ -52,9 +52,12 @@ Return ONLY a valid JSON object with these four keys:
   - "allergy_type": one of "drug" / "food" / "environmental" / "other"
   - "confirmed": true or false
 
-"conditions": array of plain strings — diagnosed conditions, past medical history items, active problems
+"conditions": array of objects describing diagnosed conditions, past medical history items, and active problems
 
-Accepted vital type keys (use exactly these):
+For "conditions", prefer objects with keys "name", "status", "recorded_on", and "notes".
+Use status "active", "past", "resolved", or "unknown".
+
+Preferred vital/lab type keys (use these when they match; otherwise create a concise snake_case key from the document's measurement name):
 blood_pressure, heart_rate, temperature, weight, height, bmi,
 oxygen_saturation, respiratory_rate, blood_glucose, haemoglobin,
 white_blood_cells, neutrophils, lymphocytes, monocytes, eosinophils,
@@ -101,15 +104,30 @@ def extract_health_data_from_document(text: str, filename: str = "") -> Dict[str
             ],
             response_format={"type": "json_object"},
             temperature=0,
-            max_tokens=1500,
+            max_tokens=2500,
         )
         raw = response.choices[0].message.content or "{}"
         parsed = json.loads(raw)
+        conditions = []
+        for condition in parsed.get("conditions") or []:
+            if isinstance(condition, dict):
+                name = str(condition.get("name") or "").strip()
+                if name:
+                    conditions.append(condition)
+            elif str(condition or "").strip():
+                conditions.append(
+                    {
+                        "name": str(condition).strip(),
+                        "status": "unknown",
+                        "recorded_on": "",
+                        "notes": "",
+                    }
+                )
         return {
             "vitals": [v for v in (parsed.get("vitals") or []) if isinstance(v, dict)],
             "medications": [m for m in (parsed.get("medications") or []) if isinstance(m, dict)],
             "allergies": [a for a in (parsed.get("allergies") or []) if isinstance(a, dict)],
-            "conditions": [str(c).strip() for c in (parsed.get("conditions") or []) if c],
+            "conditions": conditions,
         }
 
     except Exception as exc:

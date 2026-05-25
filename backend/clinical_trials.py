@@ -617,11 +617,13 @@ def build_trial_search_profile(
     symptom_logs: List[Dict],
     medications: List[Dict],
     allergies: List[Dict],
+    conditions: List[Dict],
     vitals: List[Dict],
     triage_summaries: List[Dict],
 ) -> "TrialSearchProfile":
-    conditions = _unique(
-        [m.get("reason", "") for m in medications if m.get("reason")]
+    condition_terms = _unique(
+        [c.get("name", "") for c in conditions if c.get("name")]
+        + [m.get("reason", "") for m in medications if m.get("reason")]
         + [s.get("pathway_label", "") for s in triage_summaries]
         + [s.get("decision_summary", "") for s in triage_summaries[:3]]
     )
@@ -632,6 +634,9 @@ def build_trial_search_profile(
     memory_summary = _clean(memory.get("summary", ""))
     if memory_summary:
         parts.append(f"Patient longitudinal history:\n{memory_summary[:1800]}")
+
+    if condition_terms:
+        parts.append("Recorded conditions/history: " + "; ".join(condition_terms[:10]))
 
     for s in triage_summaries[:5]:
         decision = _clean(s.get("decision_summary", ""))
@@ -656,7 +661,7 @@ def build_trial_search_profile(
             parts.append(f"Medication: {name}" + (f" (for {reason})" if reason else ""))
 
     return TrialSearchProfile(
-        conditions=conditions,
+        conditions=condition_terms,
         symptoms=symptoms,
         medications=medication_names,
         age=compute_current_age(profile.get("date_of_birth", "")),

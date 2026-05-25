@@ -441,14 +441,34 @@ def _allergy_lines(allergies: Iterable[Dict], max_lines: int = 8) -> List[str]:
     return _clean_lines(lines, max_lines)
 
 
+def _condition_lines(conditions: Iterable[Dict], max_lines: int = 8) -> List[str]:
+    lines = []
+    for condition in conditions:
+        name = _normalize_text(condition.get("name", ""))
+        if not name:
+            continue
+        status = _normalize_text(condition.get("status", ""))
+        recorded_on = _normalize_text(condition.get("recorded_on", ""))
+        parts = [name]
+        if status and status != "unknown":
+            parts.append(status)
+        if recorded_on:
+            parts.append(recorded_on)
+        lines.append(" - ".join(parts))
+    return _clean_lines(lines, max_lines)
+
+
 def _vitals_lines(vitals: Iterable[Dict], max_lines: int = 8) -> List[str]:
     _TYPE_LABELS = {
         "blood_pressure": "BP",
         "heart_rate": "HR",
         "weight": "Weight",
+        "height": "Height",
+        "bmi": "BMI",
         "blood_glucose": "Glucose",
         "temperature": "Temp",
         "oxygen_saturation": "SpO2",
+        "respiratory_rate": "Resp Rate",
         "peak_flow": "Peak Flow",
         "hba1c": "HbA1c",
         "egfr": "eGFR",
@@ -462,7 +482,7 @@ def _vitals_lines(vitals: Iterable[Dict], max_lines: int = 8) -> List[str]:
         recorded_on = _normalize_text(entry.get("recorded_on", ""))
         if not vtype or not value:
             continue
-        label = _TYPE_LABELS.get(vtype, vtype)
+        label = _TYPE_LABELS.get(vtype, vtype.replace("_", " ").title() if vtype.islower() else vtype)
         line = f"{label}: {value}{' ' + unit if unit else ''}"
         if recorded_on:
             line += f" ({recorded_on})"
@@ -492,6 +512,7 @@ def build_summary_pdf(
     triage_summaries: Optional[List[Dict]] = None,
     recent_chats: Optional[List[Dict]] = None,
     allergies: Optional[List[Dict]] = None,
+    conditions: Optional[List[Dict]] = None,
     vitals: Optional[List[Dict]] = None,
 ) -> bytes:
     config = _get_summary_config(role_key)
@@ -501,11 +522,15 @@ def build_summary_pdf(
     doc = fitz.open()
     display_name = user_profile.get("display_name") or "Patient"
     exported_at = datetime.now(timezone.utc).strftime("%d %b %Y")
+    memory_snapshot_lines = _clean_lines(
+        _condition_lines(conditions or []) + _memory_snapshot_lines(longitudinal_memory),
+        max_lines=8,
+    )
 
     # Build the data for each section key once
     section_data: Dict[str, List[str]] = {
         "memory_snapshot": _wrap_lines(
-            _memory_snapshot_lines(longitudinal_memory)
+            memory_snapshot_lines
         ),
         "active_concerns": _wrap_lines(
             _symptom_lines(symptom_logs, longitudinal_memory)
@@ -585,6 +610,7 @@ def build_gp_summary_pdf(
     triage_summaries: Optional[List[Dict]] = None,
     recent_chats: Optional[List[Dict]] = None,
     allergies: Optional[List[Dict]] = None,
+    conditions: Optional[List[Dict]] = None,
     vitals: Optional[List[Dict]] = None,
     role_key: str = "doctor",
 ) -> bytes:
@@ -598,5 +624,6 @@ def build_gp_summary_pdf(
         triage_summaries=triage_summaries,
         recent_chats=recent_chats,
         allergies=allergies,
+        conditions=conditions,
         vitals=vitals,
     )

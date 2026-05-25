@@ -142,6 +142,7 @@ def build_patient_history_context(
     triage_summaries: List[Dict],
     user_profile: Optional[Dict] = None,
     allergies: Optional[List[Dict]] = None,
+    conditions: Optional[List[Dict]] = None,
     vitals: Optional[List[Dict]] = None,
     max_triages: int = 10,
 ) -> PatientHistoryContext:
@@ -188,10 +189,28 @@ def build_patient_history_context(
             ctx.recent_vitals.append(label)
 
     # ── Conditions from longitudinal memory ─────────────────────────────────────
-    ctx.known_conditions = _extract_condition_lines(longitudinal_memory or "")
+    condition_names = []
+    for condition in conditions or []:
+        name = (condition.get("name") or "").strip()
+        if not name:
+            continue
+        status = (condition.get("status") or "").strip()
+        label = name
+        if status and status != "unknown":
+            label += f" ({status})"
+        condition_names.append(label)
+    ctx.known_conditions = _unique_nonempty(
+        condition_names + _extract_condition_lines(longitudinal_memory or "")
+    )
 
     # ── Scan combined text for condition-group flags ─────────────────────────────
-    combined = (longitudinal_memory or "") + " " + " ".join(ctx.known_medications)
+    combined = (
+        (longitudinal_memory or "")
+        + " "
+        + " ".join(ctx.known_conditions)
+        + " "
+        + " ".join(ctx.known_medications)
+    )
     ctx.has_cardiac_history    = bool(_CARDIAC.search(combined))
     ctx.has_hypertension       = bool(_HYPERTENSION.search(combined))
     ctx.has_diabetes           = bool(_DIABETES.search(combined))
@@ -221,6 +240,18 @@ def build_patient_history_context(
                 ctx.history_vulnerable_flags.append(flag)
 
     return ctx
+
+
+def _unique_nonempty(values: List[str]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for value in values:
+        cleaned = str(value or "").strip()
+        key = cleaned.lower()
+        if cleaned and key not in seen:
+            seen.add(key)
+            result.append(cleaned)
+    return result
 
 
 def _extract_condition_lines(memory_text: str) -> List[str]:

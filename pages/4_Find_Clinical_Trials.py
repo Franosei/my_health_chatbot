@@ -262,6 +262,7 @@ memory = UserStore.get_longitudinal_memory(current_user)
 symptom_logs = UserStore.get_symptom_logs(current_user, limit=None)
 medications = UserStore.get_medications(current_user)
 allergies = UserStore.get_allergies(current_user)
+conditions = UserStore.get_conditions(current_user)
 vitals = UserStore.get_vitals(current_user, limit=None)
 triage_summaries = UserStore.get_triage_summaries(current_user, limit=None)
 
@@ -278,6 +279,7 @@ trial_profile = build_trial_search_profile(
     symptom_logs=symptom_logs,
     medications=medications,
     allergies=allergies,
+    conditions=conditions,
     vitals=vitals,
     triage_summaries=triage_summaries,
 )

@@ -29,7 +29,6 @@ def upload_documents(current_user: str) -> List[Path]:
         file_path = save_dir / uploaded_file.name
         with open(file_path, "wb") as file:
             file.write(uploaded_file.getbuffer())
-        UserStore.add_upload(current_user, uploaded_file.name, stored_path=str(file_path))
         saved_paths.append(file_path)
 
     st.success(f"Saved {len(saved_paths)} document(s) to this account.")

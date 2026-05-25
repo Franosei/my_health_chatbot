@@ -40,6 +40,7 @@ profile = UserStore.get_user_profile(current_user)
 display_name = profile.get("display_name", current_user)
 symptom_logs = UserStore.get_symptom_logs(current_user, limit=None)
 medications = UserStore.get_medications(current_user)
+conditions = UserStore.get_conditions(current_user)
 uploads = UserStore.get_uploads(current_user)
 vitals = UserStore.get_vitals(current_user, limit=None)
 latest_triage = UserStore.get_latest_triage_summary(current_user)
@@ -58,11 +59,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-metric_cols = st.columns(4, gap="small")
+metric_cols = st.columns(5, gap="small")
 metric_cols[0].metric("Documents", len(uploads))
 metric_cols[1].metric("Symptoms", len(symptom_logs))
-metric_cols[2].metric("Medications", len(medications))
-metric_cols[3].metric("Vitals/labs", len(vitals))
+metric_cols[2].metric("Conditions", len(conditions))
+metric_cols[3].metric("Medications", len(medications))
+metric_cols[4].metric("Vitals/labs", len(vitals))
 
 if latest_triage:
     st.info(
@@ -100,4 +102,3 @@ with cards[2]:
     )
     if st.button("Find trials", use_container_width=True):
         st.switch_page("pages/4_Find_Clinical_Trials.py")
-

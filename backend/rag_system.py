@@ -108,6 +108,27 @@ class RAGEngine:
         else:
             self.memory.remove_entry(f"{normalized_user}:tracker:symptoms")
 
+        condition_summary = self._build_condition_memory_summary(
+            UserStore.get_conditions(normalized_user)
+        )
+        if condition_summary:
+            pending_entries.append(
+                {
+                    "text": condition_summary,
+                    "metadata": {
+                        "type": "user_summary",
+                        "source": "Condition history",
+                        "title": "Recorded conditions and history",
+                        "section": "conditions and history",
+                        "entry_key": f"{normalized_user}:tracker:conditions",
+                    },
+                    "user": normalized_user,
+                    "entry_key": f"{normalized_user}:tracker:conditions",
+                }
+            )
+        else:
+            self.memory.remove_entry(f"{normalized_user}:tracker:conditions")
+
         medication_summary = self._build_medication_memory_summary(
             UserStore.get_medications(normalized_user)
         )
@@ -142,6 +163,7 @@ class RAGEngine:
         a retrieval-friendly document summary per user.
         """
         normalized_user = user.strip().lower() if user else None
+        explicit_upload_paths = file_paths is not None
         documents = [Path(path) for path in (file_paths or self._default_document_paths(normalized_user))]
         indexed_documents = []
         known_uploads = {
@@ -153,7 +175,7 @@ class RAGEngine:
             if not path.exists() or path.suffix.lower() != ".pdf":
                 continue
 
-            is_new_upload = path.name not in known_uploads
+            is_new_upload = explicit_upload_paths or path.name not in known_uploads
             raw_text = extract_text_from_pdf(path)
             anonymized = self.anonymizer.anonymize(raw_text)
             summary = self.llm.summarize_user_health_record(anonymized)
@@ -241,6 +263,29 @@ class RAGEngine:
                             "confirmed": bool(allergy.get("confirmed", True)),
                             "notes": f"[{source_note}]",
                         })
+
+                    # Conditions / past history: UserStore.save_condition deduplicates by name.
+                    for condition in extracted.get("conditions", []):
+                        if isinstance(condition, dict):
+                            condition_name = str(condition.get("name") or "").strip()
+                            if not condition_name:
+                                continue
+                            condition_notes = str(condition.get("notes") or "").strip()
+                            UserStore.save_condition(normalized_user, {
+                                "name": condition_name,
+                                "status": str(condition.get("status") or "unknown").strip(),
+                                "recorded_on": str(condition.get("recorded_on") or "").strip(),
+                                "notes": (
+                                    f"{condition_notes} [{source_note}]"
+                                    if condition_notes else f"[{source_note}]"
+                                ).strip(),
+                            })
+                        elif str(condition or "").strip():
+                            UserStore.save_condition(normalized_user, {
+                                "name": str(condition).strip(),
+                                "status": "unknown",
+                                "notes": f"[{source_note}]",
+                            })
 
                 UserStore.save_document_summary(
                     normalized_user,
@@ -401,6 +446,7 @@ class RAGEngine:
             question=question,
             raw_answer=raw_answer,
             bundle=bundle,
+            run_claim_check=False,  # skip in streaming path — audit-only, saves ~0.8 s
         )
         if illustration:
             payload["image_url"] = illustration.image_url
@@ -416,14 +462,44 @@ class RAGEngine:
 
     def _prepare_answer_bundle(self, question: str, user: Optional[str] = None) -> Dict:
         normalized_user = user.strip().lower() if user else None
-        self.restore_user_context(normalized_user)
-        longitudinal_memory_summary = self.get_combined_longitudinal_memory(normalized_user)
-        user_profile = UserStore.get_user_profile(normalized_user) if normalized_user else {}
-        medications = UserStore.get_medications(normalized_user) if normalized_user else []
-        symptom_logs = UserStore.get_symptom_logs(normalized_user, limit=None) if normalized_user else []
-        triage_summaries = UserStore.get_triage_summaries(normalized_user, limit=None) if normalized_user else []
-        allergies = UserStore.get_allergies(normalized_user) if normalized_user else []
-        vitals = UserStore.get_vitals(normalized_user) if normalized_user else []
+
+        # Parallelize all UserStore reads + context restoration concurrently.
+        # restore_user_context populates the in-memory embedding store;
+        # the orchestrator's semantic search step happens after PubMed retrieval
+        # (~2-3 s later), so restoration is always complete in time.
+        with ThreadPoolExecutor(max_workers=9) as _pre_exec:
+            _restore_f = _pre_exec.submit(self.restore_user_context, normalized_user)
+            _memory_f = _pre_exec.submit(self.get_combined_longitudinal_memory, normalized_user) if normalized_user else None
+            _profile_f = _pre_exec.submit(UserStore.get_user_profile, normalized_user) if normalized_user else None
+            _med_f = _pre_exec.submit(UserStore.get_medications, normalized_user) if normalized_user else None
+            _symptom_f = _pre_exec.submit(UserStore.get_symptom_logs, normalized_user, None) if normalized_user else None
+            _triage_f = _pre_exec.submit(UserStore.get_triage_summaries, normalized_user, None) if normalized_user else None
+            _allergy_f = _pre_exec.submit(UserStore.get_allergies, normalized_user) if normalized_user else None
+            _condition_f = _pre_exec.submit(UserStore.get_conditions, normalized_user) if normalized_user else None
+            _vitals_f = _pre_exec.submit(UserStore.get_vitals, normalized_user) if normalized_user else None
+
+            _restore_f.result()
+            longitudinal_memory_summary = _memory_f.result() if _memory_f else ""
+            user_profile = _profile_f.result() if _profile_f else {}
+            medications = _med_f.result() if _med_f else []
+            symptom_logs = _symptom_f.result() if _symptom_f else []
+            triage_summaries = _triage_f.result() if _triage_f else []
+            allergies = _allergy_f.result() if _allergy_f else []
+            conditions = _condition_f.result() if _condition_f else []
+            vitals = _vitals_f.result() if _vitals_f else []
+
+        # Build a fast relevance graph from prior records (< 50 ms, no LLM).
+        from backend.context_graph import build_context_graph
+        context_graph = build_context_graph(
+            question=question,
+            conditions=conditions,
+            medications=medications,
+            symptom_logs=symptom_logs,
+            vitals=vitals,
+            allergies=allergies,
+            triage_summaries=triage_summaries,
+            longitudinal_memory=longitudinal_memory_summary,
+        )
 
         bundle = self._orchestrator.prepare_bundle(
             question=question,
@@ -433,7 +509,9 @@ class RAGEngine:
             medications=medications,
             triage_summaries=triage_summaries,
             allergies=allergies,
+            conditions=conditions,
             vitals=vitals,
+            context_graph=context_graph,
         )
         if bundle.get("kind") == "answer":
             medication_check = self._build_medication_check(
@@ -444,6 +522,7 @@ class RAGEngine:
             bundle["medication_check"] = medication_check
             bundle["symptom_logs"] = symptom_logs
             bundle["medications"] = medications
+            bundle["conditions"] = conditions
             if medication_check.get("alerts"):
                 bundle["full_context"] = self._append_medication_context(
                     bundle["full_context"],
@@ -511,7 +590,7 @@ class RAGEngine:
             "trace": trace,
         }
 
-    def _finalize_answer_payload(self, question: str, raw_answer: str, bundle: Dict) -> Dict:
+    def _finalize_answer_payload(self, question: str, raw_answer: str, bundle: Dict, run_claim_check: bool = True) -> Dict:
         answer_markdown = self._link_citations(raw_answer, bundle["combined_sources"])
 
         # Prepend escalation banner to answer if policy triggered one
@@ -556,9 +635,9 @@ class RAGEngine:
         if safety_net and "**Return immediately if**" not in answer_markdown:
             answer_markdown = answer_markdown + safety_net
 
-        # Claim-source alignment check (post-generation, only when sources exist)
+        # Claim-source alignment check (post-generation audit; skipped in streaming path)
         claim_alignment = []
-        if combined_sources:
+        if run_claim_check and combined_sources:
             try:
                 claim_alignment = self.llm.check_claim_source_alignment(
                     answer_markdown=raw_answer,
@@ -681,12 +760,16 @@ class RAGEngine:
         symptom_summary = build_symptom_pattern_summary(
             UserStore.get_symptom_logs(normalized_user, limit=None)
         )
+        condition_summary = self._build_condition_memory_summary(
+            UserStore.get_conditions(normalized_user)
+        )
         medication_summary = self._build_medication_memory_summary(
             UserStore.get_medications(normalized_user)
         )
         return self._compose_longitudinal_memory_summary(
             base_summary=base_summary,
             symptom_summary=symptom_summary,
+            condition_summary=condition_summary,
             medication_summary=medication_summary,
         )
 
@@ -711,6 +794,7 @@ class RAGEngine:
             triage_summaries=UserStore.get_triage_summaries(normalized_user, limit=None),
             recent_chats=UserStore.get_chat_history(normalized_user),
             allergies=UserStore.get_allergies(normalized_user),
+            conditions=UserStore.get_conditions(normalized_user),
             vitals=UserStore.get_vitals(normalized_user),
         )
 
@@ -991,6 +1075,7 @@ class RAGEngine:
     def _compose_longitudinal_memory_summary(
         base_summary: str,
         symptom_summary: str,
+        condition_summary: str,
         medication_summary: str,
     ) -> str:
         parts = []
@@ -999,9 +1084,27 @@ class RAGEngine:
             parts.append(cleaned_base)
         if symptom_summary:
             parts.append(symptom_summary)
+        if condition_summary:
+            parts.append(condition_summary)
         if medication_summary:
             parts.append(medication_summary)
         return "\n\n".join(parts).strip()
+
+    @staticmethod
+    def _build_condition_memory_summary(conditions: List[Dict]) -> str:
+        condition_lines = []
+        for condition in conditions:
+            name = (condition.get("name") or "").strip()
+            if not name:
+                continue
+            status = (condition.get("status") or "").strip()
+            line = name
+            if status and status != "unknown":
+                line += f" ({status})"
+            condition_lines.append(line)
+        if not condition_lines:
+            return ""
+        return "Conditions and history:\n" + "\n".join(f"- {item}" for item in condition_lines[:10])
 
     @staticmethod
     def _build_medication_memory_summary(medications: List[Dict]) -> str:
