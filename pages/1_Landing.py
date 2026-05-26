@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -247,7 +248,7 @@ with main_right:
             st.session_state.signup_accept_role_terms = False
 
         with st.form("signup_form"):
-            signup_name = st.text_input("Full name (optional)", key="signup_name")
+            signup_name = st.text_input("Full name", key="signup_name")
             signup_email = st.text_input("Email address", key="signup_email")
             signup_username = st.text_input("Username", key="signup_username")
 
@@ -318,8 +319,11 @@ with main_right:
             clean_username = signup_username.strip().lower()
             clean_email = signup_email.strip().lower()
 
-            if not signup_email or not signup_username or not signup_password or not signup_confirm:
-                st.error("Email, username, password, and password confirmation are required.")
+            signup_name_tokens = re.findall(r"[A-Za-z]{2,}", signup_name)
+            if not signup_name.strip() or not signup_email or not signup_username or not signup_password or not signup_confirm:
+                st.error("Full name, email, username, password, and password confirmation are required.")
+            elif len(signup_name_tokens) < 2:
+                st.error("Enter your full name with at least first and last name.")
             elif not is_valid_email(signup_email):
                 st.error("Enter a valid email address before creating the account.")
             elif signup_password != signup_confirm:
@@ -336,7 +340,7 @@ with main_right:
                 created = UserStore.create_user(
                     signup_username,
                     signup_password,
-                    display_name=signup_name.strip() or signup_username,
+                    display_name=signup_name.strip(),
                     email=signup_email,
                     care_context=default_care_context_for_role(selected_role),
                     role=selected_role,

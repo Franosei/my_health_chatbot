@@ -81,6 +81,83 @@ Document text:
 """
 
 
+def _chunk_document_text(text: str, max_chars: int = 5000, overlap: int = 350) -> List[str]:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+
+    chunks = []
+    start = 0
+    while start < len(cleaned):
+        end = min(start + max_chars, len(cleaned))
+        if end < len(cleaned):
+            split_floor = start + int(max_chars * 0.65)
+            newline_split = cleaned.rfind("\n", split_floor, end)
+            space_split = cleaned.rfind(" ", split_floor, end)
+            split_at = max(newline_split, space_split)
+            if split_at > start:
+                end = split_at
+
+        chunk = cleaned[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(cleaned):
+            break
+        start = max(end - overlap, start + 1)
+
+    return chunks
+
+
+def _normalize_extraction_payload(parsed: Dict) -> Dict[str, List]:
+    conditions = []
+    for condition in parsed.get("conditions") or []:
+        if isinstance(condition, dict):
+            name = str(condition.get("name") or "").strip()
+            if name:
+                conditions.append(condition)
+        elif str(condition or "").strip():
+            conditions.append(
+                {
+                    "name": str(condition).strip(),
+                    "status": "unknown",
+                    "recorded_on": "",
+                    "notes": "",
+                }
+            )
+
+    return {
+        "vitals": [v for v in (parsed.get("vitals") or []) if isinstance(v, dict)],
+        "medications": [m for m in (parsed.get("medications") or []) if isinstance(m, dict)],
+        "allergies": [a for a in (parsed.get("allergies") or []) if isinstance(a, dict)],
+        "conditions": conditions,
+    }
+
+
+def _dedupe_items(items: List[Dict], fields: List[str]) -> List[Dict]:
+    deduped = []
+    seen = set()
+    for item in items:
+        key = tuple(str(item.get(field, "")).strip().lower() for field in fields)
+        if not any(key) or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _merge_extraction_payloads(payloads: List[Dict[str, List]]) -> Dict[str, List]:
+    merged: Dict[str, List] = {"vitals": [], "medications": [], "allergies": [], "conditions": []}
+    for payload in payloads:
+        for key in merged:
+            merged[key].extend(payload.get(key, []))
+
+    merged["vitals"] = _dedupe_items(merged["vitals"], ["type", "value", "unit", "recorded_on"])
+    merged["medications"] = _dedupe_items(merged["medications"], ["name", "dose", "schedule", "reason"])
+    merged["allergies"] = _dedupe_items(merged["allergies"], ["name", "reaction"])
+    merged["conditions"] = _dedupe_items(merged["conditions"], ["name", "status"])
+    return merged
+
+
 def extract_health_data_from_document(text: str, filename: str = "") -> Dict[str, List]:
     """
     Use the LLM to extract structured health data from a clinical document.
@@ -92,44 +169,47 @@ def extract_health_data_from_document(text: str, filename: str = "") -> Dict[str
     api_key = os.getenv("OPENAI_API_KEY", "")
     empty: Dict[str, List] = {"vitals": [], "medications": [], "allergies": [], "conditions": []}
 
-    if not api_key or not text.strip():
+    if not api_key:
+        empty["extraction_errors"] = ["OPENAI_API_KEY is not configured, so structured extraction could not run."]
         return empty
 
-    try:
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "user", "content": _EXTRACT_PROMPT.format(text=text[:5000])}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=2500,
-        )
-        raw = response.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
-        conditions = []
-        for condition in parsed.get("conditions") or []:
-            if isinstance(condition, dict):
-                name = str(condition.get("name") or "").strip()
-                if name:
-                    conditions.append(condition)
-            elif str(condition or "").strip():
-                conditions.append(
+    if not text.strip():
+        empty["extraction_errors"] = ["No readable text was found in the uploaded PDF."]
+        return empty
+
+    chunks = _chunk_document_text(text)
+    if not chunks:
+        empty["extraction_errors"] = ["No readable text was found in the uploaded PDF."]
+        return empty
+
+    payloads = []
+    errors = []
+    client = OpenAI(api_key=api_key)
+    for index, chunk in enumerate(chunks, start=1):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
                     {
-                        "name": str(condition).strip(),
-                        "status": "unknown",
-                        "recorded_on": "",
-                        "notes": "",
+                        "role": "user",
+                        "content": _EXTRACT_PROMPT.format(text=chunk),
                     }
-                )
-        return {
-            "vitals": [v for v in (parsed.get("vitals") or []) if isinstance(v, dict)],
-            "medications": [m for m in (parsed.get("medications") or []) if isinstance(m, dict)],
-            "allergies": [a for a in (parsed.get("allergies") or []) if isinstance(a, dict)],
-            "conditions": conditions,
-        }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=2500,
+            )
+            raw = response.choices[0].message.content or "{}"
+            payloads.append(_normalize_extraction_payload(json.loads(raw)))
+        except Exception as exc:
+            errors.append(f"Structured extraction failed for section {index}: {exc}")
 
-    except Exception as exc:
-        print(f"[document_extractor] Extraction failed for '{filename}': {exc}")
+    if not payloads:
+        print(f"[document_extractor] Extraction failed for '{filename}': {' | '.join(errors)}")
+        empty["extraction_errors"] = errors or ["Structured extraction failed."]
         return empty
+
+    merged = _merge_extraction_payloads(payloads)
+    if errors:
+        merged["extraction_errors"] = errors
+    return merged

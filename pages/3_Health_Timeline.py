@@ -1,39 +1,48 @@
 import html
+import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Optional
 
 import streamlit as st
+from dotenv import load_dotenv
+from openai import OpenAI
 
 from app_ui.theme import inject_custom_css
 from backend.product_config import PRODUCT_NAME, SUPPORT_EMAIL
 from backend.user_store import UserStore
 
+load_dotenv()
 
-VITAL_LABELS = {
-    "blood_pressure": "Blood pressure",
-    "heart_rate": "Heart rate",
-    "weight": "Weight",
-    "height": "Height",
+# Only genuine abbreviations that .title() can't produce correctly.
+# Everything else is auto-formatted from the snake_case key.
+_ABBREV_OVERRIDES: dict[str, str] = {
     "bmi": "BMI",
-    "respiratory_rate": "Respiratory rate",
-    "blood_glucose": "Blood glucose",
-    "temperature": "Temperature",
-    "oxygen_saturation": "Oxygen saturation",
-    "peak_flow": "Peak flow",
     "hba1c": "HbA1c",
     "egfr": "eGFR",
-    "creatinine": "Creatinine",
+    "mcv": "MCV",
+    "mch": "MCH",
+    "mchc": "MCHC",
+    "alt": "ALT",
+    "ast": "AST",
+    "alp": "ALP",
+    "ggt": "GGT",
+    "ldh": "LDH",
+    "crp": "CRP",
+    "esr": "ESR",
+    "tsh": "TSH",
+    "inr": "INR",
+    "psa": "PSA",
+    "bnp": "BNP",
+    "aptt": "APTT",
+    "nt_probnp": "NT-proBNP",
+    "b12": "Vitamin B12",
+    "free_t4": "Free T4",
+    "free_t3": "Free T3",
+    "d_dimer": "D-Dimer",
 }
-
-TREND_ORDER = [
-    "blood_pressure",
-    "blood_glucose",
-    "weight",
-    "creatinine",
-    "egfr",
-]
 
 
 st.set_page_config(
@@ -103,9 +112,16 @@ def parse_blood_pressure(value: str) -> tuple[Optional[float], Optional[float]]:
 
 
 def vital_label(vital_type: str) -> str:
-    if vital_type in VITAL_LABELS:
-        return VITAL_LABELS[vital_type]
-    return vital_type.replace("_", " ").title() if "_" in vital_type or vital_type.islower() else vital_type
+    """Human-readable label for a vital/lab type key.
+
+    Known abbreviations (e.g. HbA1c, eGFR) are overridden explicitly.
+    Everything else is auto-formatted from its snake_case key so any
+    new type extracted from a document works without code changes.
+    """
+    key = (vital_type or "").strip().lower()
+    if key in _ABBREV_OVERRIDES:
+        return _ABBREV_OVERRIDES[key]
+    return key.replace("_", " ").title()
 
 
 def format_vital(entry: dict) -> str:
@@ -115,13 +131,15 @@ def format_vital(entry: dict) -> str:
     return " ".join(piece for piece in pieces if piece).strip() or "Value not recorded"
 
 
-def render_list(items: list[str], empty: str) -> str:
+def render_list(items: list[str], empty: str, cap: int = 6) -> str:
     cleaned = unique_nonempty(items)
     if not cleaned:
         return f"<p>{html.escape(empty)}</p>"
-    return "<ul class='summary-list'>" + "".join(
-        f"<li>{html.escape(item)}</li>" for item in cleaned[:6]
-    ) + "</ul>"
+    visible = cleaned[:cap]
+    overflow = len(cleaned) - cap
+    html_items = "".join(f"<li>{html.escape(item)}</li>" for item in visible)
+    suffix = f"<li><em>… and {overflow} more</em></li>" if overflow > 0 else ""
+    return f"<ul class='summary-list'>{html_items}{suffix}</ul>"
 
 
 def render_summary_card(title: str, body_html: str, meta: str = "") -> None:
@@ -136,6 +154,96 @@ def render_summary_card(title: str, body_html: str, meta: str = "") -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def get_vital_unit(vitals: list[dict], vital_type: str) -> str:
+    """Returns the most common unit string for a vital type, or empty string."""
+    units = [
+        (entry.get("unit") or "").strip()
+        for entry in vitals
+        if (entry.get("type") or "").strip().lower() == vital_type
+        and (entry.get("unit") or "").strip()
+    ]
+    if not units:
+        return ""
+    return max(set(units), key=units.count)
+
+
+def get_unique_vital_types_in_data(vitals: list[dict]) -> list[str]:
+    """Returns all vital types that have at least one chartable numeric reading, sorted."""
+    chartable: set[str] = set()
+    for entry in vitals:
+        vtype = (entry.get("type") or "").strip().lower()
+        if not vtype:
+            continue
+        if vtype == "blood_pressure":
+            sys_val, _ = parse_blood_pressure(entry.get("value", ""))
+            if sys_val is not None:
+                chartable.add(vtype)
+        else:
+            if first_number(entry.get("value", "")) is not None:
+                chartable.add(vtype)
+    return sorted(chartable)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_llm_vital_priority(
+    vital_types: tuple[str, ...],
+    condition_names: tuple[str, ...],
+    medication_names: tuple[str, ...],
+) -> list[str]:
+    """
+    Ask the LLM to rank the available vital/lab types from most to least clinically
+    important for this specific patient, given their conditions and medications.
+    Falls back to alphabetical order if the call fails.
+    """
+    if not vital_types:
+        return []
+    if len(vital_types) == 1:
+        return list(vital_types)
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        return list(vital_types)
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a clinical prioritisation assistant. "
+                        "Given a patient's known conditions, current medications, and a list of "
+                        "available vital/lab result type keys, rank the types from most to least "
+                        "clinically important for monitoring this specific patient. "
+                        "Return JSON with one key: 'priority_order' — an array of the exact type "
+                        "keys in ranked order. Include every provided key exactly once."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Known conditions: {', '.join(condition_names) if condition_names else 'none recorded'}\n"
+                        f"Current medications: {', '.join(medication_names) if medication_names else 'none recorded'}\n"
+                        f"Available vital/lab type keys: {', '.join(vital_types)}\n\n"
+                        "Return only valid JSON."
+                    ),
+                },
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+            max_tokens=400,
+        )
+        payload = json.loads(response.choices[0].message.content.strip())
+        ranked = payload.get("priority_order", [])
+        provided = set(vital_types)
+        ordered = [str(t).strip() for t in ranked if str(t).strip() in provided]
+        # Append any types the LLM missed
+        ordered += [t for t in vital_types if t not in ordered]
+        return ordered
+    except Exception as exc:
+        print(f"LLM vital priority failed: {exc}")
+        return list(vital_types)
 
 
 def build_vital_series(vitals: list[dict], vital_type: str) -> list[dict]:
@@ -211,10 +319,11 @@ def build_trend_insights(vitals: list[dict], symptom_logs: list[dict]) -> list[d
         recent_avg = mean(recent_sys)
         prior_avg = mean(prior_sys) if prior_sys else None
         if recent_avg >= 140 or (prior_avg is not None and recent_avg >= prior_avg + 10):
+            trend_note = f" (up from ~{prior_avg:.0f} mmHg)" if prior_avg is not None else ""
             insights.append(
                 {
                     "title": "Blood pressure pattern",
-                    "body": "Your blood pressure has been higher than usual in the most recent saved readings. Consider clinical review if this continues or if symptoms develop.",
+                    "body": f"Recent systolic average {recent_avg:.0f} mmHg{trend_note} — at or above 140. Consider clinical review if this continues or if symptoms develop.",
                     "detail": "blood_pressure",
                 }
             )
@@ -225,10 +334,11 @@ def build_trend_insights(vitals: list[dict], symptom_logs: list[dict]) -> list[d
         recent_avg = mean(recent_glucose)
         prior_avg = mean(prior_glucose) if prior_glucose else None
         if recent_avg >= 7.0 or (prior_avg is not None and recent_avg >= prior_avg + 1.0):
+            trend_note = f" (up from ~{prior_avg:.1f})" if prior_avg is not None else ""
             insights.append(
                 {
                     "title": "Glucose pattern",
-                    "body": "Recent saved glucose readings are running higher than earlier entries. Review the details and consider clinical advice if this persists.",
+                    "body": f"Recent blood glucose average {recent_avg:.1f} mmol/L{trend_note} — at or above the post-meal threshold of 7.0. Review details and consider clinical advice if this persists.",
                     "detail": "blood_glucose",
                 }
             )
@@ -241,7 +351,7 @@ def build_trend_insights(vitals: list[dict], symptom_logs: list[dict]) -> list[d
             insights.append(
                 {
                     "title": "Weight change",
-                    "body": f"Saved weight readings have {direction} by about {abs(change):.1f} kg across the recorded period.",
+                    "body": f"Weight has {direction} by {abs(change):.1f} kg across the recorded period ({weight_rows[0]['date']} → {weight_rows[-1]['date']}).",
                     "detail": "weight",
                 }
             )
@@ -255,8 +365,50 @@ def build_trend_insights(vitals: list[dict], symptom_logs: list[dict]) -> list[d
             insights.append(
                 {
                     "title": "eGFR pattern",
-                    "body": "Recent saved eGFR readings are lower than earlier entries or below the usual review threshold. Consider clinical review in context.",
+                    "body": f"Recent eGFR average {recent_avg:.0f} — below the 60 review threshold or declining vs earlier readings. Consider clinical review in context.",
                     "detail": "egfr",
+                }
+            )
+
+    hba1c_rows = build_vital_series(vitals, "hba1c")
+    recent_hba1c, prior_hba1c = split_recent_prior(hba1c_rows, "value")
+    if recent_hba1c:
+        recent_avg = mean(recent_hba1c)
+        prior_avg = mean(prior_hba1c) if prior_hba1c else None
+        if recent_avg >= 48 or (prior_avg is not None and recent_avg >= prior_avg + 5):
+            insights.append(
+                {
+                    "title": "HbA1c pattern",
+                    "body": f"Recent HbA1c average {recent_avg:.0f} mmol/mol — at or above the diabetes diagnostic threshold (≥48), or rising vs earlier values. Review glycaemic management.",
+                    "detail": "hba1c",
+                }
+            )
+
+    chol_rows = build_vital_series(vitals, "cholesterol_total")
+    recent_chol, prior_chol = split_recent_prior(chol_rows, "value")
+    if recent_chol:
+        recent_avg = mean(recent_chol)
+        prior_avg = mean(prior_chol) if prior_chol else None
+        if recent_avg >= 5.0 or (prior_avg is not None and recent_avg >= prior_avg + 0.5):
+            insights.append(
+                {
+                    "title": "Cholesterol pattern",
+                    "body": f"Recent total cholesterol average {recent_avg:.1f} mmol/L — at or above 5.0, or rising. Review cardiovascular risk in context.",
+                    "detail": "cholesterol_total",
+                }
+            )
+
+    hb_rows = build_vital_series(vitals, "haemoglobin")
+    recent_hb, prior_hb = split_recent_prior(hb_rows, "value")
+    if recent_hb:
+        recent_avg = mean(recent_hb)
+        prior_avg = mean(prior_hb) if prior_hb else None
+        if recent_avg < 120 or (prior_avg is not None and recent_avg <= prior_avg - 10):
+            insights.append(
+                {
+                    "title": "Haemoglobin pattern",
+                    "body": f"Recent haemoglobin average {recent_avg:.0f} g/L — below 120 or falling vs earlier readings. Consider anaemia workup in context.",
+                    "detail": "haemoglobin",
                 }
             )
 
@@ -492,9 +644,19 @@ def render_health_summary(
         + [medication.get("reason", "") for medication in medications]
         + [latest_triage.get("pathway_label", "") if latest_triage else ""]
     )
+    # Show the latest reading for each unique vital/lab type (not just first 5 raw rows)
+    latest_by_type: dict[str, dict] = {}
+    for entry in vitals:
+        vtype = (entry.get("type") or "").strip().lower()
+        if not vtype:
+            continue
+        recorded = (entry.get("recorded_on") or entry.get("created_at") or "").strip()
+        existing = latest_by_type.get(vtype)
+        if existing is None or recorded > (existing.get("recorded_on") or existing.get("created_at") or ""):
+            latest_by_type[vtype] = entry
     recent_vitals = [
-        f"{vital_label(entry.get('type', ''))}: {format_vital(entry)} ({display_date(entry.get('recorded_on') or entry.get('created_at', ''))})"
-        for entry in vitals[:5]
+        f"{vital_label(vtype)}: {format_vital(entry)} ({display_date(entry.get('recorded_on') or entry.get('created_at', ''))})"
+        for vtype, entry in sorted(latest_by_type.items())
     ]
     risks = build_key_risks(latest_triage, allergies, symptom_logs, trend_insights)
 
@@ -533,9 +695,9 @@ def render_health_summary(
     lower_cols = st.columns([1, 1], gap="medium")
     with lower_cols[0]:
         render_summary_card(
-            "Recent vitals/labs",
-            render_list(recent_vitals, "No vitals or lab readings saved yet."),
-            f"{len(vitals)} readings",
+            "Vitals & lab results",
+            render_list(recent_vitals, "No vitals or lab readings saved yet.", cap=12),
+            f"{len(latest_by_type)} unique test{'s' if len(latest_by_type) != 1 else ''}",
         )
     with lower_cols[1]:
         render_summary_card(
@@ -572,9 +734,15 @@ def render_timeline(events: list[dict]) -> None:
                 render_event(event)
 
 
-def render_trends(vitals: list[dict], symptom_logs: list[dict], trend_insights: list[dict]) -> None:
+def render_trends(
+    vitals: list[dict],
+    symptom_logs: list[dict],
+    trend_insights: list[dict],
+    conditions: list[dict] | None = None,
+    medications: list[dict] | None = None,
+) -> None:
     if trend_insights:
-        for index, insight in enumerate(trend_insights):
+        for insight in trend_insights:
             st.markdown(
                 f"""
                 <div class="timeline-insight-card">
@@ -591,19 +759,43 @@ def render_trends(vitals: list[dict], symptom_logs: list[dict], trend_insights: 
         st.info("No trend warnings yet. Add multiple readings over time to unlock pattern cards.")
 
     st.markdown("### Trend library")
-    for vital_type in TREND_ORDER:
-        rows = build_vital_series(vitals, vital_type)
-        if not rows:
-            continue
-        with st.expander(vital_label(vital_type), expanded=False):
-            render_trend_detail(vital_type, vitals, symptom_logs)
+    all_vital_types = get_unique_vital_types_in_data(vitals)
+    if all_vital_types:
+        # Build tuples for the cached LLM call
+        condition_names = tuple(
+            str(c.get("name", "")).strip()
+            for c in (conditions or [])
+            if str(c.get("name", "")).strip()
+        )
+        medication_names = tuple(
+            str(m.get("name", "")).strip()
+            for m in (medications or [])
+            if str(m.get("name", "")).strip()
+        )
+        with st.spinner("Ordering results by clinical relevance…"):
+            priority_types = get_llm_vital_priority(
+                tuple(all_vital_types), condition_names, medication_names
+            )
+
+        for vital_type in priority_types:
+            rows = build_vital_series(vitals, vital_type)
+            if not rows:
+                continue
+            unit = get_vital_unit(vitals, vital_type)
+            label = vital_label(vital_type)
+            expander_label = f"{label} ({unit})" if unit else label
+            expander_label += f"  ·  {len(rows)} reading{'s' if len(rows) != 1 else ''}"
+            with st.expander(expander_label, expanded=False):
+                render_trend_detail(vital_type, vitals, symptom_logs)
+    else:
+        st.caption("No chartable vitals or lab results saved yet. Upload a clinical document or record readings manually.")
 
     symptom_names = unique_nonempty([entry.get("symptom", "") for entry in symptom_logs])
     for symptom_name in symptom_names[:6]:
         rows = build_symptom_series(symptom_logs, symptom_name)
         if len(rows) < 2:
             continue
-        with st.expander(f"{symptom_name} severity", expanded=False):
+        with st.expander(f"{symptom_name} — severity over time  ·  {len(rows)} readings", expanded=False):
             render_trend_detail(f"symptom:{symptom_name}", vitals, symptom_logs)
 
 
@@ -715,4 +907,4 @@ if view == "Health Summary":
 elif view == "Timeline":
     render_timeline(timeline_events)
 else:
-    render_trends(vitals, symptom_logs, trend_insights)
+    render_trends(vitals, symptom_logs, trend_insights, conditions=conditions, medications=medications)

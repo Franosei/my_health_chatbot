@@ -3,6 +3,7 @@ import hashlib
 import html
 import inspect
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -582,6 +583,29 @@ def render_chat_history(history: list[dict]) -> None:
                 render_source_trace(message)
 
 
+def render_follow_up_questions(questions: list[str]) -> None:
+    if not questions:
+        return
+    st.markdown(
+        "<div class='followup-container'>"
+        "<span class='followup-label'>Suggested follow-up questions</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    for idx, question in enumerate(questions[:5]):
+        if st.button(
+            question,
+            key=f"followup_{idx}_{abs(hash(question)) % 99999}",
+            use_container_width=True,
+        ):
+            send_follow_up(question)
+
+
+def send_follow_up(question: str) -> None:
+    st.session_state.queued_follow_up = question
+    st.rerun()
+
+
 def queue_prompt(prompt: str) -> None:
     st.session_state.prompt_draft = prompt
     st.rerun()
@@ -686,7 +710,7 @@ with st.sidebar:
 
     with st.expander("Account settings", expanded=False):
         with st.form("profile_form"):
-            profile_name = st.text_input("Display name", value=user_profile.get("display_name", ""))
+            profile_name = st.text_input("Full name", value=user_profile.get("display_name", ""))
             profile_email = st.text_input("Email", value=user_profile.get("email", ""))
             st.text_input("Account role", value=clinical_role_display, disabled=True)
             st.text_input("Account type", value=user_profile.get("care_context", ""), disabled=True)
@@ -699,20 +723,23 @@ with st.sidebar:
             profile_saved = st.form_submit_button("Save changes", type="primary", use_container_width=True)
 
         if profile_saved:
-            updated = UserStore.update_profile(
-                current_user,
-                {
-                    "display_name": profile_name,
-                    "email": profile_email,
-                    "organization": organization,
-                    "follow_up_preferences": follow_up,
-                },
-            )
-            if updated:
-                st.success("Account details updated.")
-                st.rerun()
+            if len(re.findall(r"[A-Za-z]{2,}", profile_name)) < 2:
+                st.error("Enter your full name with at least first and last name.")
             else:
-                st.error("That email address is already linked to another account.")
+                updated = UserStore.update_profile(
+                    current_user,
+                    {
+                        "display_name": profile_name,
+                        "email": profile_email,
+                        "organization": organization,
+                        "follow_up_preferences": follow_up,
+                    },
+                )
+                if updated:
+                    st.success("Account details updated.")
+                    st.rerun()
+                else:
+                    st.error("That email address is already linked to another account.")
 
         st.divider()
         st.caption(
@@ -726,7 +753,11 @@ with st.sidebar:
             st.switch_page("pages/1_Landing.py")
 
     st.markdown("### Documents")
-    saved_paths = upload_documents(current_user)
+    profile_name = (user_profile.get("display_name") or "").strip()
+    expected_document_name = "" if profile_name.lower() == current_user.lower() else profile_name
+    if not expected_document_name:
+        st.warning("Add your full name in Account settings before uploading if you want automatic document-name verification.")
+    saved_paths = upload_documents(current_user, expected_name=expected_document_name)
     if saved_paths:
         with st.spinner("Indexing and extracting health data from uploaded documents..."):
             indexed = rag_engine.ingest_documents(user=current_user, file_paths=saved_paths)
@@ -735,31 +766,43 @@ with st.sidebar:
         for doc in indexed:
             if not doc.get("is_new"):
                 continue
+            if doc.get("summary_error"):
+                st.warning(f"{doc['file']}: {doc['summary_error']}")
             extracted = doc.get("extracted") or {}
-            vitals = extracted.get("vitals", [])
-            medications = extracted.get("medications", [])
-            allergies = extracted.get("allergies", [])
-            conditions = extracted.get("conditions", [])
+            extraction_errors = extracted.get("extraction_errors", [])
+            extracted_vitals = extracted.get("vitals", [])
+            extracted_medications = extracted.get("medications", [])
+            extracted_allergies = extracted.get("allergies", [])
+            extracted_conditions = extracted.get("conditions", [])
 
             parts = []
-            if vitals:
-                parts.append(f"{len(vitals)} vital/lab result(s)")
-            if medications:
-                parts.append(f"{len(medications)} medication(s)")
-            if allergies:
-                parts.append(f"{len(allergies)} allergy/allergies")
-            if conditions:
-                parts.append(f"{len(conditions)} condition(s) noted")
+            if extracted_vitals:
+                parts.append(f"{len(extracted_vitals)} vital/lab result(s)")
+            if extracted_medications:
+                parts.append(f"{len(extracted_medications)} medication(s)")
+            if extracted_allergies:
+                parts.append(f"{len(extracted_allergies)} allergy/allergies")
+            if extracted_conditions:
+                parts.append(f"{len(extracted_conditions)} condition(s) noted")
+
+            for error in extraction_errors:
+                st.error(f"{doc['file']}: {error}")
 
             if parts:
                 st.success(
-                    f"**{doc['file']}** — auto-populated: {', '.join(parts)}. "
+                    f"**{doc['file']}** - auto-populated: {', '.join(parts)}. "
                     "Review in the trackers below."
                 )
+            elif extraction_errors:
+                st.warning(f"**{doc['file']}** was saved, but structured extraction did not run.")
             else:
-                st.success(f"**{doc['file']}** indexed. No structured data found to extract.")
+                st.info(f"**{doc['file']}** indexed. No structured data found to extract.")
 
-        st.rerun()
+        uploads = UserStore.get_uploads(current_user)
+        medications = UserStore.get_medications(current_user)
+        allergies = UserStore.get_allergies(current_user)
+        conditions = UserStore.get_conditions(current_user)
+        vitals = UserStore.get_vitals(current_user)
 
     if uploads:
         for upload in uploads[:6]:
@@ -1221,6 +1264,14 @@ else:
 
 render_chat_history(chat_history)
 
+# Show follow-up question chips for the last assistant turn only
+if chat_history:
+    _last = chat_history[-1]
+    if _last.get("role") == "assistant":
+        _follow_ups = _last.get("metadata", {}).get("follow_up_questions", [])
+        if _follow_ups:
+            render_follow_up_questions(_follow_ups)
+
 st.session_state.setdefault("prompt_draft", "")
 st.session_state.setdefault("pending_submitted_prompt", "")
 voice_audio_hash = None
@@ -1318,6 +1369,8 @@ if send_prompt:
     active_question = st.session_state.pop("pending_submitted_prompt", "").strip()
     if not active_question:
         st.warning("Enter or record a message before sending.")
+elif st.session_state.get("queued_follow_up"):
+    active_question = st.session_state.pop("queued_follow_up", "").strip()
 
 if active_question:
     now = datetime.now(timezone.utc).isoformat()
@@ -1389,6 +1442,7 @@ if active_question:
                     "image_caption": payload.get("image_caption", ""),
                     "video_url": payload.get("video_url", ""),
                     "video_caption": payload.get("video_caption", ""),
+                    "follow_up_questions": payload.get("follow_up_questions", []),
                 },
             }
             answer_placeholder.markdown(assistant_entry["content"])

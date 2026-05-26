@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, Generator, List, Optional, Tuple
@@ -150,6 +150,48 @@ class RAGEngine:
         else:
             self.memory.remove_entry(f"{normalized_user}:tracker:medications")
 
+        vitals_summary = self._build_vitals_memory_summary(
+            UserStore.get_vitals(normalized_user, limit=None)
+        )
+        if vitals_summary:
+            pending_entries.append(
+                {
+                    "text": vitals_summary,
+                    "metadata": {
+                        "type": "user_summary",
+                        "source": "Vitals and lab results",
+                        "title": "Recorded vitals and lab results",
+                        "section": "vitals and labs",
+                        "entry_key": f"{normalized_user}:tracker:vitals",
+                    },
+                    "user": normalized_user,
+                    "entry_key": f"{normalized_user}:tracker:vitals",
+                }
+            )
+        else:
+            self.memory.remove_entry(f"{normalized_user}:tracker:vitals")
+
+        allergies_summary = self._build_allergies_memory_summary(
+            UserStore.get_allergies(normalized_user)
+        )
+        if allergies_summary:
+            pending_entries.append(
+                {
+                    "text": allergies_summary,
+                    "metadata": {
+                        "type": "user_summary",
+                        "source": "Allergy record",
+                        "title": "Known allergies and adverse reactions",
+                        "section": "allergies",
+                        "entry_key": f"{normalized_user}:tracker:allergies",
+                    },
+                    "user": normalized_user,
+                    "entry_key": f"{normalized_user}:tracker:allergies",
+                }
+            )
+        else:
+            self.memory.remove_entry(f"{normalized_user}:tracker:allergies")
+
         self.memory.upsert_entries(pending_entries)
         self._primed_users.add(normalized_user)
 
@@ -176,9 +218,23 @@ class RAGEngine:
                 continue
 
             is_new_upload = explicit_upload_paths or path.name not in known_uploads
-            raw_text = extract_text_from_pdf(path)
-            anonymized = self.anonymizer.anonymize(raw_text)
-            summary = self.llm.summarize_user_health_record(anonymized)
+            text_error = ""
+            try:
+                raw_text = extract_text_from_pdf(path)
+            except Exception as exc:
+                raw_text = ""
+                text_error = f"PDF text could not be read: {exc}"
+            summary_error = ""
+            if text_error:
+                summary = "Uploaded document could not be read as text."
+                summary_error = text_error
+            else:
+                try:
+                    anonymized = self.anonymizer.anonymize(raw_text)
+                    summary = self.llm.summarize_user_health_record(anonymized)
+                except Exception as exc:
+                    summary_error = f"Document summary failed: {exc}"
+                    summary = build_excerpt(raw_text, max_chars=900) or "Uploaded document could not be summarized."
 
             memory_key = f"{normalized_user or 'global'}:upload:{path.name}"
             self.memory.upsert_entries(
@@ -299,16 +355,20 @@ class RAGEngine:
                     "file": path.name,
                     "stored_path": str(path),
                     "summary": summary,
+                    "summary_error": summary_error,
                     "extracted": extracted,
                     "is_new": is_new_upload,
                 }
             )
 
         if normalized_user and indexed_documents:
-            self.refresh_longitudinal_memory_from_documents(
-                user=normalized_user,
-                indexed_documents=indexed_documents,
-            )
+            try:
+                self.refresh_longitudinal_memory_from_documents(
+                    user=normalized_user,
+                    indexed_documents=indexed_documents,
+                )
+            except Exception as exc:
+                print(f"Longitudinal memory refresh failed after upload: {exc}")
             self._primed_users.add(normalized_user)
 
         return indexed_documents
@@ -457,6 +517,30 @@ class RAGEngine:
             payload["video_caption"] = video_result.caption
         if video_rate_limit_msg:
             payload["video_rate_limit_msg"] = video_rate_limit_msg
+
+        # Generate patient-specific follow-up questions (fast aux call, non-blocking)
+        try:
+            role_config = bundle.get("role_config")
+            _norm_user = (user or "").strip().lower()
+            follow_up_context = self._build_follow_up_patient_context(
+                vitals=UserStore.get_vitals(_norm_user, limit=None),
+                medications=UserStore.get_medications(_norm_user),
+                allergies=UserStore.get_allergies(_norm_user),
+                conditions=UserStore.get_conditions(_norm_user),
+                symptom_logs=UserStore.get_symptom_logs(_norm_user, limit=None),
+            )
+            follow_up_questions = self.llm.generate_follow_up_questions(
+                question=question,
+                answer=raw_answer,
+                chat_history=chat_history,
+                user_profile=bundle.get("user_profile", {}),
+                patient_context=follow_up_context,
+                role_key=role_config.role_key if role_config else "patient",
+            )
+            payload["follow_up_questions"] = follow_up_questions
+        except Exception as exc:
+            print(f"Follow-up generation failed: {exc}")
+            payload["follow_up_questions"] = []
 
         yield {"type": "final", "payload": payload}
 
@@ -766,11 +850,19 @@ class RAGEngine:
         medication_summary = self._build_medication_memory_summary(
             UserStore.get_medications(normalized_user)
         )
+        vitals_summary = self._build_vitals_memory_summary(
+            UserStore.get_vitals(normalized_user, limit=None)
+        )
+        allergies_summary = self._build_allergies_memory_summary(
+            UserStore.get_allergies(normalized_user)
+        )
         return self._compose_longitudinal_memory_summary(
             base_summary=base_summary,
             symptom_summary=symptom_summary,
             condition_summary=condition_summary,
             medication_summary=medication_summary,
+            vitals_summary=vitals_summary,
+            allergies_summary=allergies_summary,
         )
 
     def build_summary_pdf_for_user(self, user: Optional[str]) -> bytes:
@@ -1077,17 +1169,23 @@ class RAGEngine:
         symptom_summary: str,
         condition_summary: str,
         medication_summary: str,
+        vitals_summary: str = "",
+        allergies_summary: str = "",
     ) -> str:
         parts = []
         cleaned_base = (base_summary or "").strip()
         if cleaned_base:
             parts.append(cleaned_base)
-        if symptom_summary:
-            parts.append(symptom_summary)
         if condition_summary:
             parts.append(condition_summary)
         if medication_summary:
             parts.append(medication_summary)
+        if allergies_summary:
+            parts.append(allergies_summary)
+        if vitals_summary:
+            parts.append(vitals_summary)
+        if symptom_summary:
+            parts.append(symptom_summary)
         return "\n\n".join(parts).strip()
 
     @staticmethod
@@ -1127,6 +1225,225 @@ class RAGEngine:
         if not medication_lines:
             return ""
         return "Current medication list:\n" + "\n".join(f"- {item}" for item in medication_lines[:8])
+
+    @staticmethod
+    def _build_vitals_memory_summary(vitals: List[Dict]) -> str:
+        """
+        Builds a concise summary of the most recent reading for each vital/lab type.
+        Groups by type and keeps only the latest date to avoid noise.
+        """
+        latest: Dict[str, Dict] = {}
+        for entry in vitals:
+            vtype = (entry.get("type") or "").strip().lower()
+            if not vtype:
+                continue
+            recorded = (entry.get("recorded_on") or entry.get("created_at") or "").strip()
+            existing = latest.get(vtype)
+            if existing is None:
+                latest[vtype] = entry
+            else:
+                existing_date = (existing.get("recorded_on") or existing.get("created_at") or "").strip()
+                if recorded > existing_date:
+                    latest[vtype] = entry
+
+        if not latest:
+            return ""
+
+        lines = []
+        for vtype in sorted(latest):
+            entry = latest[vtype]
+            value = (entry.get("value") or "").strip()
+            unit = (entry.get("unit") or "").strip()
+            date = (entry.get("recorded_on") or "").strip()
+            if not value:
+                continue
+            line = f"{vtype}: {value}"
+            if unit:
+                line += f" {unit}"
+            if date:
+                line += f" ({date})"
+            lines.append(line)
+
+        if not lines:
+            return ""
+        return "Recent vitals and lab results:\n" + "\n".join(f"- {item}" for item in lines[:20])
+
+    @staticmethod
+    def _build_allergies_memory_summary(allergies: List[Dict]) -> str:
+        lines = []
+        for allergy in allergies:
+            name = (allergy.get("name") or "").strip()
+            if not name:
+                continue
+            reaction = (allergy.get("reaction") or "").strip()
+            severity = (allergy.get("severity") or "").strip()
+            line = name
+            if reaction:
+                line += f" — {reaction}"
+            if severity and severity not in ("unknown", ""):
+                line += f" ({severity})"
+            lines.append(line)
+        if not lines:
+            return ""
+        return "Known allergies and adverse reactions:\n" + "\n".join(f"- {item}" for item in lines[:10])
+
+    @staticmethod
+    def _build_follow_up_patient_context(
+        vitals: List[Dict],
+        medications: List[Dict],
+        allergies: List[Dict],
+        conditions: List[Dict],
+        symptom_logs: List[Dict],
+    ) -> str:
+        """
+        Builds the structured patient context used exclusively for follow-up question generation.
+        Rules:
+        - Vitals/labs: deduplicate by type (most recent per type), include only if recorded within 30 days.
+        - Medications: include all regardless of age — the LLM may ask whether the patient is still
+          taking a medication if it could be causative.
+        - Allergies: include all — always relevant if causally connected to the current issue.
+        - Conditions: include active/current only.
+        - Symptoms: include only those logged within the last 30 days.
+        """
+        today = date.today()
+        cutoff = today - timedelta(days=30)
+        sections: List[str] = []
+
+        # --- VITALS: most recent per type, last 30 days only ---
+        latest_vitals: Dict[str, Dict] = {}
+        for entry in vitals:
+            vtype = (entry.get("type") or "").strip().lower()
+            if not vtype:
+                continue
+            recorded_str = (entry.get("recorded_on") or "").strip()
+            existing = latest_vitals.get(vtype)
+            existing_date = (existing.get("recorded_on") or "") if existing else ""
+            if existing is None or recorded_str > existing_date:
+                latest_vitals[vtype] = entry
+
+        vital_lines: List[str] = []
+        for vtype, entry in sorted(latest_vitals.items()):
+            recorded_str = (entry.get("recorded_on") or "").strip()
+            value = (entry.get("value") or "").strip()
+            unit = (entry.get("unit") or "").strip()
+            if not value:
+                continue
+            try:
+                if date.fromisoformat(recorded_str) >= cutoff:
+                    line = f"{vtype}: {value}"
+                    if unit:
+                        line += f" {unit}"
+                    line += f" (recorded {recorded_str})"
+                    vital_lines.append(line)
+            except (ValueError, TypeError):
+                pass
+
+        if vital_lines:
+            sections.append(
+                "RECENT VITALS AND LABS (last 30 days — quote these exact values in follow-up questions):\n"
+                + "\n".join(f"- {l}" for l in vital_lines)
+            )
+        else:
+            sections.append("RECENT VITALS AND LABS: None recorded in the last 30 days — do not reference vitals.")
+
+        # --- MEDICATIONS: all, no date filter ---
+        med_lines: List[str] = []
+        for med in medications:
+            name = (med.get("name") or "").strip()
+            if not name:
+                continue
+            dose = (med.get("dose") or "").strip()
+            schedule = (med.get("schedule") or "").strip()
+            reason = (med.get("reason") or "").strip()
+            line = name
+            if dose:
+                line += f" {dose}"
+            if schedule:
+                line += f" {schedule}"
+            if reason:
+                line += f" (for {reason})"
+            med_lines.append(line)
+
+        if med_lines:
+            sections.append(
+                "MEDICATIONS ON RECORD (ask whether the patient is still taking it if you think it "
+                "could be causing or worsening the current issue):\n"
+                + "\n".join(f"- {l}" for l in med_lines)
+            )
+
+        # --- ALLERGIES: all, no date filter ---
+        allergy_lines: List[str] = []
+        for allergy in allergies:
+            name = (allergy.get("name") or "").strip()
+            if not name:
+                continue
+            reaction = (allergy.get("reaction") or "").strip()
+            severity = (allergy.get("severity") or "").strip()
+            allergy_type = (allergy.get("allergy_type") or "").strip()
+            line = name
+            if allergy_type and allergy_type != "other":
+                line += f" [{allergy_type}]"
+            if reaction:
+                line += f" → {reaction}"
+            if severity and severity not in ("unknown", ""):
+                line += f" ({severity})"
+            allergy_lines.append(line)
+
+        if allergy_lines:
+            sections.append(
+                "KNOWN ALLERGIES (use these if possibly related to the current issue):\n"
+                + "\n".join(f"- {l}" for l in allergy_lines)
+            )
+
+        # --- CONDITIONS: active / not resolved ---
+        condition_lines: List[str] = []
+        for cond in conditions:
+            name = (cond.get("name") or "").strip()
+            if not name:
+                continue
+            status = (cond.get("status") or "unknown").strip().lower()
+            if status in ("past", "resolved"):
+                continue
+            recorded = (cond.get("recorded_on") or "").strip()
+            line = name
+            if status and status != "unknown":
+                line += f" ({status})"
+            if recorded:
+                line += f" — since {recorded}"
+            condition_lines.append(line)
+
+        if condition_lines:
+            sections.append(
+                "ACTIVE CONDITIONS:\n"
+                + "\n".join(f"- {l}" for l in condition_lines)
+            )
+
+        # --- SYMPTOMS: last 30 days only ---
+        symptom_lines: List[str] = []
+        for log in symptom_logs:
+            symptom = (log.get("symptom") or "").strip()
+            if not symptom:
+                continue
+            logged_for = (log.get("logged_for") or log.get("logged_at") or "").strip()
+            try:
+                if date.fromisoformat(logged_for[:10]) >= cutoff:
+                    severity_val = log.get("severity")
+                    line = symptom
+                    if severity_val is not None:
+                        line += f" (severity {severity_val}/10)"
+                    if logged_for:
+                        line += f" on {logged_for[:10]}"
+                    symptom_lines.append(line)
+            except (ValueError, TypeError):
+                pass
+
+        if symptom_lines:
+            sections.append(
+                "RECENT SYMPTOMS (last 30 days):\n"
+                + "\n".join(f"- {l}" for l in symptom_lines)
+            )
+
+        return "\n\n".join(sections)
 
     @staticmethod
     def _build_safety_net_block(risk_level: str, triage_summary: dict, role_config) -> str:

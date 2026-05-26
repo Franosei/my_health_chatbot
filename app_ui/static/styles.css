@@ -188,7 +188,51 @@ a:hover {
 }
 
 [data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] {
-    color: #f2fbf8 !important;
+    color: var(--navy) !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stFileUploaderFile"],
+[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] div,
+[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] span,
+[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] small,
+[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] button,
+[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] svg {
+    color: var(--navy) !important;
+    fill: var(--navy) !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] {
+    background: #f7fbfa !important;
+    border: 1px solid rgba(22, 59, 71, 0.18) !important;
+    border-radius: var(--radius-sm) !important;
+}
+
+.upload-verification-card {
+    background: #f7fbfa;
+    border: 1px solid rgba(22, 59, 71, 0.18);
+    border-radius: var(--radius-sm);
+    padding: 0.65rem 0.75rem;
+    margin: 0.45rem 0;
+}
+
+.upload-verification-card strong,
+.upload-verification-card span,
+.upload-verification-card p {
+    display: block;
+    color: var(--navy) !important;
+    -webkit-text-fill-color: var(--navy) !important;
+}
+
+.upload-verification-card strong {
+    font-weight: 800;
+    margin-bottom: 0.25rem;
+}
+
+.upload-verification-card span,
+.upload-verification-card p {
+    font-size: 12.5px !important;
+    line-height: 1.35 !important;
+    margin: 0.1rem 0 !important;
 }
 
 .surface-card,
@@ -1234,4 +1278,40 @@ a:hover {
     color: rgba(22, 59, 71, 0.45) !important;
     -webkit-text-fill-color: rgba(22, 59, 71, 0.45) !important;
     opacity: 1;
+}
+
+/* ── Follow-up question chips ─────────────────────────────────────────── */
+.followup-container {
+    margin: 6px 0 10px 0;
+    padding: 10px 14px 4px 14px;
+    background: rgba(31, 122, 114, 0.05);
+    border: 1px solid rgba(31, 122, 114, 0.16);
+    border-radius: var(--radius-md);
+}
+.followup-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--teal);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    display: block;
+    margin-bottom: 6px;
+}
+.followup-container + div .stButton > button,
+.followup-container ~ div .stButton[data-testid*="followup"] > button {
+    background: rgba(31, 122, 114, 0.07);
+    border: 1px solid rgba(31, 122, 114, 0.22);
+    color: var(--teal);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 14px;
+    text-align: left;
+    margin-bottom: 6px;
+    transition: background 0.15s, border-color 0.15s;
+}
+.followup-container + div .stButton > button:hover,
+.followup-container ~ div .stButton[data-testid*="followup"] > button:hover {
+    background: rgba(31, 122, 114, 0.14);
+    border-color: rgba(31, 122, 114, 0.4);
 }
