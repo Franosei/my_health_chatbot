@@ -142,12 +142,33 @@ def _build_recorded_medication_line(medication: Dict) -> str:
 
 def _medication_lines(
     medications: Iterable[Dict],
+    longitudinal_memory: str = "",
+    role_key: str = "patient",
     max_lines: int = 8,
 ) -> List[str]:
-    return _clean_lines(
-        [_build_recorded_medication_line(med) for med in medications],
+    words = _role_words(role_key)
+    lines = []
+    for med in medications:
+        line = _build_recorded_medication_line(med)
+        if line:
+            updated = _date_label(med.get("updated_at") or med.get("created_at", ""))
+            if updated:
+                line = f"{words['medication']}: {line} (updated {updated})"
+            else:
+                line = f"{words['medication']}: {line}"
+            lines.append(line)
+
+    sections = _parse_memory_sections(longitudinal_memory)
+    memory_lines = _section_lines(
+        sections,
+        ["current treatments and medicines"],
         max_lines=max_lines,
     )
+    if memory_lines:
+        label = "From previous notes" if _is_lay_role(role_key) else "From longitudinal record"
+        lines.extend(f"{label}: {line}" for line in memory_lines)
+
+    return _clean_lines(lines, max_lines=max_lines)
 
 
 def _upload_lines(uploads: Iterable[Dict], max_lines: int = 5) -> List[str]:
@@ -157,8 +178,37 @@ def _upload_lines(uploads: Iterable[Dict], max_lines: int = 5) -> List[str]:
     )
 
 
-def _symptom_lines(symptom_logs: List[Dict], longitudinal_memory: str, max_lines: int = 6) -> List[str]:
-    tracked = _clean_lines(build_recent_symptom_lines(symptom_logs, limit=max_lines), max_lines=max_lines)
+def _symptom_lines(
+    symptom_logs: List[Dict],
+    longitudinal_memory: str,
+    role_key: str = "patient",
+    max_lines: int = 6,
+) -> List[str]:
+    words = _role_words(role_key)
+    tracked_lines = []
+    for entry in sorted(
+        symptom_logs or [],
+        key=lambda item: _entry_datetime(item, "logged_for", "created_at"),
+        reverse=True,
+    ):
+        symptom = _normalize_text(entry.get("symptom", ""))
+        if not symptom:
+            continue
+        logged_for = _date_label(entry.get("logged_for") or entry.get("created_at", ""))
+        severity = entry.get("severity", "")
+        parts = [symptom]
+        if severity != "":
+            parts.append(f"severity {severity}/10")
+        if entry.get("triggers"):
+            parts.append(f"trigger: {_normalize_text(entry.get('triggers', ''))}")
+        if entry.get("notes"):
+            parts.append(_normalize_text(entry.get("notes", "")))
+        line = f"{words['symptom']}: " + " - ".join(parts)
+        if logged_for:
+            line += f" ({logged_for})"
+        tracked_lines.append(line)
+
+    tracked = _clean_lines(tracked_lines, max_lines=max_lines)
     if tracked:
         return tracked
     return _memory_active_concern_lines(longitudinal_memory, max_lines=max_lines)
@@ -166,16 +216,147 @@ def _symptom_lines(symptom_logs: List[Dict], longitudinal_memory: str, max_lines
 
 def _parse_ts(timestamp_str: str) -> Optional[datetime]:
     try:
-        return datetime.fromisoformat((timestamp_str or "").replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat((timestamp_str or "").replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
     except Exception:
         return None
+
+
+def _parse_date_value(value: str) -> Optional[datetime]:
+    parsed = _parse_ts(value)
+    if parsed:
+        return parsed
+    try:
+        parsed_date = datetime.strptime(str(value or "")[:10], "%Y-%m-%d").date()
+        return datetime.combine(parsed_date, datetime.min.time(), tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _date_label(value: str) -> str:
+    parsed = _parse_date_value(value)
+    if parsed:
+        return parsed.strftime("%d %b %Y")
+    return _normalize_text(value)
+
+
+def _entry_datetime(entry: Dict, *fields: str) -> datetime:
+    for field in fields:
+        parsed = _parse_date_value(str(entry.get(field, "")))
+        if parsed:
+            return parsed
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _canonical_role_key(role_key: str) -> str:
+    key = (role_key or "").strip().lower()
+    aliases = {
+        "patient": "patient",
+        "patient / individual": "patient",
+        "individual": "patient",
+        "caregiver": "caregiver",
+        "doctor": "doctor",
+        "doctor / physician": "doctor",
+        "physician": "doctor",
+        "other clinician": "doctor",
+        "clinician": "doctor",
+        "clinician / care team": "doctor",
+        "nurse": "nurse",
+        "midwife": "midwife",
+        "physiotherapist": "physiotherapist",
+        "physio": "physiotherapist",
+    }
+    return aliases.get(key, "patient")
+
+
+def _is_lay_role(role_key: str) -> bool:
+    return _canonical_role_key(role_key) in {"patient", "caregiver"}
+
+
+def _role_words(role_key: str) -> Dict[str, str]:
+    role = _canonical_role_key(role_key)
+    if role in {"patient", "caregiver"}:
+        return {
+            "latest_triage": "Latest guidance",
+            "condition": "Health issue",
+            "active_condition": "Current health issue",
+            "past_condition": "Previous health issue",
+            "symptom": "Recent symptom",
+            "medication": "Medicine",
+            "reading": "Reading",
+            "previous": "Previous",
+            "plan": "Suggested next step",
+            "monitor": "What to watch",
+            "escalation": "Get urgent help if",
+        }
+    if role == "nurse":
+        return {
+            "latest_triage": "Latest handover priority",
+            "condition": "Background condition",
+            "active_condition": "Active problem",
+            "past_condition": "Past history",
+            "symptom": "Current symptom concern",
+            "medication": "Current medication",
+            "reading": "Observation/result",
+            "previous": "Previous",
+            "plan": "Nursing/clinical plan",
+            "monitor": "Monitoring",
+            "escalation": "Escalation criteria",
+        }
+    if role == "midwife":
+        return {
+            "latest_triage": "Latest maternity priority",
+            "condition": "Maternity/background issue",
+            "active_condition": "Active maternity concern",
+            "past_condition": "Relevant history",
+            "symptom": "Current symptom concern",
+            "medication": "Medication or supplement",
+            "reading": "Antenatal observation/result",
+            "previous": "Previous",
+            "plan": "Maternity plan",
+            "monitor": "Monitoring",
+            "escalation": "Escalation criteria",
+        }
+    if role == "physiotherapist":
+        return {
+            "latest_triage": "Latest rehab priority",
+            "condition": "Relevant condition",
+            "active_condition": "Active MSK/functional issue",
+            "past_condition": "Relevant history",
+            "symptom": "Current presentation",
+            "medication": "Current medication",
+            "reading": "Functional measure/result",
+            "previous": "Previous",
+            "plan": "Rehab plan",
+            "monitor": "Monitoring",
+            "escalation": "Red flags/escalation",
+        }
+    return {
+        "latest_triage": "Latest clinical priority",
+        "condition": "Condition",
+        "active_condition": "Active problem",
+        "past_condition": "Past medical history",
+        "symptom": "Presenting concern",
+        "medication": "Current medication",
+        "reading": "Observation/result",
+        "previous": "Previous",
+        "plan": "Plan",
+        "monitor": "Monitoring",
+        "escalation": "Escalation criteria",
+    }
 
 
 def _latest_consultation_lines(
     chat_history: List[Dict],
     triage_summaries: List[Dict],
+    role_key: str = "patient",
     max_complaints: int = 5,
 ) -> List[str]:
+    words = _role_words(role_key)
+    lay_role = _is_lay_role(role_key)
+
     # Most recent triage is the anchor for the latest consultation
     sorted_triages = sorted(
         (t for t in (triage_summaries or []) if _parse_ts(t.get("created_at", ""))),
@@ -218,7 +399,10 @@ def _latest_consultation_lines(
 
     for i, complaint in enumerate(complaints[:max_complaints]):
         truncated = complaint[:200] + "..." if len(complaint) > 200 else complaint
-        prefix = "Presenting Complaint:" if i == 0 else "Also Reported:"
+        if lay_role:
+            prefix = "Main question:" if i == 0 else "Also mentioned:"
+        else:
+            prefix = "Presenting complaint:" if i == 0 else "Also reported:"
         lines.append(f"{prefix} {truncated}")
 
     if latest_triage:
@@ -226,20 +410,22 @@ def _latest_consultation_lines(
             lines.append(f"Pathway: {latest_triage['pathway_label']}")
         if latest_triage.get("decision_summary"):
             summary = latest_triage["decision_summary"]
-            lines.append(f"Assessment: {summary[:250] + '...' if len(summary) > 250 else summary}")
+            label = "Summary" if lay_role else "Assessment"
+            lines.append(f"{label}: {summary[:250] + '...' if len(summary) > 250 else summary}")
         if latest_triage.get("urgency_level"):
             lines.append(f"Urgency: {latest_triage['urgency_level']}")
         if latest_triage.get("next_step"):
-            lines.append(f"Plan: {latest_triage['next_step']}")
+            lines.append(f"{words['plan']}: {latest_triage['next_step']}")
         monitor = latest_triage.get("what_to_monitor", [])[:3]
         if monitor:
-            lines.append("Monitor: " + "; ".join(monitor))
+            lines.append(f"{words['monitor']}: " + "; ".join(monitor))
         actions = latest_triage.get("immediate_actions", [])[:2]
         if actions:
-            lines.append("Immediate Actions: " + "; ".join(actions))
+            label = "Do now" if lay_role else "Immediate actions"
+            lines.append(label + ": " + "; ".join(actions))
         escalations = latest_triage.get("escalation_triggers", [])[:2]
         if escalations:
-            lines.append("Escalation Triggers: " + "; ".join(escalations))
+            lines.append(f"{words['escalation']}: " + "; ".join(escalations))
 
     return lines
 
@@ -261,80 +447,84 @@ _ROLE_SUMMARY_CONFIGS: Dict[str, Dict] = {
         "title": "Personal Health Summary",
         "footer": "Your personal health record. Share with your healthcare team as needed.",
         "sections": [
-            ("My Health History",      "memory_snapshot"),
-            ("Current Concerns",       "active_concerns"),
-            ("My Medications",         "medications"),
-            ("Allergies and Reactions","allergies"),
-            ("Recent Readings",        "vitals"),
-            ("My Uploaded Records",    "uploads"),
+            ("Current Health Snapshot", "current_snapshot"),
+            ("What Has Changed Recently", "active_concerns"),
+            ("Recent Readings", "vitals"),
+            ("My Medicines", "medications"),
+            ("Allergies and Reactions", "allergies"),
+            ("Past Health History", "previous_history"),
+            ("Latest Care Advice", "consultation"),
+            ("Records Used", "uploads"),
         ],
     },
     "caregiver": {
         "title": "Personal Health Summary",
         "footer": "Personal health record for the person in your care. Share with their healthcare team as needed.",
         "sections": [
-            ("Health History",         "memory_snapshot"),
-            ("Current Concerns",       "active_concerns"),
-            ("Medications",            "medications"),
-            ("Allergies and Reactions","allergies"),
-            ("Recent Readings",        "vitals"),
-            ("Uploaded Records",       "uploads"),
+            ("Current Care Snapshot", "current_snapshot"),
+            ("Recent Concerns", "active_concerns"),
+            ("Recent Readings", "vitals"),
+            ("Medicines", "medications"),
+            ("Allergies and Reactions", "allergies"),
+            ("Previous Health History", "previous_history"),
+            ("Latest Care Advice", "consultation"),
+            ("Records Used", "uploads"),
         ],
     },
     "doctor": {
         "title": "GP Summary",
         "footer": "Prepared for GP or clinical handover. Medications shown are only those explicitly recorded by the patient.",
         "sections": [
-            ("Previous Visit Summary",          "memory_snapshot"),
-            ("Active Concerns",                 "active_concerns"),
-            ("Medications",                     "medications"),
+            ("Current Clinical Snapshot", "current_snapshot"),
+            ("Latest Consultation and Plan", "consultation"),
+            ("Relevant Past Medical History", "previous_history"),
+            ("Current Medication List", "medications"),
             ("Allergies and Contraindications", "allergies"),
-            ("Recorded Vitals",                 "vitals"),
-            ("Latest Consultation Note",        "consultation"),
-            ("Investigations and Follow-Up",    "investigations"),
-            ("Supporting Records",              "uploads"),
+            ("Latest Observations and Results", "vitals"),
+            ("Investigations and Follow-Up", "investigations"),
+            ("Supporting Records", "uploads"),
         ],
     },
     "nurse": {
         "title": "Nursing Handover Note",
         "footer": "Nursing documentation for handover. Verify all medications and observations at handover.",
         "sections": [
-            ("Patient Overview",              "memory_snapshot"),
-            ("Active Concerns and Symptoms",  "active_concerns"),
-            ("Current Medications",           "medications"),
-            ("Allergies",                     "allergies"),
-            ("Observations",                  "vitals"),
-            ("Consultation Summary",          "consultation"),
-            ("Care Plan and Follow-Up",       "investigations"),
-            ("Supporting Records",            "uploads"),
+            ("Current Handover Priorities", "current_snapshot"),
+            ("Latest Nursing/Clinical Plan", "consultation"),
+            ("Relevant Background", "previous_history"),
+            ("Current Medications", "medications"),
+            ("Allergies and Safety Alerts", "allergies"),
+            ("Latest Observations and Results", "vitals"),
+            ("Care Plan and Follow-Up", "investigations"),
+            ("Supporting Records", "uploads"),
         ],
     },
     "midwife": {
         "title": "Maternity Care Summary",
         "footer": "Prepared for midwifery handover or antenatal review.",
         "sections": [
-            ("Patient Overview",                      "memory_snapshot"),
-            ("Active Concerns",                       "active_concerns"),
-            ("Medications and Supplements",           "medications"),
-            ("Allergies and Contraindications",       "allergies"),
-            ("Antenatal Observations",                "vitals"),
-            ("Latest Consultation Note",              "consultation"),
-            ("Care Plan and Follow-Up",               "investigations"),
-            ("Supporting Records",                    "uploads"),
+            ("Current Maternity Snapshot", "current_snapshot"),
+            ("Latest Maternity Review and Plan", "consultation"),
+            ("Relevant Obstetric and Medical History", "previous_history"),
+            ("Medications and Supplements", "medications"),
+            ("Allergies and Contraindications", "allergies"),
+            ("Latest Antenatal Observations and Results", "vitals"),
+            ("Care Plan and Follow-Up", "investigations"),
+            ("Supporting Records", "uploads"),
         ],
     },
     "physiotherapist": {
         "title": "Physiotherapy Assessment Summary",
         "footer": "Prepared for physiotherapy handover or inter-professional communication.",
         "sections": [
-            ("Patient Overview",              "memory_snapshot"),
-            ("Presenting Complaints",         "active_concerns"),
-            ("Current Medications",           "medications"),
-            ("Allergies",                     "allergies"),
-            ("Functional Measures",           "vitals"),
-            ("Latest Assessment Note",        "consultation"),
-            ("Treatment Plan and Goals",      "investigations"),
-            ("Supporting Records",            "uploads"),
+            ("Current MSK and Functional Snapshot", "current_snapshot"),
+            ("Latest Assessment and Rehab Plan", "consultation"),
+            ("Relevant Medical and Injury History", "previous_history"),
+            ("Current Medications", "medications"),
+            ("Allergies and Contraindications", "allergies"),
+            ("Latest Functional Measures and Results", "vitals"),
+            ("Treatment Plan and Goals", "investigations"),
+            ("Supporting Records", "uploads"),
         ],
     },
 }
@@ -343,7 +533,7 @@ _DEFAULT_SUMMARY_CONFIG = _ROLE_SUMMARY_CONFIGS["patient"]
 
 
 def _get_summary_config(role_key: str) -> Dict:
-    return _ROLE_SUMMARY_CONFIGS.get((role_key or "").strip().lower(), _DEFAULT_SUMMARY_CONFIG)
+    return _ROLE_SUMMARY_CONFIGS.get(_canonical_role_key(role_key), _DEFAULT_SUMMARY_CONFIG)
 
 
 def _draw_page_frame(
@@ -441,25 +631,48 @@ def _allergy_lines(allergies: Iterable[Dict], max_lines: int = 8) -> List[str]:
     return _clean_lines(lines, max_lines)
 
 
-def _condition_lines(conditions: Iterable[Dict], max_lines: int = 8) -> List[str]:
+def _condition_lines(
+    conditions: Iterable[Dict],
+    role_key: str = "patient",
+    include_statuses: Optional[set[str]] = None,
+    max_lines: int = 8,
+) -> List[str]:
+    words = _role_words(role_key)
     lines = []
-    for condition in conditions:
+    for condition in sorted(
+        conditions or [],
+        key=lambda item: (
+            item.get("status", "unknown") != "active",
+            _entry_datetime(item, "recorded_on", "updated_at", "created_at"),
+        ),
+        reverse=False,
+    ):
         name = _normalize_text(condition.get("name", ""))
         if not name:
             continue
         status = _normalize_text(condition.get("status", ""))
+        if include_statuses is not None and (status or "unknown").lower() not in include_statuses:
+            continue
         recorded_on = _normalize_text(condition.get("recorded_on", ""))
-        parts = [name]
+        if status == "active":
+            prefix = words["active_condition"]
+        elif status in {"past", "resolved"}:
+            prefix = words["past_condition"]
+        else:
+            prefix = words["condition"]
+        parts = [f"{prefix}: {name}"]
         if status and status != "unknown":
             parts.append(status)
         if recorded_on:
-            parts.append(recorded_on)
+            parts.append(_date_label(recorded_on))
+        if condition.get("notes"):
+            parts.append(_normalize_text(condition.get("notes", "")))
         lines.append(" - ".join(parts))
     return _clean_lines(lines, max_lines)
 
 
-def _vitals_lines(vitals: Iterable[Dict], max_lines: int = 8) -> List[str]:
-    _TYPE_LABELS = {
+def _vital_type_label(vital_type: str, role_key: str = "patient") -> str:
+    clinical_labels = {
         "blood_pressure": "BP",
         "heart_rate": "HR",
         "weight": "Weight",
@@ -474,28 +687,197 @@ def _vitals_lines(vitals: Iterable[Dict], max_lines: int = 8) -> List[str]:
         "egfr": "eGFR",
         "creatinine": "Creatinine",
     }
-    lines = []
-    for entry in vitals:
-        vtype = _normalize_text(entry.get("type", ""))
+    lay_labels = {
+        "blood_pressure": "Blood pressure",
+        "heart_rate": "Heart rate",
+        "weight": "Weight",
+        "height": "Height",
+        "bmi": "BMI",
+        "blood_glucose": "Blood glucose",
+        "temperature": "Temperature",
+        "oxygen_saturation": "Oxygen level",
+        "respiratory_rate": "Breathing rate",
+        "peak_flow": "Peak flow",
+        "hba1c": "HbA1c",
+        "egfr": "Kidney function (eGFR)",
+        "creatinine": "Creatinine",
+    }
+    key = _normalize_text(vital_type).lower()
+    labels = lay_labels if _is_lay_role(role_key) else clinical_labels
+    return labels.get(key, key.replace("_", " ").title() if key else "Reading")
+
+
+def _format_vital_value(entry: Dict) -> str:
+    value = _normalize_text(entry.get("value", ""))
+    unit = _normalize_text(entry.get("unit", ""))
+    if not value:
+        return ""
+    return f"{value}{' ' + unit if unit else ''}"
+
+
+def _latest_by_type(vitals: Iterable[Dict]) -> Dict[str, List[Dict]]:
+    grouped: Dict[str, List[Dict]] = {}
+    for entry in vitals or []:
+        vtype = _normalize_text(entry.get("type", "")).lower()
         value = _normalize_text(entry.get("value", ""))
-        unit = _normalize_text(entry.get("unit", ""))
-        recorded_on = _normalize_text(entry.get("recorded_on", ""))
         if not vtype or not value:
             continue
-        label = _TYPE_LABELS.get(vtype, vtype.replace("_", " ").title() if vtype.islower() else vtype)
-        line = f"{label}: {value}{' ' + unit if unit else ''}"
-        if recorded_on:
-            line += f" ({recorded_on})"
+        grouped.setdefault(vtype, []).append(entry)
+    for vtype, rows in grouped.items():
+        rows.sort(
+            key=lambda item: _entry_datetime(item, "recorded_on", "created_at"),
+            reverse=True,
+        )
+    return grouped
+
+
+def _vitals_lines(
+    vitals: Iterable[Dict],
+    role_key: str = "patient",
+    max_lines: int = 8,
+) -> List[str]:
+    words = _role_words(role_key)
+    lines = []
+    grouped = _latest_by_type(vitals)
+    for vtype, rows in sorted(
+        grouped.items(),
+        key=lambda item: _entry_datetime(item[1][0], "recorded_on", "created_at"),
+        reverse=True,
+    ):
+        latest = rows[0]
+        latest_value = _format_vital_value(latest)
+        latest_date = _date_label(latest.get("recorded_on") or latest.get("created_at", ""))
+        label = _vital_type_label(vtype, role_key)
+        line = f"{words['reading']}: {label} {latest_value}"
+        if latest_date:
+            line += f" ({latest_date})"
+
+        previous = next(
+            (
+                row for row in rows[1:]
+                if _format_vital_value(row).lower() != latest_value.lower()
+            ),
+            rows[1] if len(rows) > 1 else None,
+        )
+        if previous:
+            previous_value = _format_vital_value(previous)
+            previous_date = _date_label(previous.get("recorded_on") or previous.get("created_at", ""))
+            previous_note = f"{words['previous']}: {previous_value}"
+            if previous_date:
+                previous_note += f" on {previous_date}"
+            line += f"; {previous_note}"
+
         lines.append(line)
     return _clean_lines(lines, max_lines)
 
 
+def _current_snapshot_lines(
+    role_key: str,
+    conditions: Iterable[Dict],
+    symptom_logs: List[Dict],
+    medications: Iterable[Dict],
+    allergies: Iterable[Dict],
+    vitals: Iterable[Dict],
+    triage_summaries: List[Dict],
+    longitudinal_memory: str,
+    max_lines: int = 8,
+) -> List[str]:
+    words = _role_words(role_key)
+    lay_role = _is_lay_role(role_key)
+    lines: List[str] = []
+
+    sorted_triages = sorted(
+        triage_summaries or [],
+        key=lambda item: _entry_datetime(item, "created_at"),
+        reverse=True,
+    )
+    latest_triage = sorted_triages[0] if sorted_triages else {}
+    if latest_triage:
+        urgency = _normalize_text(latest_triage.get("urgency_level", ""))
+        next_step = _normalize_text(latest_triage.get("next_step", ""))
+        triage_date = _date_label(latest_triage.get("created_at", ""))
+        triage_bits = [bit for bit in [urgency, next_step] if bit]
+        if triage_bits:
+            line = f"{words['latest_triage']}: " + " - ".join(triage_bits)
+            if triage_date:
+                line += f" ({triage_date})"
+            lines.append(line)
+
+    active_conditions = _condition_lines(
+        conditions,
+        role_key=role_key,
+        include_statuses={"active"},
+        max_lines=3,
+    )
+    lines.extend(active_conditions)
+
+    latest_symptoms = _symptom_lines(
+        symptom_logs,
+        longitudinal_memory,
+        role_key=role_key,
+        max_lines=2,
+    )
+    lines.extend(latest_symptoms[:2])
+
+    meds = list(medications or [])
+    if meds:
+        label = "Medicine count" if lay_role else "Current medication count"
+        lines.append(f"{label}: {len(meds)} recorded")
+
+    severe_allergies = [
+        _normalize_text(item.get("name", ""))
+        for item in allergies or []
+        if _normalize_text(item.get("severity", "")).lower() == "severe"
+    ]
+    if severe_allergies:
+        label = "Severe allergy" if lay_role else "Severe allergy/contraindication"
+        lines.append(f"{label}: {', '.join(_clean_lines(severe_allergies, 3))}")
+
+    latest_reading_lines = _vitals_lines(vitals, role_key=role_key, max_lines=3)
+    lines.extend(latest_reading_lines[:3])
+
+    return _clean_lines(lines, max_lines=max_lines)
+
+
+def _previous_history_lines(
+    role_key: str,
+    conditions: Iterable[Dict],
+    longitudinal_memory: str,
+    uploads: Iterable[Dict],
+    max_lines: int = 8,
+) -> List[str]:
+    lay_role = _is_lay_role(role_key)
+    lines: List[str] = []
+
+    past_conditions = _condition_lines(
+        conditions,
+        role_key=role_key,
+        include_statuses={"past", "resolved", "unknown"},
+        max_lines=4,
+    )
+    lines.extend(past_conditions)
+
+    memory_lines = _memory_snapshot_lines(longitudinal_memory, max_lines=5)
+    if memory_lines:
+        label = "Earlier history" if lay_role else "Longitudinal history"
+        lines.extend(f"{label}: {line}" for line in memory_lines)
+
+    upload_names = _upload_lines(uploads, max_lines=3)
+    if upload_names:
+        label = "Record used" if lay_role else "Source record"
+        lines.extend(f"{label}: {line}" for line in upload_names)
+
+    return _clean_lines(lines, max_lines=max_lines)
+
+
 _SECTION_EMPTY_FALLBACKS: Dict[str, str] = {
-    "memory_snapshot": "No previous visit summary available yet.",
+    "current_snapshot": "No current saved health data is available yet.",
+    "previous_history": "No previous health history has been saved yet.",
+    "memory_snapshot": "No previous health history has been saved yet.",
     "active_concerns": "No recent symptoms or active concerns recorded yet.",
     "medications":     "No medications have been recorded.",
     "allergies":       "No allergies recorded.",
-    "vitals":          "No readings recorded.",
+    "vitals":          "No measurements or lab results recorded.",
     "consultation":    "No consultation has been recorded yet.",
     "investigations":  "No investigations or follow-up plan noted.",
     "uploads":         "No uploaded records saved yet.",
@@ -515,7 +897,8 @@ def build_summary_pdf(
     conditions: Optional[List[Dict]] = None,
     vitals: Optional[List[Dict]] = None,
 ) -> bytes:
-    config = _get_summary_config(role_key)
+    canonical_role = _canonical_role_key(role_key)
+    config = _get_summary_config(canonical_role)
     doc_title = config["title"]
     footer_text = config["footer"]
 
@@ -523,29 +906,54 @@ def build_summary_pdf(
     display_name = user_profile.get("display_name") or "Patient"
     exported_at = datetime.now(timezone.utc).strftime("%d %b %Y")
     memory_snapshot_lines = _clean_lines(
-        _condition_lines(conditions or []) + _memory_snapshot_lines(longitudinal_memory),
+        _condition_lines(conditions or [], role_key=canonical_role)
+        + _memory_snapshot_lines(longitudinal_memory),
         max_lines=8,
     )
 
     # Build the data for each section key once
     section_data: Dict[str, List[str]] = {
+        "current_snapshot": _wrap_lines(
+            _current_snapshot_lines(
+                canonical_role,
+                conditions or [],
+                symptom_logs,
+                medications,
+                allergies or [],
+                vitals or [],
+                triage_summaries or [],
+                longitudinal_memory,
+            )
+        ),
+        "previous_history": _wrap_lines(
+            _previous_history_lines(
+                canonical_role,
+                conditions or [],
+                longitudinal_memory,
+                uploads,
+            )
+        ),
         "memory_snapshot": _wrap_lines(
             memory_snapshot_lines
         ),
         "active_concerns": _wrap_lines(
-            _symptom_lines(symptom_logs, longitudinal_memory)
+            _symptom_lines(symptom_logs, longitudinal_memory, role_key=canonical_role)
         ),
         "medications": _wrap_lines(
-            _medication_lines(medications)
+            _medication_lines(medications, longitudinal_memory, role_key=canonical_role)
         ),
         "allergies": _wrap_lines(
             _allergy_lines(allergies or [])
         ),
         "vitals": _wrap_lines(
-            _vitals_lines(vitals or [])
+            _vitals_lines(vitals or [], role_key=canonical_role)
         ),
         "consultation": _wrap_lines(
-            _latest_consultation_lines(recent_chats or [], triage_summaries or [])
+            _latest_consultation_lines(
+                recent_chats or [],
+                triage_summaries or [],
+                role_key=canonical_role,
+            )
         ),
         "investigations": _wrap_lines(
             _additional_context_lines(longitudinal_memory)

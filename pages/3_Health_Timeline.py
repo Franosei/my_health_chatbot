@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from app_ui.theme import inject_custom_css
 from backend.product_config import PRODUCT_NAME, SUPPORT_EMAIL
+from backend.role_router import RoleRouter
 from backend.user_store import UserStore
 
 load_dotenv()
@@ -154,6 +155,131 @@ def render_summary_card(title: str, body_html: str, meta: str = "") -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def profile_role_key(profile: dict) -> str:
+    return RoleRouter().resolve(
+        profile.get("clinical_role") or profile.get("role", "")
+    ).role_key
+
+
+def health_summary_terms(role_key: str) -> dict[str, str]:
+    if role_key in ("patient", "caregiver"):
+        return {
+            "current": "Current health snapshot",
+            "recent": "What has changed recently",
+            "medications": "Medicines",
+            "allergies": "Allergies and reactions",
+            "readings": "Recent readings",
+            "history": "Past health history",
+            "risks": "What needs attention",
+            "latest_triage": "Latest guidance",
+            "condition": "Health issue",
+            "symptom": "Symptom",
+            "reading": "Reading",
+        }
+    if role_key == "nurse":
+        return {
+            "current": "Current handover priorities",
+            "recent": "Active symptoms and concerns",
+            "medications": "Current medications",
+            "allergies": "Allergies and safety alerts",
+            "readings": "Latest observations and results",
+            "history": "Relevant background",
+            "risks": "Escalation priorities",
+            "latest_triage": "Latest handover priority",
+            "condition": "Active problem",
+            "symptom": "Current symptom concern",
+            "reading": "Observation/result",
+        }
+    if role_key == "midwife":
+        return {
+            "current": "Current maternity snapshot",
+            "recent": "Active maternity concerns",
+            "medications": "Medications and supplements",
+            "allergies": "Allergies and contraindications",
+            "readings": "Latest antenatal observations",
+            "history": "Relevant obstetric and medical history",
+            "risks": "Maternity escalation priorities",
+            "latest_triage": "Latest maternity priority",
+            "condition": "Maternity/background issue",
+            "symptom": "Current symptom concern",
+            "reading": "Antenatal observation/result",
+        }
+    if role_key == "physiotherapist":
+        return {
+            "current": "Current MSK and functional snapshot",
+            "recent": "Current presentation",
+            "medications": "Current medications",
+            "allergies": "Allergies and contraindications",
+            "readings": "Latest functional measures",
+            "history": "Relevant medical and injury history",
+            "risks": "Red flags and rehab priorities",
+            "latest_triage": "Latest rehab priority",
+            "condition": "Active MSK/functional issue",
+            "symptom": "Current presentation",
+            "reading": "Functional measure/result",
+        }
+    return {
+        "current": "Current clinical snapshot",
+        "recent": "Active concerns",
+        "medications": "Current medication list",
+        "allergies": "Allergies and contraindications",
+        "readings": "Latest observations and results",
+        "history": "Relevant past medical history",
+        "risks": "Clinical priorities",
+        "latest_triage": "Latest clinical priority",
+        "condition": "Active problem",
+        "symptom": "Presenting concern",
+        "reading": "Observation/result",
+    }
+
+
+def memory_history_lines(memory_summary: str, cap: int = 4) -> list[str]:
+    lines = []
+    current_heading = ""
+    for raw_line in (memory_summary or "").splitlines():
+        line = clean_text(raw_line)
+        if not line:
+            continue
+        if line.endswith(":"):
+            current_heading = line[:-1].strip().lower()
+            continue
+        if line.lower() in {"none", "none noted", "not recorded"}:
+            continue
+        if current_heading in {"patient summary", "conditions and history", "investigations or notable results"}:
+            lines.append(line)
+        if len(lines) >= cap:
+            break
+    return unique_nonempty(lines)
+
+
+def build_previous_history_summary(
+    conditions: list[dict],
+    uploads: list[dict],
+    memory: dict,
+    role_key: str,
+) -> list[str]:
+    terms = health_summary_terms(role_key)
+    lines = []
+    for condition in conditions:
+        status = clean_text(condition.get("status"), "unknown").lower()
+        if status == "active":
+            continue
+        name = clean_text(condition.get("name"))
+        if not name:
+            continue
+        recorded = display_date(condition.get("recorded_on") or condition.get("created_at", ""))
+        detail = f"{name} - {status}"
+        if recorded and recorded != "Date not recorded":
+            detail += f" ({recorded})"
+        lines.append(detail)
+    lines.extend(memory_history_lines(memory.get("summary", "")))
+    if uploads:
+        lines.append(f"{len(uploads)} uploaded record{'s' if len(uploads) != 1 else ''} used in the account history.")
+    if not lines:
+        return []
+    return [f"{terms['history']}: {item}" for item in unique_nonempty(lines)[:6]]
 
 
 def get_vital_unit(vitals: list[dict], vital_type: str) -> str:
@@ -639,37 +765,108 @@ def render_health_summary(
     memory: dict,
     trend_insights: list[dict],
 ) -> None:
+    role_key = profile_role_key(profile)
+    terms = health_summary_terms(role_key)
+
+    active_conditions = [
+        condition for condition in conditions
+        if clean_text(condition.get("status"), "unknown").lower() == "active"
+    ]
     condition_context = unique_nonempty(
-        [condition.get("name", "") for condition in conditions]
-        + [medication.get("reason", "") for medication in medications]
-        + [latest_triage.get("pathway_label", "") if latest_triage else ""]
+        [condition.get("name", "") for condition in active_conditions]
     )
+
+    recent_symptoms = []
+    for entry in sorted(
+        symptom_logs,
+        key=lambda item: parse_datetime(item.get("logged_for") or item.get("created_at", ""))
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )[:3]:
+        symptom = clean_text(entry.get("symptom"))
+        if not symptom:
+            continue
+        symptom_line = f"{terms['symptom']}: {symptom}"
+        if entry.get("severity") not in ("", None):
+            symptom_line += f" - severity {entry.get('severity')}/10"
+        symptom_line += f" ({display_date(entry.get('logged_for') or entry.get('created_at', ''))})"
+        recent_symptoms.append(symptom_line)
+
     # Show the latest reading for each unique vital/lab type (not just first 5 raw rows)
     latest_by_type: dict[str, dict] = {}
     for entry in vitals:
         vtype = (entry.get("type") or "").strip().lower()
         if not vtype:
             continue
-        recorded = (entry.get("recorded_on") or entry.get("created_at") or "").strip()
         existing = latest_by_type.get(vtype)
-        if existing is None or recorded > (existing.get("recorded_on") or existing.get("created_at") or ""):
+        entry_dt = parse_datetime(entry.get("recorded_on") or entry.get("created_at", ""))
+        existing_dt = (
+            parse_datetime(existing.get("recorded_on") or existing.get("created_at", ""))
+            if existing else None
+        )
+        if existing is None or (entry_dt or datetime.min.replace(tzinfo=timezone.utc)) > (
+            existing_dt or datetime.min.replace(tzinfo=timezone.utc)
+        ):
             latest_by_type[vtype] = entry
+    latest_vital_rows = sorted(
+        latest_by_type.items(),
+        key=lambda item: parse_datetime(item[1].get("recorded_on") or item[1].get("created_at", ""))
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
     recent_vitals = [
-        f"{vital_label(vtype)}: {format_vital(entry)} ({display_date(entry.get('recorded_on') or entry.get('created_at', ''))})"
-        for vtype, entry in sorted(latest_by_type.items())
+        f"{terms['reading']}: {vital_label(vtype)} {format_vital(entry)} ({display_date(entry.get('recorded_on') or entry.get('created_at', ''))})"
+        for vtype, entry in latest_vital_rows
     ]
     risks = build_key_risks(latest_triage, allergies, symptom_logs, trend_insights)
+    previous_history = build_previous_history_summary(conditions, uploads, memory, role_key)
+
+    current_snapshot = []
+    if latest_triage:
+        triage_line = " - ".join(
+            unique_nonempty([
+                latest_triage.get("urgency_level", ""),
+                latest_triage.get("next_step", ""),
+            ])
+        )
+        if triage_line:
+            current_snapshot.append(f"{terms['latest_triage']}: {triage_line}")
+        if latest_triage.get("pathway_label"):
+            pathway_label = "Care topic" if role_key in ("patient", "caregiver") else "Pathway"
+            current_snapshot.append(f"{pathway_label}: {latest_triage['pathway_label']}")
+    current_snapshot.extend(
+        [f"{terms['condition']}: {item}" for item in condition_context[:4]]
+    )
+    current_snapshot.extend(recent_symptoms[:2])
+    if medications:
+        current_snapshot.append(f"{terms['medications']}: {len(medications)} recorded")
+    if recent_vitals:
+        current_snapshot.append(recent_vitals[0])
 
     card_cols = st.columns(3, gap="medium")
     with card_cols[0]:
         render_summary_card(
-            "Current conditions",
-            render_list(condition_context, "No current condition context has been recorded yet."),
-            f"{len(conditions)} saved",
+            terms["current"],
+            render_list(current_snapshot, "No current saved health data is available yet."),
+            f"{len(active_conditions)} active condition{'s' if len(active_conditions) != 1 else ''}",
         )
     with card_cols[1]:
         render_summary_card(
-            "Medications",
+            terms["readings"],
+            render_list(recent_vitals, "No measurements or lab readings saved yet.", cap=12),
+            f"{len(latest_by_type)} latest result{'s' if len(latest_by_type) != 1 else ''}",
+        )
+    with card_cols[2]:
+        render_summary_card(
+            terms["risks"],
+            render_list(risks, "No elevated risk pattern detected from saved timeline data yet."),
+            "Review alongside clinical judgement." if role_key not in ("patient", "caregiver") else "This is not a diagnosis.",
+        )
+
+    lower_cols = st.columns(3, gap="medium")
+    with lower_cols[0]:
+        render_summary_card(
+            terms["medications"],
             render_list(
                 [
                     " - ".join(unique_nonempty([m.get("name", ""), m.get("dose", ""), m.get("schedule", "")]))
@@ -679,9 +876,9 @@ def render_health_summary(
             ),
             f"{len(medications)} saved",
         )
-    with card_cols[2]:
+    with lower_cols[1]:
         render_summary_card(
-            "Allergies",
+            terms["allergies"],
             render_list(
                 [
                     " - ".join(unique_nonempty([a.get("name", ""), a.get("severity", ""), a.get("reaction", "")]))
@@ -691,24 +888,17 @@ def render_health_summary(
             ),
             f"{len(allergies)} saved",
         )
-
-    lower_cols = st.columns([1, 1], gap="medium")
-    with lower_cols[0]:
+    with lower_cols[2]:
         render_summary_card(
-            "Vitals & lab results",
-            render_list(recent_vitals, "No vitals or lab readings saved yet.", cap=12),
-            f"{len(latest_by_type)} unique test{'s' if len(latest_by_type) != 1 else ''}",
-        )
-    with lower_cols[1]:
-        render_summary_card(
-            "Key risks",
-            render_list(risks, "No elevated risk pattern detected from saved timeline data yet."),
-            "This is not a diagnosis.",
+            terms["history"],
+            render_list(previous_history, "No previous health history has been saved yet."),
+            f"{len(uploads)} uploaded record{'s' if len(uploads) != 1 else ''}",
         )
 
     memory_text = clean_text(memory.get("summary", ""))
     if memory_text:
-        st.markdown("### Longitudinal memory")
+        memory_heading = "Saved history notes" if role_key in ("patient", "caregiver") else "Longitudinal clinical memory"
+        st.markdown(f"### {memory_heading}")
         st.info(memory_text)
 
     if uploads or symptom_logs:
@@ -716,7 +906,7 @@ def render_health_summary(
         metric_cols[0].metric("Documents", len(uploads))
         metric_cols[1].metric("Symptoms", len(symptom_logs))
         metric_cols[2].metric("Vitals/labs", len(vitals))
-        metric_cols[3].metric("Latest role", clean_text(profile.get("clinical_role") or profile.get("role"), "Individual"))
+        metric_cols[3].metric("Latest role", RoleRouter().resolve(profile.get("clinical_role") or profile.get("role", "")).display_label)
 
 
 def render_timeline(events: list[dict]) -> None:

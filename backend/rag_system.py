@@ -871,9 +871,10 @@ class RAGEngine:
             return b""
 
         user_profile = UserStore.get_user_profile(normalized_user)
-        role_key = (
+        from backend.role_router import RoleRouter
+        role_key = RoleRouter().resolve(
             user_profile.get("clinical_role") or user_profile.get("role", "")
-        ).strip().lower()
+        ).role_key
 
         from backend.gp_summary import build_summary_pdf
         return build_summary_pdf(
@@ -887,7 +888,7 @@ class RAGEngine:
             recent_chats=UserStore.get_chat_history(normalized_user),
             allergies=UserStore.get_allergies(normalized_user),
             conditions=UserStore.get_conditions(normalized_user),
-            vitals=UserStore.get_vitals(normalized_user),
+            vitals=UserStore.get_vitals(normalized_user, limit=None),
         )
 
     # Keep old name as a shim

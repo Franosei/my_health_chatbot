@@ -13,6 +13,7 @@ from app_ui.theme import format_timestamp, inject_custom_css
 from app_ui.uploader import upload_documents
 from backend.product_config import PRODUCT_NAME, SUPPORT_EMAIL
 from backend.rag_system import RAGEngine
+from backend.role_router import RoleRouter
 from backend.user_store import UserStore
 from backend.voice_transcriber import VoiceTranscriber
 
@@ -667,7 +668,9 @@ traces = UserStore.get_interaction_traces(current_user, limit=5)
 audit_records = UserStore.get_audit(current_user, limit=8)
 latest_triage = UserStore.get_latest_triage_summary(current_user)
 
-clinical_role_key = (user_profile.get("clinical_role") or "").lower()
+clinical_role_key = RoleRouter().resolve(
+    user_profile.get("clinical_role") or user_profile.get("role", "")
+).role_key
 _is_clinical_user = clinical_role_key in ("doctor", "nurse", "midwife", "physiotherapist")
 
 with st.sidebar:
@@ -1162,6 +1165,9 @@ with st.sidebar:
         symptom_logs
         or medications
         or uploads
+        or allergies
+        or conditions
+        or vitals
         or rag_engine.get_combined_longitudinal_memory(current_user)
         or latest_triage
     )

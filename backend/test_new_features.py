@@ -1,6 +1,6 @@
 import backend.user_store as user_store_module
 import fitz
-from backend.gp_summary import build_gp_summary_pdf
+from backend.gp_summary import build_gp_summary_pdf, build_summary_pdf
 from backend.medication_checker import MedicationInteractionChecker
 from backend.symptom_tracker import build_symptom_pattern_summary
 from backend.triage_summary import normalize_triage_output
@@ -134,6 +134,68 @@ def test_gp_summary_pdf_is_created():
     )
 
     assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_health_summary_uses_latest_data_before_previous_history():
+    pdf_bytes = build_summary_pdf(
+        user_profile={"display_name": "Alex Patient"},
+        symptom_logs=[
+            {"symptom": "Chest tightness", "logged_for": "2026-05-20", "severity": 7},
+            {"symptom": "Cough", "logged_for": "2026-04-01", "severity": 3},
+        ],
+        medications=[{"name": "Amlodipine", "dose": "5 mg", "schedule": "daily"}],
+        uploads=[{"file": "blood-results.pdf"}],
+        longitudinal_memory=(
+            "Patient Summary:\n"
+            "Known hypertension.\n"
+            "Conditions and history:\n"
+            "Previous asthma diagnosis.\n"
+        ),
+        role_key="Doctor / Physician",
+        triage_summaries=[{
+            "urgency_level": "Prompt",
+            "next_step": "Book GP review within 2 working days",
+            "created_at": "2026-05-21T10:00:00Z",
+        }],
+        conditions=[
+            {"name": "Hypertension", "status": "active", "recorded_on": "2025-01-01"},
+            {"name": "Asthma", "status": "past", "recorded_on": "2018-01-01"},
+        ],
+        vitals=[
+            {"type": "blood_pressure", "value": "138/86", "unit": "mmHg", "recorded_on": "2026-05-21"},
+            {"type": "blood_pressure", "value": "150/95", "unit": "mmHg", "recorded_on": "2026-04-01"},
+        ],
+    )
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    text = "\n".join(page.get_text() for page in doc)
+
+    assert text.index("Current Clinical Snapshot") < text.index("Relevant Past Medical History")
+    assert "Active problem: Hypertension" in text
+    assert "BP 138/86 mmHg" in text
+    assert "Previous: 150/95 mmHg" in text
+    assert "Past medical history: Asthma" in text
+
+
+def test_patient_summary_uses_plain_language_sections():
+    pdf_bytes = build_summary_pdf(
+        user_profile={"display_name": "Alex Patient"},
+        symptom_logs=[{"symptom": "Headache", "logged_for": "2026-05-21", "severity": 5}],
+        medications=[],
+        uploads=[],
+        longitudinal_memory="Patient Summary:\nMigraine history.",
+        role_key="Patient / Individual",
+        conditions=[{"name": "Migraine", "status": "active", "recorded_on": "2024-02-01"}],
+        vitals=[],
+    )
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    text = "\n".join(page.get_text() for page in doc)
+
+    assert "Current Health Snapshot" in text
+    assert "Past Health History" in text
+    assert "Current Clinical Snapshot" not in text
+    assert "Current health issue: Migraine" in text
 
 
 def test_gp_summary_uses_medications_mentioned_in_longitudinal_memory():
