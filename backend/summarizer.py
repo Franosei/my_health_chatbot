@@ -119,6 +119,10 @@ class LLMHelper:
             banner_instruction = (
                 f"IMPORTANT: Begin your response with this escalation notice verbatim:\n"
                 f"{escalation_banner}\n\n"
+                "Because the escalation notice is already at the top, do NOT repeat or paraphrase "
+                "its criteria anywhere in the body sections. For any 'Escalate Now If' or "
+                "'Get Urgent Help If' heading, write only: 'See escalation notice above.' "
+                "Do not list the same triggers again.\n\n"
             )
 
         memory_text = self._render_longitudinal_memory(longitudinal_memory)
@@ -395,57 +399,34 @@ class LLMHelper:
                     for m in turns
                 )
 
-        if is_clinician:
-            framing = (
-                "You are a senior clinician generating the exact follow-up questions you would ask "
-                "in a real outpatient consultation after hearing this patient's complaint.\n\n"
-                "Your task: read the complaint and answer, identify the most likely differentials, "
-                "then generate the questions that would distinguish between them or fill the most "
-                "important gaps in the history. These must be the questions a real consultant "
-                "would actually ask — not generic categories.\n\n"
-                "Draw from standard clinical clerking: site, onset, character, radiation, "
-                "associated features, timing, exacerbating/relieving factors, severity — "
-                "but ONLY the ones that matter for this specific presentation. Also include "
-                "targeted social history (smoking pack-years, alcohol units, occupation, travel) "
-                "and systems review questions only when directly relevant to the differentials.\n\n"
-                "Phrase as direct consultation questions, e.g. 'Does the pain radiate anywhere?' "
-                "or 'Any haemoptysis or night sweats?'. Up to 5 questions. Each must be specific "
-                "to this presentation — never generic."
-            )
-        else:
-            framing = (
-                "You are a GP generating the follow-up questions you would ask this patient next "
-                "in a real consultation, based on what they have just told you.\n\n"
-                "Your task: identify what the complaint is, think about the most likely causes, "
-                "then generate the questions that would help narrow it down or fill the key gaps "
-                "in their history. These must be the questions a real GP would genuinely ask — "
-                "natural, targeted, and specific to this presentation.\n\n"
-                "Examples of the kind of questions to generate (pick those relevant to this case):\n"
-                "- Onset and character: 'When exactly did the chest pain start and is it sharp, "
-                "crushing, or burning?'\n"
-                "- Radiation and associated symptoms: 'Does it spread to your arm or jaw, and do "
-                "you feel short of breath with it?'\n"
-                "- Triggers and relief: 'Does it come on with exertion, eating, or lying down, "
-                "and does anything make it better?'\n"
-                "- Diet and bowel habit: 'Have you noticed any change in your bowel habit or "
-                "blood in your stools recently?'\n"
-                "- Lifestyle: 'How many cigarettes do you smoke per day and roughly how much "
-                "alcohol do you drink in a week?'\n"
-                "- Family history: 'Has anyone in your immediate family had a heart attack, "
-                "stroke, or bowel cancer?'\n"
-                "- Medication: 'Are you still taking [named medication] and have you noticed "
-                "any changes since starting it?'\n\n"
-                "Phrase in plain conversational language the patient would naturally say when "
-                "asked. Up to 5 questions. Every question must be specific to this patient's "
-                "complaint — never generic filler."
-            )
-
         messages = [
             {
                 "role": "system",
                 "content": (
-                    f"{framing}\n\n"
-                    "Return JSON with one key: 'questions' — an array of up to 5 question strings."
+                    "You generate clickable follow-up chips shown after a clinical answer.\n\n"
+                    "A chip is a SHORT STATEMENT in the patient's voice — something they might "
+                    "want to CONFIRM as true about themselves to refine the answer. "
+                    "Clicking a chip means the patient is saying 'yes, I have / experience this.'\n\n"
+                    "STRICT RULES:\n"
+                    "1. Chips must come from what the EVIDENCE AND ANSWER raised — risk factors, "
+                    "associated symptoms, red flags, lifestyle triggers, or family history the "
+                    "research identified as relevant. Do NOT invent generic health questions.\n"
+                    "2. Never ask something the patient already described in their question.\n"
+                    "3. Never include source counts, numbers of papers, or any metadata from the "
+                    "answer — chips are about the PATIENT, not the evidence database.\n"
+                    "4. Each chip 'display' must be a short first-person statement, max 8 words:\n"
+                    "   GOOD: 'I also have a fever', 'My dad had a heart attack', "
+                    "'Pain spreads to my jaw', 'I smoke about 10 a day'\n"
+                    "   BAD: 'How long have you had symptoms?', '3 sources reviewed', "
+                    "'Have you noticed any other symptoms?'\n"
+                    "5. Each chip 'prompt' is what gets sent to the model — it must:\n"
+                    "   a) Start by identifying what the original question was about\n"
+                    "   b) State the confirmation as a fact the patient is adding\n"
+                    "   c) Ask how this changes or refines the answer\n"
+                    "   Example: 'Regarding my sore throat question — I also have a fever of "
+                    "around 38.5°C. Does this change whether I need antibiotics or a GP visit?'\n\n"
+                    "Return JSON: {'questions': [{\"display\": str, \"prompt\": str}, ...]}, "
+                    "up to 5 items."
                 ),
             },
             {
@@ -454,12 +435,13 @@ class LLMHelper:
                     f"Role: {role_key}\n"
                     f"Patient profile:\n{profile_text}\n\n"
                     f"Patient health record:\n{patient_data}\n\n"
-                    + (f"Recent conversation (last 3 turns):\n{recent_turns}\n\n" if recent_turns else "")
-                    + f"Complaint / question:\n{question}\n\n"
-                    f"Answer already given:\n{answer}\n\n"
-                    "Now generate up to 5 follow-up questions a real consultant would ask next "
-                    "to build the history and narrow the diagnosis. Base them on the specific "
-                    "complaint above — do not generate questions that could apply to any patient. "
+                    + (f"Recent conversation:\n{recent_turns}\n\n" if recent_turns else "")
+                    + f"Original question:\n{question}\n\n"
+                    f"Answer given (read this to find what risk factors, red flags, "
+                    f"or associated findings were raised but not yet confirmed):\n{answer}\n\n"
+                    "Generate up to 5 chips. Each must be grounded in a specific finding from "
+                    "the answer above. The 'prompt' must reference the original topic so the "
+                    "model knows exactly what conversation it is continuing. "
                     "Return only valid JSON."
                 ),
             },
@@ -471,11 +453,20 @@ class LLMHelper:
                 temperature=0.4,
                 response_format={"type": "json_object"},
             )
-            payload = json.loads(response.choices[0].message.content.strip())
-            questions = payload.get("questions", [])
-            if not isinstance(questions, list):
+            raw = json.loads(response.choices[0].message.content.strip())
+            items = raw.get("questions", [])
+            if not isinstance(items, list):
                 return []
-            return [str(q).strip() for q in questions[:5] if str(q).strip()]
+            result = []
+            for item in items[:5]:
+                if isinstance(item, dict):
+                    display = str(item.get("display", "")).strip()
+                    prompt = str(item.get("prompt", display)).strip()
+                    if display:
+                        result.append({"display": display, "prompt": prompt})
+                elif isinstance(item, str) and item.strip():
+                    result.append({"display": item.strip(), "prompt": item.strip()})
+            return result
         except Exception as exc:
             print(f"Follow-up question generation failed: {exc}")
             return []

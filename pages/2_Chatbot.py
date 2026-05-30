@@ -64,15 +64,7 @@ def resolve_image_source(
 
 
 def render_source_links(sources: list[dict]) -> None:
-    links = []
-    for source in sources:
-        source_id = source.get("source_id", "Source")
-        url = source.get("url", "")
-        if url:
-            links.append(f"[{source_id}]({url})")
-
-    if links:
-        st.markdown("Sources: " + " | ".join(links))
+    pass  # consolidated into render_why_this_answer
 
 
 def render_triage_summary(summary: dict) -> None:
@@ -174,16 +166,15 @@ def render_medication_alerts(alerts: list[dict], resolved_medications: list[dict
 
 def render_message_meta(message: dict) -> None:
     timestamp = format_timestamp(message.get("timestamp", ""))
-    source_count = len(message.get("sources", []))
-    trace_id = message.get("trace_id")
+    trace = message.get("metadata", {}).get("trace", {})
+    role_key = trace.get("role_key", "patient")
+    is_clinician = role_key in ("doctor", "nurse", "midwife", "physiotherapist")
     triage_summary = message.get("metadata", {}).get("triage_summary", {})
     pills = []
     if timestamp:
         pills.append(timestamp)
-    if source_count:
-        pills.append(f"{source_count} sources")
-    if trace_id:
-        pills.append(trace_id)
+    if is_clinician and message.get("trace_id"):
+        pills.append(message["trace_id"])
     if triage_summary.get("next_step"):
         pills.append(f"Next: {triage_summary['next_step']}")
 
@@ -403,24 +394,19 @@ def _fmt(raw: str, lookup: dict) -> str:
     return lookup.get(raw, raw.replace("_", " ").title()) if raw else ""
 
 
-def render_reasoning_panel(trace: dict) -> None:
-    if not trace:
+def render_why_this_answer(message: dict) -> None:
+    """Single role-aware 'Why this answer?' expander — replaces reasoning panel + source trace."""
+    sources = message.get("sources", [])
+    meta = message.get("metadata", {})
+    trace = meta.get("trace", {})
+    personal_context = meta.get("personal_context", [])
+    longitudinal_memory = meta.get("longitudinal_memory", "")
+
+    if not sources and not personal_context and not longitudinal_memory and not trace:
         return
 
-    intent_cat = trace.get("intent_category", "")
-    risk_level = trace.get("risk_level", "")
-    pathway = trace.get("pathway_used", "")
-    role_key = trace.get("role_key", "")
-    gates = trace.get("policy_gates_applied", [])
-    tiers = trace.get("evidence_tiers_present", [])
-    sources = trace.get("sources", [])
-    expanded_queries = trace.get("expanded_queries", [])
-    vulnerable_flags = trace.get("vulnerable_flags", [])
-    escalation = trace.get("escalation_triggered", False)
-    crisis = trace.get("crisis_detected", False)
-
-    if not any([intent_cat, risk_level, pathway, gates, sources]):
-        return
+    role_key = trace.get("role_key", "patient")
+    is_clinician = role_key in ("doctor", "nurse", "midwife", "physiotherapist")
 
     tier_map = {1: 0, 2: 0, 3: 0}
     for s in sources:
@@ -428,90 +414,146 @@ def render_reasoning_panel(trace: dict) -> None:
         if t in tier_map:
             tier_map[t] += 1
 
-    tier_quality_parts = []
-    for t, count in tier_map.items():
-        if count:
-            tier_quality_parts.append(f"{count} {_TIER_LABELS_FULL[t]}")
-    tier_quality = "; ".join(tier_quality_parts) if tier_quality_parts else "Evidence tier not recorded"
+    title_parts: list[str] = []
+    if tier_map[1]:
+        title_parts.append(f"{tier_map[1]} guideline{'s' if tier_map[1] > 1 else ''}")
+    total_research = tier_map[2] + tier_map[3]
+    if total_research:
+        title_parts.append(f"{total_research} research source{'s' if total_research > 1 else ''}")
+    expander_title = "Why this answer?" + (" — " + " · ".join(title_parts) if title_parts else "")
 
-    with st.expander("Why this answer?", expanded=False):
-        rows = []
+    with st.expander(expander_title, expanded=False):
+        if is_clinician:
+            # ── CLINICIAN: full technical audit ──────────────────────────────
+            intent_cat = trace.get("intent_category", "")
+            risk_level = trace.get("risk_level", "")
+            pathway = trace.get("pathway_used", "")
+            gates = trace.get("policy_gates_applied", [])
+            expanded_queries = trace.get("expanded_queries", [])
+            vulnerable_flags = trace.get("vulnerable_flags", [])
+            escalation = trace.get("escalation_triggered", False)
+            crisis = trace.get("crisis_detected", False)
 
-        if intent_cat:
-            rows.append(("Intent detected", _fmt(intent_cat, _INTENT_LABELS)))
+            rows: list[tuple[str, str]] = []
+            if intent_cat:
+                rows.append(("Intent", _fmt(intent_cat, _INTENT_LABELS)))
+            if risk_level:
+                rows.append(("Risk level", _fmt(risk_level, _RISK_LABELS)))
+            if escalation or crisis:
+                rows.append(("Escalation", "Yes — escalation notice included" if escalation else "Crisis response"))
+            if role_key:
+                rows.append(("Role", _fmt(role_key, _ROLE_LABELS)))
+            if vulnerable_flags:
+                rows.append(("Vulnerable flags", ", ".join(_fmt(f, _FLAG_LABELS) for f in vulnerable_flags)))
+            history_used = bool(trace.get("memory_match_count", 0) or any(trace.get("expanded_queries", [])))
+            rows.append(("Patient history used", "Yes" if history_used else "No"))
+            if expanded_queries and len(expanded_queries) > 1:
+                rows.append(("Queries generated", str(len(expanded_queries))))
+            if pathway:
+                rows.append(("Pathway", _fmt(pathway, _PATHWAY_LABELS)))
+            if gates:
+                rows.append(("Policy gates", "; ".join(_fmt(g.get("gate_name", ""), _GATE_LABELS) for g in gates[:6])))
+            tier_parts = [f"{c} {_TIER_LABELS_FULL[t]}" for t, c in tier_map.items() if c]
+            if tier_parts:
+                rows.append(("Evidence quality", "; ".join(tier_parts)))
 
-        if risk_level:
-            rows.append(("Risk level", _fmt(risk_level, _RISK_LABELS)))
+            table_html = "".join(
+                f"<tr>"
+                f"<td style='padding:6px 14px 6px 0;color:#6b7280;font-size:13px;white-space:nowrap;"
+                f"vertical-align:top;border-bottom:1px solid #f0f0f0'>{html.escape(lbl)}</td>"
+                f"<td style='padding:6px 0 6px 14px;font-size:13px;font-weight:500;"
+                f"vertical-align:top;border-bottom:1px solid #f0f0f0'>{html.escape(val)}</td>"
+                f"</tr>"
+                for lbl, val in rows
+            )
+            if table_html:
+                st.markdown(
+                    f"<table style='width:100%;border-collapse:collapse;margin-bottom:12px'>{table_html}</table>",
+                    unsafe_allow_html=True,
+                )
 
-        if escalation or crisis:
-            flag = "Yes — escalation notice included" if escalation else ("Yes — crisis response" if crisis else "No")
-            rows.append(("Escalation triggered", flag))
+            if gates:
+                with st.expander("Policy gate details", expanded=False):
+                    for gate in gates[:6]:
+                        st.markdown(f"**{_fmt(gate.get('gate_name', ''), _GATE_LABELS)}**")
+                        if gate.get("reason"):
+                            st.caption(gate["reason"])
 
-        if role_key:
-            rows.append(("User role", _fmt(role_key, _ROLE_LABELS)))
+            if sources:
+                st.markdown("#### Sources")
+                for source in sources:
+                    tier = source.get("evidence_tier", 3)
+                    tier_label = source.get("tier_label", f"Tier {tier}")
+                    tier_badge = (
+                        f'<span class="tier-badge tier-{tier}" title="{source.get("tier_description","")}">'
+                        f"{tier_label}</span>"
+                    )
+                    st.markdown(
+                        f"<div class='source-card'>"
+                        f"<div class='source-card-head'>"
+                        f"<span class='source-badge'>{source.get('source_id','S')}</span>"
+                        f"<div><strong>{source.get('title','Untitled')}</strong> {tier_badge}"
+                        f"<br/><span>{source.get('journal','')}{' ' + str(source.get('year','')) if source.get('year') else ''}</span></div>"
+                        f"</div>"
+                        f"<div class='source-card-body'><p>{source.get('snippet','')}</p></div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    if source.get("url"):
+                        st.link_button(f"Open {source.get('source_id','source')}", source["url"], use_container_width=False)
 
-        if vulnerable_flags:
-            flag_labels = [_fmt(f, _FLAG_LABELS) for f in vulnerable_flags]
-            rows.append(("Vulnerable population flags", ", ".join(flag_labels)))
+            if personal_context:
+                st.markdown("#### Personal context used")
+                for item in personal_context:
+                    st.markdown(
+                        f"<div class='context-card'><strong>{item.get('title', item.get('source','Context'))}</strong>"
+                        f"<p>{item.get('snippet','')}</p></div>",
+                        unsafe_allow_html=True,
+                    )
 
-        history_used = bool(
-            trace.get("memory_match_count", 0)
-            or any(trace.get("expanded_queries", []))
-        )
-        rows.append(("Patient history used", "Yes" if history_used else "No"))
+            if longitudinal_memory:
+                st.markdown("#### Patient history applied")
+                st.markdown(
+                    f"<div class='context-card'><strong>Persistent account memory</strong>"
+                    f"<p>{html.escape(longitudinal_memory).replace(chr(10), '<br/>')}</p></div>",
+                    unsafe_allow_html=True,
+                )
 
-        if expanded_queries and len(expanded_queries) > 1:
-            rows.append(("Search queries generated", str(len(expanded_queries))))
+        else:
+            # ── PATIENT / CAREGIVER: simple trust card ────────────────────────
+            risk_level = trace.get("risk_level", "")
+            triage_next = meta.get("triage_summary", {}).get("next_step", "")
+            history_used = bool(trace.get("memory_match_count", 0) or longitudinal_memory)
 
-        if pathway:
-            rows.append(("Clinical pathway selected", _fmt(pathway, _PATHWAY_LABELS)))
+            trust_lines: list[str] = []
+            if tier_map[1]:
+                trust_lines.append(
+                    f"**{tier_map[1]} NHS / NICE guideline{'s' if tier_map[1] > 1 else ''}** checked"
+                )
+            if tier_map[2]:
+                trust_lines.append(f"**{tier_map[2]} clinical review{'s' if tier_map[2] > 1 else ''}** reviewed")
+            if tier_map[3]:
+                trust_lines.append(f"**{tier_map[3]} research {'studies' if tier_map[3] > 1 else 'study'}** consulted")
+            if history_used:
+                trust_lines.append("**Your saved health record** was used to personalise this answer")
+            if risk_level:
+                trust_lines.append(f"Risk level assessed as **{_fmt(risk_level, _RISK_LABELS).lower()}**")
+            if triage_next:
+                trust_lines.append(f"Suggested next step: **{triage_next}**")
 
-        if gates:
-            gate_labels = [_fmt(g.get("gate_name", ""), _GATE_LABELS) for g in gates[:6]]
-            rows.append(("Policy gates applied", "; ".join(gate_labels)))
+            for line in trust_lines:
+                st.markdown(f"- {line}")
 
-        if sources:
-            rows.append(("Evidence retrieved", f"{len(sources)} source(s)"))
+            st.caption(
+                "All answers are grounded in current NHS, NICE, and peer-reviewed clinical evidence. "
+                "This is not a personal diagnosis — if you are concerned, follow the next step above."
+            )
 
-        if tier_quality_parts:
-            rows.append(("Evidence quality", tier_quality))
-
-        if tiers:
-            triage_outcome = trace.get("pathway_decision", {}).get("recommendation", "")
-            if not triage_outcome:
-                triage_outcome = trace.get("risk_level", "")
-            if triage_outcome:
-                rows.append(("Triage outcome", _fmt(triage_outcome, _RISK_LABELS)))
-
-        table_rows_html = "".join(
-            f"""
-            <tr>
-                <td style="padding:7px 14px 7px 0;color:#6b7280;font-size:13px;white-space:nowrap;
-                           vertical-align:top;border-bottom:1px solid #f0f0f0">{html.escape(label)}</td>
-                <td style="padding:7px 0 7px 14px;font-size:13px;font-weight:500;
-                           vertical-align:top;border-bottom:1px solid #f0f0f0">{html.escape(value)}</td>
-            </tr>
-            """
-            for label, value in rows
-        )
-
-        st.markdown(
-            f"""
-            <table style="width:100%;border-collapse:collapse;margin-top:4px">
-                {table_rows_html}
-            </table>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if gates:
-            with st.expander("Policy gate details", expanded=False):
-                for gate in gates[:6]:
-                    name = _fmt(gate.get("gate_name", ""), _GATE_LABELS)
-                    reason = gate.get("reason", "")
-                    st.markdown(f"**{name}**")
-                    if reason:
-                        st.caption(reason)
+            if sources and any(s.get("url") for s in sources):
+                st.markdown("**Read the sources:**")
+                for source in sources:
+                    if source.get("url"):
+                        st.markdown(f"- [{source.get('title', source.get('source_id','Source'))}]({source['url']})")
 
 
 def render_feedback_buttons(message: dict) -> None:
@@ -576,30 +618,36 @@ def render_chat_history(history: list[dict]) -> None:
                     meta.get("medication_alerts", []),
                     meta.get("resolved_medications", []),
                 )
-                render_source_links(message.get("sources", []))
             render_message_meta(message)
             if message.get("role") == "assistant":
                 render_feedback_buttons(message)
-                render_reasoning_panel(meta.get("trace", {}))
-                render_source_trace(message)
+                render_why_this_answer(message)
 
 
-def render_follow_up_questions(questions: list[str]) -> None:
+def render_follow_up_questions(questions: list) -> None:
     if not questions:
         return
     st.markdown(
         "<div class='followup-container'>"
-        "<span class='followup-label'>Suggested follow-up questions</span>"
+        "<span class='followup-label'>Also relevant — click if this applies to you</span>"
         "</div>",
         unsafe_allow_html=True,
     )
-    for idx, question in enumerate(questions[:5]):
+    for idx, item in enumerate(questions[:5]):
+        if isinstance(item, dict):
+            display = item.get("display", "")
+            prompt = item.get("prompt", display)
+        else:
+            display = str(item)
+            prompt = display
+        if not display:
+            continue
         if st.button(
-            question,
-            key=f"followup_{idx}_{abs(hash(question)) % 99999}",
+            display,
+            key=f"followup_{idx}_{abs(hash(display)) % 99999}",
             use_container_width=True,
         ):
-            send_follow_up(question)
+            send_follow_up(prompt)
 
 
 def send_follow_up(question: str) -> None:
@@ -1498,9 +1546,8 @@ if active_question:
                 assistant_entry["metadata"].get("medication_alerts", []),
                 assistant_entry["metadata"].get("resolved_medications", []),
             )
-            render_source_links(assistant_entry.get("sources", []))
             render_message_meta(assistant_entry)
-            render_source_trace(assistant_entry)
+            render_why_this_answer(assistant_entry)
             st.session_state.chat_history.append(assistant_entry)
             UserStore.append_chat(current_user, assistant_entry)
             st.rerun()

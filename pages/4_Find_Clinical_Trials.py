@@ -350,35 +350,90 @@ _COUNTRIES = [
     "Vietnam", "Zimbabwe",
 ]
 
-with st.form("clinical_trial_search_form"):
-    location = st.selectbox(
-        "Your country",
-        options=_COUNTRIES,
-        index=_COUNTRIES.index("United Kingdom"),
-        help="Country is used to rank nearby trial sites higher in the results.",
-    )
-    submitted = st.form_submit_button("Find recruiting trials", type="primary", use_container_width=True)
+st.session_state.setdefault("trial_searching", False)
+st.session_state.setdefault("trial_search_location", "United Kingdom")
 
-if submitted:
-    with st.spinner("Analysing your health data and searching ClinicalTrials.gov..."):
+location = st.selectbox(
+    "Your country",
+    options=_COUNTRIES,
+    index=_COUNTRIES.index(st.session_state.trial_search_location)
+    if st.session_state.trial_search_location in _COUNTRIES
+    else _COUNTRIES.index("United Kingdom"),
+    help="Country is used to rank nearby trial sites higher in the results.",
+    disabled=st.session_state.trial_searching,
+)
+
+if st.session_state.trial_searching:
+    st.markdown(
+        """
+        <style>
+        @keyframes _trial_spin {
+            from { transform: rotate(0deg); }
+            to   { transform: rotate(360deg); }
+        }
+        </style>
+        <div style="
+            background: var(--primary, #2d7a8a);
+            color: white;
+            padding: 13px 24px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 8px;
+        ">
+            <div style="
+                width: 18px; height: 18px;
+                border: 3px solid rgba(255,255,255,0.35);
+                border-top-color: #ffffff;
+                border-radius: 50%;
+                animation: _trial_spin 0.75s linear infinite;
+                flex-shrink: 0;
+            "></div>
+            Searching ClinicalTrials.gov&hellip;
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.status("Finding matching trials...", expanded=True) as _search_status:
         try:
+            _search_status.write("Reading your health profile, conditions, and medications...")
+            _search_status.update(label="Contacting ClinicalTrials.gov...", state="running")
+            _search_status.write("Querying recruiting studies — this may take a few seconds...")
             result_new = find_matching_trials(
                 profile=trial_profile,
-                location_query=location,
+                location_query=st.session_state.trial_search_location,
                 max_results=10,
             )
+            _trial_count = len(result_new.get("trials", []))
+            _search_status.write(f"Scoring and ranking {_trial_count} candidate trial(s)...")
             st.session_state.trial_search_result = result_new
             UserStore.save_trial_search_result(current_user, result_new)
+            _search_status.update(
+                label=f"Done — {_trial_count} trial{'s' if _trial_count != 1 else ''} found for {st.session_state.trial_search_location}",
+                state="complete",
+                expanded=False,
+            )
         except requests.RequestException as exc:
-            error_result = {
+            _search_status.update(label="Search failed — could not reach ClinicalTrials.gov", state="error", expanded=True)
+            _search_status.write(f"Error: {exc}")
+            st.session_state.trial_search_result = {
                 "error": f"ClinicalTrials.gov search failed: {exc}",
-                "trials": [],
-                "condition_terms": [],
-                "medication_terms": [],
-                "location": location,
-                "searched_at": "",
+                "trials": [], "condition_terms": [], "medication_terms": [],
+                "location": st.session_state.trial_search_location, "searched_at": "",
             }
-            st.session_state.trial_search_result = error_result
+        finally:
+            st.session_state.trial_searching = False
+else:
+    if st.button("Find recruiting trials", type="primary", use_container_width=True):
+        st.session_state.trial_searching = True
+        st.session_state.trial_search_location = location
+        st.rerun()
 
 result = st.session_state.get("trial_search_result")
 if result:

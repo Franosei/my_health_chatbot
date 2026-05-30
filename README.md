@@ -1,6 +1,25 @@
 # Dr. Charlotte
 
-Dr. Charlotte is a Streamlit health information assistant for people who want their health records, questions, measurements, symptoms, medicines and evidence in one signed-in workspace.
+Dr. Charlotte is now moving from a Streamlit UI to a mobile-first React app backed by a FastAPI API. It remains a health information assistant for people who want their health records, questions, measurements, symptoms, medicines and evidence in one signed-in workspace.
+
+## React app on the production branch
+
+The production branch keeps the existing Python clinical/retrieval modules and exposes them through `backend/api.py`. The React client lives in `frontend/` and calls `/api/*` for auth, chat, uploads, record tracking, PDF export, timeline data and clinical-trial search.
+
+Run the full app from the repository root after installing Python requirements and frontend packages:
+
+```powershell
+pip install -r requirements.txt
+cd frontend
+npm install
+npm run build
+cd ..
+py -m uvicorn backend.api:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000`. For frontend-only development, run `npm run dev` inside `frontend/`; Vite proxies `/api` to `http://127.0.0.1:8000`.
+
+The previous Streamlit pages are still present as legacy reference code while the React migration settles.
 
 It is built to be practical rather than flashy. A user can upload medical documents, ask questions, build a timeline, record symptoms and measurements, check medicines, export a GP-ready summary and find relevant clinical trials. The assistant uses personal context where it is available, but it still keeps answers traceable with public health and biomedical sources.
 

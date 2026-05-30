@@ -110,14 +110,12 @@ ROLE_SECTION_HEADINGS: dict[str, List[str]] = {
         "## What To Do Now",
         "## What To Monitor",
         "## Get Urgent Help If",
-        "## Evidence Basis",
     ],
     "doctor": [
         "## Working Impression",
         "## Immediate Management",
         "## Investigations / Monitoring",
         "## Escalate Now If",
-        "## Evidence Summary",
     ],
     "nurse": [
         "## Disposition",
@@ -125,7 +123,6 @@ ROLE_SECTION_HEADINGS: dict[str, List[str]] = {
         "## Monitor Right Now",
         "## Escalate Immediately If",
         "## What To Tell The Patient Or Family",
-        "## Evidence Basis",
     ],
     "midwife": [
         "## Working Obstetric View",
@@ -133,14 +130,12 @@ ROLE_SECTION_HEADINGS: dict[str, List[str]] = {
         "## Monitor / Reassess",
         "## Escalate Immediately If",
         "## Patient Advice",
-        "## Evidence Basis",
     ],
     "physiotherapist": [
         "## Working MSK Interpretation",
         "## Immediate Management",
         "## Loading / Movement Advice",
         "## Escalate Or Refer If",
-        "## Evidence Basis",
     ],
     "caregiver": [
         "## What This Most Likely Means",
@@ -148,7 +143,6 @@ ROLE_SECTION_HEADINGS: dict[str, List[str]] = {
         "## What To Monitor",
         "## Get Urgent Help If",
         "## Caregiver Actions",
-        "## Evidence Basis",
     ],
 }
 
@@ -156,7 +150,6 @@ DEFAULT_SECTION_HEADINGS = [
     "## Working Impression",
     "## What To Do Now",
     "## What To Monitor",
-    "## Evidence Snapshot",
 ]
 
 
