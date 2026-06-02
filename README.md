@@ -4,11 +4,47 @@ Dr. Charlotte is a mobile-first React app backed by a FastAPI API. It gives sign
 
 The Python backend keeps the clinical workflow, retrieval, extraction, persistence and export services. The React client lives in `frontend/` and calls `/api/*` endpoints exposed by `backend/api.py`.
 
-## Screenshots and Flow
+## App Flow
 
-![Dr Charlotte workspace screen](image/image.png)
+Dr. Charlotte now runs as a React client with a FastAPI backend. The user flow is:
 
-![Dr Charlotte health record screen](image/image%202.png)
+1. Sign in or create an account with role-aware consent and a saved profile.
+2. Land in the workspace home, where saved documents, symptoms, conditions, medicines, vitals and labs are summarised.
+3. Use evidence chat to ask health questions, upload PDFs, export a health summary, and manage the health record.
+4. Review cited answer sections, evidence basis, safety-netting and structured triage.
+5. Open the timeline to review saved context, trend summaries and longitudinal notes.
+6. Search ClinicalTrials.gov using the saved health profile and chosen location.
+7. Review ranked recruiting trials with score, location, site, contact and official record links.
+
+### 1. Account Access
+
+![Dr Charlotte account access](image/image.png)
+
+### 2. Workspace Home
+
+![Dr Charlotte workspace home](image/image%202.png)
+
+### 3. Evidence Chat
+
+![Dr Charlotte evidence chat](image/image%203.png)
+
+### 4. Evidence Basis and Triage
+
+![Dr Charlotte evidence basis and triage](image/image33.png)
+
+### 5. Health Timeline
+
+![Dr Charlotte health timeline](image/image%204.png)
+
+### 6. Clinical Trial Search
+
+![Dr Charlotte clinical trial search](image/image%205.png)
+
+### 7. Ranked Trial Results
+
+![Dr Charlotte ranked trial results](image/image%206.png)
+
+### 8. Backend Processing Pipeline
 
 ![Dr Charlotte processing pipeline](image/pipeline.png)
 
@@ -58,11 +94,11 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8000`.
 
-## Main Runtime Flows
+## Runtime Flow
 
 ### Account and Consent
 
-The React client handles sign-in, account creation, role selection, profile details, date of birth, biological sex, role terms and privacy acceptance. `backend/user_store.py` validates and stores the account, hashes passwords with PBKDF2, and normalises old user records when new fields are added.
+The React client handles sign-in, account creation, role selection, profile details, date of birth, biological sex, role terms and privacy acceptance. `backend/user_store.py` validates and stores the account, hashes passwords with PBKDF2, and normalises older user records when new fields are added.
 
 ### Document Uploads
 
@@ -72,7 +108,7 @@ After verification, the document text is extracted, anonymised where possible, s
 
 ### Chat Answers
 
-`backend/rag_system.RAGEngine` restores saved documents, symptoms, medicines, allergies, conditions, vitals and longitudinal memory for the signed-in user. The clinical orchestrator applies role routing, crisis checks, moderation, policy gates and pathway logic before retrieval. Retrieved evidence is ranked and the model writes a cited, role-aware answer with a structured triage summary.
+`backend/rag_system.RAGEngine` restores saved documents, symptoms, medicines, allergies, conditions, vitals and longitudinal memory for the signed-in user. The clinical orchestrator applies role routing, crisis checks, moderation, policy gates and pathway logic before retrieval. Retrieved evidence is ranked and the model writes a cited, role-aware answer. The response includes evidence basis, safety wording and a structured triage summary.
 
 ### Clinical Trial Search
 
