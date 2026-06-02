@@ -211,6 +211,33 @@ export function buildSymptomSeries(rows: Dict<any>[], symptom: string): { date: 
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+const CLINICAL_SECTION_LABELS = [
+  "Conditions and history",
+  "Current treatments and medicines",
+  "Recent symptoms or active concerns",
+  "Investigations or notable results",
+  "Risks, allergies, or safety flags",
+  "Care plan and follow-up",
+  "Open questions or uncertainties"
+] as const;
+
+export function parseMemorySections(summary: string): { label: string; value: string; empty: boolean }[] {
+  if (!summary?.trim()) return [];
+  const text = summary.trim();
+  const found: { label: string; labelStart: number; valueStart: number }[] = [];
+  for (const label of CLINICAL_SECTION_LABELS) {
+    const idx = text.indexOf(`${label}:`);
+    if (idx !== -1) found.push({ label, labelStart: idx, valueStart: idx + label.length + 1 });
+  }
+  found.sort((a, b) => a.labelStart - b.labelStart);
+  return found.map((item, i) => {
+    const end = i + 1 < found.length ? found[i + 1].labelStart : text.length;
+    const value = text.slice(item.valueStart, end).trim();
+    const empty = !value || ["none noted", "none", "n/a", "not noted"].includes(value.toLowerCase());
+    return { label: item.label, value: empty ? "None noted" : value, empty };
+  });
+}
+
 export type TrendInsight = {
   title: string;
   body: string;

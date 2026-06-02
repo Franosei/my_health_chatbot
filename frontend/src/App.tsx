@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   Activity,
@@ -15,6 +15,8 @@ import {
   LogOut,
   MessageSquare,
   Mic,
+  PanelLeft,
+  PanelRight,
   Pill,
   Plus,
   Search,
@@ -51,6 +53,7 @@ import {
   clean,
   formatDate,
   formatTimestamp,
+  parseMemorySections,
   unique,
   vitalLabel
 } from "./utils";
@@ -404,6 +407,7 @@ function Shell({
   signOut: () => void;
   notice: string;
 }) {
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const nav = [
     { id: "workspace" as const, label: "Home", icon: Home },
     { id: "chat" as const, label: "Chat", icon: MessageSquare },
@@ -413,7 +417,7 @@ function Shell({
   const name = clean(snapshot.profile.display_name, snapshot.user);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <aside className="sidebar">
         <div className="brand-block">
           <img src="/assistant.png" alt="" />
@@ -433,17 +437,30 @@ function Shell({
             );
           })}
         </nav>
-        <button className="ghost sidebar-signout" onClick={signOut}>
-          <LogOut size={18} />
-          Sign out
-        </button>
+        <div className="sidebar-footer">
+          <button className="ghost sidebar-collapse-btn" onClick={() => setSidebarOpen(false)} title="Collapse sidebar">
+            <PanelLeft size={18} />
+            Collapse
+          </button>
+          <button className="ghost sidebar-signout" onClick={signOut}>
+            <LogOut size={18} />
+            Sign out
+          </button>
+        </div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
-          <div>
-            <span className="eyebrow">Dr. Charlotte</span>
-            <h1>{name}</h1>
+          <div className="topbar-left">
+            {!sidebarOpen && (
+              <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="Expand sidebar" aria-label="Expand sidebar">
+                <PanelLeft size={20} />
+              </button>
+            )}
+            <div>
+              <span className="eyebrow">Dr. Charlotte</span>
+              <h1>{name}</h1>
+            </div>
           </div>
           <button className="icon-button" onClick={signOut} title="Sign out" aria-label="Sign out">
             <LogOut size={20} />
@@ -572,11 +589,18 @@ function ChatView({
   const [status, setStatus] = useState("");
   const [streamText, setStreamText] = useState("");
   const [feedbackBusy, setFeedbackBusy] = useState<Record<string, boolean>>({});
+  const [panelOpen, setPanelOpen] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setMessages(snapshot.chat_history);
   }, [snapshot.chat_history]);
+
+  useLayoutEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, []);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -652,24 +676,31 @@ function ChatView({
   }
 
   return (
-    <div className="chat-layout">
+    <div className={`chat-layout${panelOpen ? "" : " panel-closed"}`}>
       <section className="chat-panel">
         <div className="chat-head">
           <div>
             <span className="eyebrow">Evidence chat</span>
             <h2>Conversation</h2>
           </div>
-          <button
-            className="ghost"
-            onClick={async () => {
-              setSnapshot(await apiRequest<Snapshot>("/api/chat", { method: "DELETE" }));
-              setMessages([]);
-            }}
-            title="Clear chat"
-          >
-            <Trash2 size={17} />
-            Clear
-          </button>
+          <div className="chat-head-actions">
+            <button
+              className="ghost"
+              onClick={async () => {
+                setSnapshot(await apiRequest<Snapshot>("/api/chat", { method: "DELETE" }));
+                setMessages([]);
+              }}
+              title="Clear chat"
+            >
+              <Trash2 size={17} />
+              Clear
+            </button>
+            {!panelOpen && (
+              <button className="ghost" onClick={() => setPanelOpen(true)} title="Show panel">
+                <PanelRight size={17} />
+              </button>
+            )}
+          </div>
         </div>
 
         {!messages.length && (
@@ -731,11 +762,19 @@ function ChatView({
         </div>
       </section>
 
-      <aside className="side-panel">
-        <UploadPanel setSnapshot={setSnapshot} setNotice={setNotice} />
-        <ExportPanel snapshot={snapshot} setNotice={setNotice} />
-        <RecordPanel snapshot={snapshot} setSnapshot={setSnapshot} compact={false} />
-      </aside>
+      {panelOpen && (
+        <aside className="side-panel">
+          <div className="side-panel-header">
+            <button className="ghost side-panel-close" onClick={() => setPanelOpen(false)} title="Hide panel">
+              <PanelRight size={17} />
+              Hide panel
+            </button>
+          </div>
+          <UploadPanel setSnapshot={setSnapshot} setNotice={setNotice} />
+          <ExportPanel snapshot={snapshot} setNotice={setNotice} />
+          <RecordPanel snapshot={snapshot} setSnapshot={setSnapshot} compact={false} />
+        </aside>
+      )}
     </div>
   );
 }
@@ -1426,9 +1465,6 @@ function TimelineView({ snapshot }: { snapshot: Snapshot }) {
           <SummaryCard title="Latest triage" count={clean(snapshot.latest_triage.urgency_level, "Routine")}>
             {clean(snapshot.latest_triage.next_step, "No triage summary saved yet.")}
           </SummaryCard>
-          <SummaryCard title="Saved history notes" count={clean(snapshot.memory?.updated_at, "") ? formatDate(snapshot.memory.updated_at) : "Not updated"}>
-            {clean(snapshot.memory?.summary, "No longitudinal memory saved yet.")}
-          </SummaryCard>
           <SummaryCard title="Key patterns" count={`${insights.length} found`}>
             {insights.length ? insights.map((item) => item.title).join("; ") : "Add readings over time to unlock trend cards."}
           </SummaryCard>
@@ -1481,6 +1517,32 @@ function SummaryCard({ title, count, children }: { title: string; count: string;
       <span>{count}</span>
       <strong>{title}</strong>
       <p>{children}</p>
+    </article>
+  );
+}
+
+function MemorySummaryPanel({ memory }: { memory: Dict<any> }) {
+  const summary = clean(memory?.summary);
+  const sections = useMemo(() => parseMemorySections(summary), [summary]);
+  const updatedAt = clean(memory?.updated_at);
+  return (
+    <article className="summary-card memory-summary-card">
+      <span>{updatedAt ? formatDate(updatedAt) : "Not yet updated"}</span>
+      <strong>Clinical context</strong>
+      {!summary ? (
+        <p>No clinical context yet. It builds automatically as you use the chat.</p>
+      ) : sections.length === 0 ? (
+        <p>{summary}</p>
+      ) : (
+        <div className="memory-sections">
+          {sections.map(({ label, value, empty }) => (
+            <div key={label} className="memory-row">
+              <span className="memory-label">{label}</span>
+              <span className={empty ? "memory-value muted" : "memory-value"}>{value}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </article>
   );
 }
