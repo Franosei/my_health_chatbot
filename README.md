@@ -4,7 +4,7 @@ Dr. Charlotte is a mobile-first React app backed by a FastAPI API. It gives sign
 
 The Python backend keeps the clinical workflow, retrieval, extraction, persistence and export services. The React client lives in `frontend/` and calls `/api/*` endpoints exposed by `backend/api.py`.
 
-## App Flow
+## Screenshots and Flow
 
 Dr. Charlotte now runs as a React client with a FastAPI backend. The user flow is:
 
@@ -16,33 +16,35 @@ Dr. Charlotte now runs as a React client with a FastAPI backend. The user flow i
 6. Search ClinicalTrials.gov using the saved health profile and chosen location.
 7. Review ranked recruiting trials with score, location, site, contact and official record links.
 
+The screenshots are ordered as: `image.png`, `image 2.png`, `image 3.png`, `image33.png`, `image 4.png`, `image 5.png`, `image 6.png`, then `pipeline.png`.
+
 ### 1. Account Access
 
-![Dr Charlotte account access](image/image.png)
+![Dr Charlotte workspace screen](image/image.png)
 
 ### 2. Workspace Home
 
-![Dr Charlotte workspace home](image/image%202.png)
+![Dr Charlotte health record screen](image/image%202.png)
 
 ### 3. Evidence Chat
 
-![Dr Charlotte evidence chat](image/image%203.png)
+![Dr Charlotte evidence chat screen](image/image%203.png)
 
-### 4. Evidence Basis and Triage
+### 4. Evidence Basis And Triage
 
-![Dr Charlotte evidence basis and triage](image/image33.png)
+![Dr Charlotte evidence basis screen](image/image33.png)
 
 ### 5. Health Timeline
 
-![Dr Charlotte health timeline](image/image%204.png)
+![Dr Charlotte timeline screen](image/image%204.png)
 
 ### 6. Clinical Trial Search
 
-![Dr Charlotte clinical trial search](image/image%205.png)
+![Dr Charlotte clinical trial search screen](image/image%205.png)
 
 ### 7. Ranked Trial Results
 
-![Dr Charlotte ranked trial results](image/image%206.png)
+![Dr Charlotte clinical trial results screen](image/image%206.png)
 
 ### 8. Backend Processing Pipeline
 
