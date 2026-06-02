@@ -198,6 +198,71 @@ def test_patient_summary_uses_plain_language_sections():
     assert "Current health issue: Migraine" in text
 
 
+def test_patient_summary_filters_prompt_repetition_and_source_noise():
+    pdf_bytes = build_summary_pdf(
+        user_profile={"display_name": "Kwabena Gyawu"},
+        symptom_logs=[],
+        medications=[],
+        uploads=[{"file": "Patient Name_ Francis Osei.pdf"}],
+        longitudinal_memory=(
+            "Patient Summary:\n"
+            "Age: 29 years\n"
+            "Biological sex: Male\n"
+            "Display Name: Kwabena Gyawu\n"
+            "Role: Patient / Individual\n"
+            "History of frequent sore throat and severe fever three years ago.\n"
+            "Recent symptoms or active concerns:\n"
+            "Experiencing sore throat for some time. Difficulty swallowing liquids but can eat solid food without pain.\n"
+            "What symptoms would make chest pain an urgent medical review issue?\n"
+        ),
+        role_key="Patient / Individual",
+        triage_summaries=[{
+            "question": "What symptoms would make chest pain an urgent medical review issue?",
+            "urgency_level": "Prompt",
+            "next_step": "GP",
+            "pathway_label": "General triage",
+            "decision_summary": "No specific high-acuity presentation matched; using computed acuity floor and clinical judgement.",
+            "what_to_monitor": ["Persistence, progression, or new red-flag symptoms"],
+            "immediate_actions": ["Arrange clinician review and safety-net for deterioration."],
+            "escalation_triggers": ["Any new severe symptom, collapse, or rapid deterioration"],
+            "created_at": "2026-05-30T10:00:00Z",
+        }],
+        recent_chats=[
+            {
+                "role": "user",
+                "content": "What symptoms would make chest pain an urgent medical review issue?",
+                "timestamp": "2026-05-30T09:59:00Z",
+            }
+        ],
+        conditions=[
+            {
+                "name": "Acute kidney injury",
+                "status": "active",
+                "recorded_on": "2026-05-26",
+                "notes": "Acute kidney injury pattern [Auto-extracted from Patient Name_ Francis Osei.pdf]",
+            }
+        ],
+        vitals=[
+            {"type": "potassium", "value": "6.8", "unit": "mmol/L", "recorded_on": "2026-05-26"},
+            {"type": "whitebloodcells", "value": "24.9", "unit": "x10^9/L", "recorded_on": "2026-05-26"},
+        ],
+    )
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    text = "\n".join(page.get_text() for page in doc)
+
+    assert "Current health issue: Acute kidney injury" in text
+    assert "Experiencing sore throat for some time" in text
+    assert text.count("Experiencing sore throat for some time") == 1
+    assert "Suggested next step: GP" in text
+    assert "What symptoms would make chest pain" not in text
+    assert "Display Name" not in text
+    assert "Biological sex" not in text
+    assert "Auto-extracted" not in text
+    assert "Patient Name_ Francis" not in text
+    assert "Records Used" not in text
+
+
 def test_gp_summary_uses_medications_mentioned_in_longitudinal_memory():
     pdf_bytes = build_gp_summary_pdf(
         user_profile={"display_name": "Case Study"},

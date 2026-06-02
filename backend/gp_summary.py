@@ -30,6 +30,7 @@ def _strip_markdown(value: str) -> str:
     text = re.sub(r"\*{1,3}([^*]*)\*{1,3}", r"\1", text)
     text = re.sub(r"_{1,2}([^_]*)_{1,2}", r"\1", text)
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\s*\[(?:auto[- ]?extracted|extracted|source|record used)[^\]]*\]", "", text, flags=re.I)
     text = re.sub(r"^#{1,6}\s+", "", text)
     text = re.sub(r"^[-*+]\s+", "", text)
     return " ".join(text.split()).strip()
@@ -59,6 +60,101 @@ def _clean_lines(lines: Iterable[str], max_lines: int) -> List[str]:
         if len(cleaned) >= max_lines:
             break
     return cleaned
+
+
+def _is_question_like(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not normalized:
+        return False
+    starters = (
+        "what ",
+        "when ",
+        "where ",
+        "why ",
+        "how ",
+        "can ",
+        "could ",
+        "should ",
+        "would ",
+        "do ",
+        "does ",
+        "did ",
+        "is ",
+        "are ",
+    )
+    return normalized.endswith("?") or normalized.startswith(starters)
+
+
+def _is_personal_concern(text: str) -> bool:
+    normalized = f" {re.sub(r'[^a-z0-9]+', ' ', (text or '').lower())} "
+    personal_markers = (
+        " i ",
+        " i have ",
+        " i am ",
+        " i feel ",
+        " i felt ",
+        " ive ",
+        " i've ",
+        " my ",
+        " me ",
+        " experiencing ",
+        " feeling ",
+    )
+    return any(marker in normalized for marker in personal_markers)
+
+
+def _is_low_value_chat_prompt(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not normalized:
+        return True
+    if _is_personal_concern(normalized):
+        return False
+    generic_starts = (
+        "what symptoms",
+        "what does the evidence",
+        "summarize ",
+        "summarise ",
+        "explain ",
+        "tell me ",
+        "can you ",
+        "could you ",
+        "should i ",
+        "what should ",
+    )
+    return _is_question_like(normalized) or normalized.startswith(generic_starts)
+
+
+def _is_summary_noise_line(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+    if not normalized:
+        return True
+    account_prefixes = (
+        "age",
+        "biological sex",
+        "display name",
+        "role",
+        "username",
+        "email",
+        "support",
+        "patient name",
+        "record used",
+        "source record",
+        "uploaded document",
+    )
+    if any(normalized.startswith(prefix) for prefix in account_prefixes):
+        return True
+    if "auto extracted from" in normalized or "extracted from" in normalized:
+        return True
+    if _is_question_like(text) and not _is_personal_concern(text):
+        return True
+    return False
+
+
+def _clean_health_lines(lines: Iterable[str], max_lines: int) -> List[str]:
+    return _clean_lines(
+        [line for line in lines if not _is_summary_noise_line(_normalize_text(line))],
+        max_lines=max_lines,
+    )
 
 
 def _wrap_lines(lines: Iterable[str], width: int = 82) -> List[str]:
@@ -96,7 +192,7 @@ def _section_lines(
     candidates: List[str] = []
     for key in keys:
         candidates.extend(sections.get(key.lower(), []))
-    return _clean_lines(candidates, max_lines)
+    return _clean_health_lines(candidates, max_lines)
 
 
 def _memory_snapshot_lines(longitudinal_memory: str, max_lines: int = 5) -> List[str]:
@@ -108,19 +204,19 @@ def _memory_snapshot_lines(longitudinal_memory: str, max_lines: int = 5) -> List
     )
     if snapshot:
         return snapshot
-    return _clean_lines(sections.get("unstructured", []), max_lines)
+    return _clean_health_lines(sections.get("unstructured", []), max_lines)
 
 
 def _memory_active_concern_lines(longitudinal_memory: str, max_lines: int = 6) -> List[str]:
     sections = _parse_memory_sections(longitudinal_memory)
     concern_lines = _section_lines(
         sections,
-        ["recent symptoms or active concerns", "open questions or uncertainties"],
+        ["recent symptoms or active concerns"],
         max_lines=max_lines,
     )
     if concern_lines:
         return concern_lines
-    return _clean_lines(sections.get("unstructured", []), max_lines)
+    return _clean_health_lines(sections.get("unstructured", []), max_lines)
 
 
 def _build_recorded_medication_line(medication: Dict) -> str:
@@ -352,7 +448,7 @@ def _latest_consultation_lines(
     chat_history: List[Dict],
     triage_summaries: List[Dict],
     role_key: str = "patient",
-    max_complaints: int = 5,
+    max_complaints: int = 2,
 ) -> List[str]:
     words = _role_words(role_key)
     lay_role = _is_lay_role(role_key)
@@ -381,8 +477,13 @@ def _latest_consultation_lines(
     if not latest_triage and not consultation_date:
         return []
 
-    # Collect user messages from the same calendar date as the consultation
+    # Collect the real presenting concern, but skip generic education prompts
+    # so the summary does not repeat unrelated chat questions.
     complaints: List[str] = []
+    triage_question = _normalize_text(latest_triage.get("question", "")) if latest_triage else ""
+    if triage_question and not _is_low_value_chat_prompt(triage_question):
+        complaints.append(triage_question)
+
     if consultation_date:
         for msg in (chat_history or []):
             if (msg.get("role") or msg.get("type")) != "user":
@@ -391,27 +492,28 @@ def _latest_consultation_lines(
             if not ts or ts.date() != consultation_date:
                 continue
             content = _normalize_text(msg.get("content", ""))
-            if content and not _is_empty_placeholder(content):
+            duplicate = any(content.lower() == existing.lower() for existing in complaints)
+            if content and not duplicate and not _is_low_value_chat_prompt(content):
                 complaints.append(content)
 
     date_label = consultation_date.strftime("%d %b %Y") if consultation_date else "Date unknown"
     lines: List[str] = [f"Date: {date_label}"]
 
-    for i, complaint in enumerate(complaints[:max_complaints]):
-        truncated = complaint[:200] + "..." if len(complaint) > 200 else complaint
-        if lay_role:
-            prefix = "Main question:" if i == 0 else "Also mentioned:"
-        else:
+    if not lay_role:
+        for i, complaint in enumerate(complaints[:max_complaints]):
+            truncated = complaint[:200] + "..." if len(complaint) > 200 else complaint
             prefix = "Presenting complaint:" if i == 0 else "Also reported:"
-        lines.append(f"{prefix} {truncated}")
+            lines.append(f"{prefix} {truncated}")
 
     if latest_triage:
-        if latest_triage.get("pathway_label"):
+        if latest_triage.get("pathway_label") and not lay_role:
             lines.append(f"Pathway: {latest_triage['pathway_label']}")
         if latest_triage.get("decision_summary"):
             summary = latest_triage["decision_summary"]
-            label = "Summary" if lay_role else "Assessment"
-            lines.append(f"{label}: {summary[:250] + '...' if len(summary) > 250 else summary}")
+            low_value_summary = "no specific high-acuity presentation matched" in summary.lower()
+            if not lay_role or not low_value_summary:
+                label = "Summary" if lay_role else "Assessment"
+                lines.append(f"{label}: {summary[:250] + '...' if len(summary) > 250 else summary}")
         if latest_triage.get("urgency_level"):
             lines.append(f"Urgency: {latest_triage['urgency_level']}")
         if latest_triage.get("next_step"):
@@ -448,13 +550,12 @@ _ROLE_SUMMARY_CONFIGS: Dict[str, Dict] = {
         "footer": "Your personal health record. Share with your healthcare team as needed.",
         "sections": [
             ("Current Health Snapshot", "current_snapshot"),
-            ("What Has Changed Recently", "active_concerns"),
+            ("What Needs Attention Now", "active_concerns"),
             ("Recent Readings", "vitals"),
             ("My Medicines", "medications"),
             ("Allergies and Reactions", "allergies"),
             ("Past Health History", "previous_history"),
             ("Latest Care Advice", "consultation"),
-            ("Records Used", "uploads"),
         ],
     },
     "caregiver": {
@@ -468,7 +569,6 @@ _ROLE_SUMMARY_CONFIGS: Dict[str, Dict] = {
             ("Allergies and Reactions", "allergies"),
             ("Previous Health History", "previous_history"),
             ("Latest Care Advice", "consultation"),
-            ("Records Used", "uploads"),
         ],
     },
     "doctor": {
@@ -686,6 +786,13 @@ def _vital_type_label(vital_type: str, role_key: str = "patient") -> str:
         "hba1c": "HbA1c",
         "egfr": "eGFR",
         "creatinine": "Creatinine",
+        "fasting_glucose": "Fasting glucose",
+        "potassium": "Potassium",
+        "whitebloodcells": "WBC",
+        "white_blood_cells": "WBC",
+        "haemoglobin": "Hb",
+        "hemoglobin": "Hb",
+        "cholesterol": "Cholesterol",
     }
     lay_labels = {
         "blood_pressure": "Blood pressure",
@@ -701,6 +808,13 @@ def _vital_type_label(vital_type: str, role_key: str = "patient") -> str:
         "hba1c": "HbA1c",
         "egfr": "Kidney function (eGFR)",
         "creatinine": "Creatinine",
+        "fasting_glucose": "Fasting glucose",
+        "potassium": "Potassium",
+        "whitebloodcells": "White blood cells",
+        "white_blood_cells": "White blood cells",
+        "haemoglobin": "Haemoglobin",
+        "hemoglobin": "Haemoglobin",
+        "cholesterol": "Cholesterol",
     }
     key = _normalize_text(vital_type).lower()
     labels = lay_labels if _is_lay_role(role_key) else clinical_labels
@@ -771,6 +885,10 @@ def _vitals_lines(
     return _clean_lines(lines, max_lines)
 
 
+def _recent_reading_count(vitals: Iterable[Dict]) -> int:
+    return len(_latest_by_type(vitals))
+
+
 def _current_snapshot_lines(
     role_key: str,
     conditions: Iterable[Dict],
@@ -817,7 +935,8 @@ def _current_snapshot_lines(
         role_key=role_key,
         max_lines=2,
     )
-    lines.extend(latest_symptoms[:2])
+    if not lay_role or len(lines) < 2:
+        lines.extend(latest_symptoms[:2])
 
     meds = list(medications or [])
     if meds:
@@ -833,8 +952,13 @@ def _current_snapshot_lines(
         label = "Severe allergy" if lay_role else "Severe allergy/contraindication"
         lines.append(f"{label}: {', '.join(_clean_lines(severe_allergies, 3))}")
 
-    latest_reading_lines = _vitals_lines(vitals, role_key=role_key, max_lines=3)
-    lines.extend(latest_reading_lines[:3])
+    if lay_role:
+        reading_count = _recent_reading_count(vitals)
+        if reading_count:
+            lines.append(f"Recent results available: {reading_count} measurement type{'s' if reading_count != 1 else ''} recorded")
+    else:
+        latest_reading_lines = _vitals_lines(vitals, role_key=role_key, max_lines=4)
+        lines.extend(latest_reading_lines[:4])
 
     return _clean_lines(lines, max_lines=max_lines)
 
@@ -861,11 +985,6 @@ def _previous_history_lines(
     if memory_lines:
         label = "Earlier history" if lay_role else "Longitudinal history"
         lines.extend(f"{label}: {line}" for line in memory_lines)
-
-    upload_names = _upload_lines(uploads, max_lines=3)
-    if upload_names:
-        label = "Record used" if lay_role else "Source record"
-        lines.extend(f"{label}: {line}" for line in upload_names)
 
     return _clean_lines(lines, max_lines=max_lines)
 
