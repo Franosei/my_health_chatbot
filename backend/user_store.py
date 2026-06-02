@@ -32,16 +32,6 @@ def _get_setting(name: str, default: str = "") -> str:
     value = os.getenv(name)
     if value:
         return value
-
-    try:
-        import streamlit as st
-
-        secret_value = st.secrets.get(name)
-        if secret_value:
-            return str(secret_value)
-    except Exception:
-        pass
-
     return default
 
 

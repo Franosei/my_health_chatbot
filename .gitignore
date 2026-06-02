@@ -303,6 +303,7 @@ FakesAssemblies/
 .ntvs_analysis.dat
 node_modules/
 frontend/dist/
+frontend/.vite/
 *.tsbuildinfo
 
 # Visual Studio 6 build log
@@ -420,10 +421,4 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
-#backend/
-#app_ui/
-# pages/
-
 chat_history.json
-#Home.py
-app_ui/landing.py
