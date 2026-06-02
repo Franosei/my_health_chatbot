@@ -22,6 +22,8 @@ import {
   ShieldCheck,
   Stethoscope,
   StopCircle,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   Upload
 } from "lucide-react";
@@ -33,13 +35,14 @@ import {
   getConfig,
   getStoredToken,
   login,
+  rateResponse,
   setStoredToken,
   signup,
   streamChat,
   transcribeAudio,
   uploadDocuments
 } from "./api";
-import type { AuthResponse, Dict, Message, ProductConfig, Snapshot, TrialSearchResult } from "./types";
+import type { AuthResponse, Dict, FeedbackRating, Message, ProductConfig, Snapshot, TrialSearchResult } from "./types";
 import {
   buildSeries,
   buildSymptomSeries,
@@ -568,6 +571,7 @@ function ChatView({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [streamText, setStreamText] = useState("");
+  const [feedbackBusy, setFeedbackBusy] = useState<Record<string, boolean>>({});
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -623,6 +627,30 @@ function ChatView({
     }
   }
 
+  async function rateMessage(message: Message, rating: FeedbackRating) {
+    const traceId = clean(message.trace_id);
+    if (!traceId) {
+      setNotice("This response cannot be rated because it has no trace.");
+      return;
+    }
+    const key = message.message_id ?? traceId;
+    setFeedbackBusy((current) => ({ ...current, [key]: true }));
+    try {
+      const response = await rateResponse({
+        trace_id: traceId,
+        message_id: message.message_id,
+        rating
+      });
+      setSnapshot(response.snapshot);
+      setMessages(response.snapshot.chat_history);
+      setNotice("Response rating saved.");
+    } catch (caught) {
+      setNotice(caught instanceof Error ? caught.message : "Could not save response rating.");
+    } finally {
+      setFeedbackBusy((current) => ({ ...current, [key]: false }));
+    }
+  }
+
   return (
     <div className="chat-layout">
       <section className="chat-panel">
@@ -656,7 +684,13 @@ function ChatView({
 
         <div className="message-list" ref={listRef}>
           {messages.map((message, index) => (
-            <MessageBubble key={message.message_id ?? `${message.role}-${index}`} message={message} onFollowUp={sendMessage} />
+            <MessageBubble
+              key={message.message_id ?? `${message.role}-${index}`}
+              message={message}
+              feedbackBusy={!!feedbackBusy[message.message_id ?? message.trace_id ?? ""]}
+              onFollowUp={sendMessage}
+              onRate={rateMessage}
+            />
           ))}
           {streamText && (
             <MessageBubble
@@ -706,12 +740,27 @@ function ChatView({
   );
 }
 
-function MessageBubble({ message, transient = false, onFollowUp }: { message: Message; transient?: boolean; onFollowUp?: (text: string) => void }) {
+function MessageBubble({
+  message,
+  transient = false,
+  feedbackBusy = false,
+  onFollowUp,
+  onRate
+}: {
+  message: Message;
+  transient?: boolean;
+  feedbackBusy?: boolean;
+  onFollowUp?: (text: string) => void;
+  onRate?: (message: Message, rating: FeedbackRating) => void;
+}) {
   const isUser = message.role === "user";
   const metadata = message.metadata ?? {};
   const triage = metadata.triage_summary;
   const alerts = metadata.medication_alerts ?? [];
   const imageSrc = metadata.image_b64 ? `data:image/png;base64,${metadata.image_b64}` : metadata.image_url;
+  const feedback = metadata.feedback as Dict<any> | undefined;
+  const selectedRating = clean(feedback?.rating);
+  const canRate = !isUser && !transient && !!message.trace_id;
 
   return (
     <article className={`message ${isUser ? "user-message" : "assistant-message"} ${transient ? "transient" : ""}`}>
@@ -753,8 +802,52 @@ function MessageBubble({ message, transient = false, onFollowUp }: { message: Me
         {!isUser && metadata.trace && Object.keys(metadata.trace).length > 0 && (
           <EvidenceBasis trace={metadata.trace} sourceCount={message.sources?.length ?? 0} />
         )}
+        {canRate && (
+          <ResponseFeedback
+            selectedRating={selectedRating}
+            busy={feedbackBusy}
+            onRate={(rating) => onRate?.(message, rating)}
+          />
+        )}
       </div>
     </article>
+  );
+}
+
+function ResponseFeedback({
+  selectedRating,
+  busy,
+  onRate
+}: {
+  selectedRating: string;
+  busy: boolean;
+  onRate: (rating: FeedbackRating) => void;
+}) {
+  const locked = busy || !!selectedRating;
+  return (
+    <div className="feedback-row" aria-label="Response rating">
+      <button
+        className={`feedback-button ${selectedRating === "thumbs_up" ? "active" : ""}`}
+        onClick={() => onRate("thumbs_up")}
+        disabled={locked}
+        title="Rate helpful"
+        aria-label="Rate response helpful"
+        type="button"
+      >
+        <ThumbsUp size={17} />
+      </button>
+      <button
+        className={`feedback-button ${selectedRating === "thumbs_down" ? "active down" : ""}`}
+        onClick={() => onRate("thumbs_down")}
+        disabled={locked}
+        title="Rate not helpful"
+        aria-label="Rate response not helpful"
+        type="button"
+      >
+        <ThumbsDown size={17} />
+      </button>
+      {(busy || selectedRating) && <span>{busy ? "Saving" : "Saved"}</span>}
+    </div>
   );
 }
 

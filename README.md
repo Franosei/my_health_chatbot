@@ -132,6 +132,7 @@ The API exposes saved symptoms, measurements, medicines, allergies, conditions, 
 - Build a health timeline across symptoms, measurements, triage summaries, medicines and records.
 - Search live evidence from NHS guidance, MedlinePlus, Europe PMC, PubMed Central and openFDA.
 - Generate structured triage summaries with urgency, next steps and monitoring points.
+- Rate assistant responses with thumbs up or thumbs down so anonymised quality metadata can be reviewed.
 - Export a short GP handover PDF using the account's saved data.
 - Search ClinicalTrials.gov for recruiting trials that fit the user's saved health profile.
 - Accept voice input through Whisper transcription when the browser supports recording.

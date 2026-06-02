@@ -716,6 +716,43 @@ label {
   border-color: var(--primary);
 }
 
+.feedback-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.8rem;
+}
+
+.feedback-row span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.feedback-button {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.feedback-button:hover:not(:disabled),
+.feedback-button.active {
+  border-color: var(--primary);
+  background: #eaf7f5;
+  color: var(--primary);
+}
+
+.feedback-button.active.down {
+  border-color: var(--accent);
+  background: #fff6f2;
+  color: var(--accent);
+}
+
 /* Evidence basis strip */
 .evidence-basis {
   display: flex;

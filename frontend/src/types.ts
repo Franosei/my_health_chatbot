@@ -105,3 +105,13 @@ export type ChatStreamEvent =
   | { type: "snapshot"; snapshot: Snapshot }
   | { type: "error"; message: string; assistant_message?: Message }
   | { type: "done" };
+
+export type FeedbackRating = "thumbs_up" | "thumbs_down";
+
+export type FeedbackResponse = {
+  ok: boolean;
+  already_rated: boolean;
+  rating: FeedbackRating;
+  saved: boolean;
+  snapshot: Snapshot;
+};

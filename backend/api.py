@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.clinical_trials import build_trial_search_profile, find_matching_trials
+from backend.feedback_store import save_feedback
 from backend.product_config import (
     FOUNDER_NAME,
     PRIVACY_NOTICE_POINTS,
@@ -221,6 +222,12 @@ class ProfilePayload(BaseModel):
 
 class ChatPayload(BaseModel):
     message: str
+
+
+class FeedbackPayload(BaseModel):
+    trace_id: str
+    rating: str
+    message_id: str = ""
 
 
 class SymptomPayload(BaseModel):
@@ -496,6 +503,56 @@ def stream_chat(payload: ChatPayload, username: str = Depends(current_user)) -> 
             yield _json_line({"type": "snapshot", "snapshot": _snapshot(username)})
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+@app.post("/api/feedback")
+def submit_feedback(payload: FeedbackPayload, username: str = Depends(current_user)) -> Dict:
+    trace_id = payload.trace_id.strip()
+    rating = payload.rating.strip().lower()
+    if rating not in {"thumbs_up", "thumbs_down"}:
+        raise HTTPException(status_code=400, detail="Choose thumbs up or thumbs down.")
+    if not trace_id:
+        raise HTTPException(status_code=400, detail="Feedback needs a response trace.")
+
+    existing = UserStore.get_response_feedback(username, trace_id, payload.message_id)
+    if existing:
+        return {
+            "ok": True,
+            "already_rated": True,
+            "rating": existing.get("rating", rating),
+            "saved": bool(existing.get("saved_to_feedback_store")),
+            "snapshot": _snapshot(username),
+        }
+
+    trace = UserStore.get_response_trace(username, trace_id, payload.message_id) or next(
+        (
+            item
+            for item in UserStore.get_interaction_traces(username, limit=None)
+            if item.get("trace_id") == trace_id
+        ),
+        None,
+    )
+    if not trace:
+        raise HTTPException(status_code=404, detail="Could not find the response trace for feedback.")
+
+    saved = save_feedback(rating, trace)
+    marked = UserStore.mark_response_feedback(
+        username,
+        trace_id=trace_id,
+        message_id=payload.message_id,
+        rating=rating,
+        saved_to_feedback_store=saved,
+    )
+    if not marked:
+        raise HTTPException(status_code=404, detail="Could not find the response message for feedback.")
+
+    return {
+        "ok": True,
+        "already_rated": False,
+        "rating": rating,
+        "saved": saved,
+        "snapshot": _snapshot(username),
+    }
 
 
 @app.post("/api/uploads")

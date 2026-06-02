@@ -1149,6 +1149,84 @@ class UserStore:
         _save_user_record(username, user)
 
     @staticmethod
+    def get_response_feedback(
+        username: str,
+        trace_id: str,
+        message_id: str = "",
+    ) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+
+        for message in user.get("conversation", []):
+            same_message = bool(message_id) and message.get("message_id") == message_id
+            same_trace = not message_id and bool(trace_id) and message.get("trace_id") == trace_id
+            if message.get("role") == "assistant" and (same_message or same_trace):
+                metadata = message.get("metadata", {})
+                feedback = metadata.get("feedback")
+                return deepcopy(feedback) if isinstance(feedback, dict) else None
+        return None
+
+    @staticmethod
+    def get_response_trace(
+        username: str,
+        trace_id: str,
+        message_id: str = "",
+    ) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+
+        for message in user.get("conversation", []):
+            same_message = bool(message_id) and message.get("message_id") == message_id
+            same_trace = not message_id and bool(trace_id) and message.get("trace_id") == trace_id
+            if message.get("role") == "assistant" and (same_message or same_trace):
+                metadata = message.get("metadata", {})
+                trace = metadata.get("trace")
+                return deepcopy(trace) if isinstance(trace, dict) else None
+        return None
+
+    @staticmethod
+    def mark_response_feedback(
+        username: str,
+        trace_id: str,
+        message_id: str,
+        rating: str,
+        saved_to_feedback_store: bool,
+    ) -> bool:
+        user = _get_user_record(username)
+        if not user:
+            return False
+
+        for message in user.get("conversation", []):
+            same_message = bool(message_id) and message.get("message_id") == message_id
+            same_trace = not message_id and bool(trace_id) and message.get("trace_id") == trace_id
+            if message.get("role") != "assistant" or not (same_message or same_trace):
+                continue
+
+            metadata = message.setdefault("metadata", {})
+            metadata["feedback"] = {
+                "rating": rating,
+                "trace_id": trace_id,
+                "saved_to_feedback_store": saved_to_feedback_store,
+                "updated_at": _utc_now(),
+            }
+            _append_audit(
+                user,
+                "response_feedback",
+                "Response feedback recorded",
+                trace_id=trace_id,
+                metadata={
+                    "rating": rating,
+                    "message_id": message.get("message_id", ""),
+                    "saved_to_feedback_store": saved_to_feedback_store,
+                },
+            )
+            _save_user_record(username, user)
+            return True
+        return False
+
+    @staticmethod
     def add_upload(username: str, upload_name: str, stored_path: Optional[str] = None) -> None:
         user = _get_user_record(username)
         if not user:

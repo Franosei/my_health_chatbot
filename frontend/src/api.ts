@@ -1,4 +1,4 @@
-import type { AuthResponse, ChatStreamEvent, ProductConfig, Snapshot } from "./types";
+import type { AuthResponse, ChatStreamEvent, FeedbackRating, FeedbackResponse, ProductConfig, Snapshot } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const TOKEN_KEY = "dr_charlotte_token";
@@ -152,6 +152,17 @@ export function transcribeAudio(file: File): Promise<{ text: string }> {
   return apiRequest("/api/voice/transcribe", {
     method: "POST",
     body: form
+  });
+}
+
+export function rateResponse(payload: {
+  trace_id: string;
+  message_id?: string;
+  rating: FeedbackRating;
+}): Promise<FeedbackResponse> {
+  return apiRequest<FeedbackResponse>("/api/feedback", {
+    method: "POST",
+    body: JSON.stringify(payload)
   });
 }
 
