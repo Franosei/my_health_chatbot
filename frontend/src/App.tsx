@@ -60,6 +60,20 @@ import {
 
 type View = "workspace" | "chat" | "timeline" | "trials";
 
+function isPatientRole(role: string | undefined): boolean {
+  if (!role) return true;
+  const r = role.toLowerCase().trim();
+  return r === "patient" || r === "personal" || r === "";
+}
+
+const PATIENT_URGENCY: Record<string, { label: string; color: string; bg: string }> = {
+  routine:  { label: "Routine",             color: "var(--green)",  bg: "#edf8f4" },
+  elevated: { label: "Worth monitoring",    color: "var(--gold)",   bg: "#fff8e5" },
+  high:     { label: "See your GP soon",    color: "var(--accent)", bg: "#fff6f2" },
+  urgent:   { label: "Seek urgent care",    color: "var(--danger)", bg: "#fff0ed" },
+  crisis:   { label: "Call 999 / 911 now", color: "var(--danger)", bg: "#fff0ed" },
+};
+
 const STARTER_PROMPTS = [
   "What symptoms would make chest pain an urgent medical review issue?",
   "Summarize the most important themes from my uploaded records in plain language.",
@@ -591,6 +605,7 @@ function ChatView({
   const [feedbackBusy, setFeedbackBusy] = useState<Record<string, boolean>>({});
   const [panelOpen, setPanelOpen] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
+  const role = snapshot.profile.clinical_role || snapshot.profile.role;
 
   useEffect(() => {
     setMessages(snapshot.chat_history);
@@ -721,6 +736,8 @@ function ChatView({
               feedbackBusy={!!feedbackBusy[message.message_id ?? message.trace_id ?? ""]}
               onFollowUp={sendMessage}
               onRate={rateMessage}
+              role={role}
+              snapshot={snapshot}
             />
           ))}
           {streamText && (
@@ -732,6 +749,7 @@ function ChatView({
                 sources: []
               }}
               transient
+              role={role}
             />
           )}
           {status && (
@@ -784,15 +802,20 @@ function MessageBubble({
   transient = false,
   feedbackBusy = false,
   onFollowUp,
-  onRate
+  onRate,
+  role,
+  snapshot
 }: {
   message: Message;
   transient?: boolean;
   feedbackBusy?: boolean;
   onFollowUp?: (text: string) => void;
   onRate?: (message: Message, rating: FeedbackRating) => void;
+  role?: string;
+  snapshot?: Snapshot;
 }) {
   const isUser = message.role === "user";
+  const patientView = isPatientRole(role);
   const metadata = message.metadata ?? {};
   const triage = metadata.triage_summary;
   const alerts = metadata.medication_alerts ?? [];
@@ -808,7 +831,7 @@ function MessageBubble({
         <div className="message-meta">
           <strong>{isUser ? "You" : "Dr. Charlotte"}</strong>
           {message.timestamp && <span>{formatTimestamp(message.timestamp)}</span>}
-          {message.trace_id && <span>{message.trace_id}</span>}
+          {!patientView && message.trace_id && <span className="trace-id">{message.trace_id}</span>}
         </div>
         <div className="markdown">
           <ReactMarkdown>{message.content}</ReactMarkdown>
@@ -826,9 +849,19 @@ function MessageBubble({
           </figure>
         )}
         {metadata.video_rate_limit_msg && <div className="notice warn">{metadata.video_rate_limit_msg}</div>}
-        {triage && Object.keys(triage).length > 0 && <TriageCard summary={triage} />}
+
+        {triage && Object.keys(triage).length > 0 && (
+          patientView
+            ? <PatientTriageCard summary={triage} />
+            : <TriageCard summary={triage} />
+        )}
+
         {alerts.length > 0 && <MedicationAlerts alerts={alerts} />}
-        {message.sources && message.sources.length > 0 && <SourceList sources={message.sources} />}
+
+        {!patientView && message.sources && message.sources.length > 0 && (
+          <SourceList sources={message.sources} />
+        )}
+
         {!isUser && metadata.follow_up_questions?.length > 0 && (
           <div className="follow-ups">
             {metadata.follow_up_questions.slice(0, 3).map((question: string) => (
@@ -838,9 +871,15 @@ function MessageBubble({
             ))}
           </div>
         )}
-        {!isUser && metadata.trace && Object.keys(metadata.trace).length > 0 && (
+
+        {!isUser && !patientView && metadata.trace && Object.keys(metadata.trace).length > 0 && (
           <EvidenceBasis trace={metadata.trace} sourceCount={message.sources?.length ?? 0} />
         )}
+
+        {!isUser && !patientView && !!triage && snapshot && (
+          <ClinicalTrendPanel snapshot={snapshot} />
+        )}
+
         {canRate && (
           <ResponseFeedback
             selectedRating={selectedRating}
@@ -913,6 +952,53 @@ function TriageCard({ summary }: { summary: Dict<any> }) {
       )}
       {!!actions.length && <p>{actions.join(" ")}</p>}
       {!!escalation.length && <p className="escalation">Escalate if: {escalation.join("; ")}</p>}
+    </div>
+  );
+}
+
+function PatientTriageCard({ summary }: { summary: Dict<any> }) {
+  const urgencyKey = String(summary.urgency_level ?? "").toLowerCase();
+  const urgency = PATIENT_URGENCY[urgencyKey] ?? PATIENT_URGENCY.routine;
+  const nextStep = clean(summary.next_step, "Continue monitoring your symptoms.");
+  const monitors = Array.isArray(summary.what_to_monitor) ? summary.what_to_monitor.slice(0, 2) : [];
+  return (
+    <div className="patient-triage">
+      <span
+        className="urgency-badge"
+        style={{ color: urgency.color, background: urgency.bg, borderColor: urgency.color }}
+      >
+        {urgency.label}
+      </span>
+      <p><strong>What to do:</strong> {nextStep}</p>
+      {monitors.length > 0 && (
+        <p className="patient-triage-watch"><strong>Watch for:</strong> {monitors.join("; ")}</p>
+      )}
+    </div>
+  );
+}
+
+function ClinicalTrendPanel({ snapshot }: { snapshot: Snapshot }) {
+  const vitalTypes = unique(snapshot.vitals.map((v) => v.type));
+  const chartable = vitalTypes.filter((type) => buildSeries(snapshot.vitals, type).length >= 2);
+  if (!chartable.length) return null;
+  return (
+    <div className="clinical-trends">
+      <span className="evidence-label">Patient vitals trend</span>
+      <div className="clinical-trends-grid">
+        {chartable.slice(0, 4).map((type) => {
+          const series = buildSeries(snapshot.vitals, type).map((p) => ({
+            date: p.date,
+            value: p.value,
+            secondValue: p.secondValue
+          }));
+          return (
+            <div key={type} className="clinical-trend-item">
+              <span>{vitalLabel(type)}</span>
+              <TinyChart series={series} />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

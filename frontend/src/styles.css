@@ -890,6 +890,76 @@ label {
   border-color: #94cbbf;
 }
 
+/* Patient-friendly triage card */
+.patient-triage {
+  display: grid;
+  gap: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfa;
+  padding: 0.85rem;
+  margin-top: 0.7rem;
+}
+
+.patient-triage p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.patient-triage-watch {
+  color: var(--muted);
+}
+
+.urgency-badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border: 1.5px solid;
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+/* Trace ID — smaller and muted, clinicians only */
+.trace-id {
+  font-size: 0.72rem;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+/* Clinician inline trend panel */
+.clinical-trends {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.clinical-trends-grid {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.clinical-trend-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.65rem 0.4rem;
+  background: var(--surface);
+}
+
+.clinical-trend-item > span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 .status-line {
   border-radius: 8px;
   background: #fff8e5;
