@@ -75,7 +75,12 @@ class LLMHelper:
                     "memory. Reason explicitly about how this patient's specific conditions, medications, "
                     "lab results, and vitals modify the risk, differential, or management of their question. "
                     "Name the connection out loud — do not silently ignore it.\n"
-                    "9. Do NOT add a disclaimer footer — one is appended automatically.\n\n"
+                    "9. Evidence-quality labels are binding: use patient_aligned sources for patient-specific "
+                    "guidance; use question_aligned or background_only sources only for general context. "
+                    "Never imply that background-only evidence has been validated against the patient profile.\n"
+                    "10. If a patient-profile fact is missing, say it is not recorded. Do not infer age, sex, "
+                    "medications, diagnoses, allergies, pregnancy status, or test results.\n"
+                    "11. Do NOT add a disclaimer footer — one is appended automatically.\n\n"
                     "SPECIFICITY REQUIREMENTS — these are mandatory:\n"
                     "- Quote the patient's actual recorded values where relevant. "
                     "Never write 'your blood pressure appears elevated' when you have the number; "
@@ -384,8 +389,6 @@ class LLMHelper:
     ) -> list[str]:
         profile_text = self._render_profile_summary(user_profile)
         patient_data = (patient_context or "").strip() or "No structured patient data available."
-        is_clinician = role_key in ("doctor", "nurse", "midwife", "physiotherapist")
-
         # Last 3 conversation turns — full content, no truncation
         recent_turns = ""
         if chat_history:
@@ -554,6 +557,26 @@ class LLMHelper:
                             f"Year: {source.get('year', 'Unknown year')}",
                             f"Section: {source.get('section', 'Retrieved text')}",
                             f"Relevance: {source.get('relevance', source.get('similarity', 'n/a'))}",
+                            f"Quality status: {source.get('evidence_quality_status', 'question_aligned')}",
+                            f"Question alignment: {source.get('question_alignment_score', 'n/a')}",
+                            f"Patient alignment: {source.get('patient_alignment_score', 'n/a')}",
+                            (
+                                "Patient-specific use: yes"
+                                if source.get("usable_for_patient_specific_guidance")
+                                else "Patient-specific use: no - general/background context only"
+                            ),
+                            (
+                                "Matched profile facts: "
+                                + ", ".join(source.get("patient_alignment_facts", [])[:5])
+                                if source.get("patient_alignment_facts")
+                                else "Matched profile facts: none"
+                            ),
+                            (
+                                "Quality notes: "
+                                + "; ".join(source.get("evidence_quality_reasons", [])[:3])
+                                if source.get("evidence_quality_reasons")
+                                else "Quality notes: none"
+                            ),
                             f"Evidence: {source.get('detail_snippet', source.get('snippet', source.get('evidence', '')))}",
                         ]
                     )

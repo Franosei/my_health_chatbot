@@ -11,7 +11,6 @@ import numpy as np
 from backend.anonymizer import DocumentAnonymizer
 from backend.document_extractor import extract_health_data_from_document
 from backend.clinical_orchestrator import ClinicalOrchestrator
-from backend.gp_summary import build_gp_summary_pdf
 from backend.image_generator import ImageGenerator
 from backend.medication_checker import MedicationInteractionChecker
 from backend.memory_store import MemoryStore
@@ -704,6 +703,7 @@ class RAGEngine:
         combined_sources = bundle.get("combined_sources", [])
         medication_check = bundle.get("medication_check", {})
         clinical_decision = bundle.get("clinical_decision")
+        evidence_quality_report = bundle.get("evidence_quality_report", {})
 
         # Build triage summary first so safety netting can use its LLM-derived triggers
         triage_summary = self._build_triage_summary(
@@ -764,6 +764,7 @@ class RAGEngine:
             "guideline_references": [
                 item.as_dict() for item in clinical_decision.guideline_references
             ] if clinical_decision else [],
+            "evidence_quality": evidence_quality_report,
             "claim_alignment": claim_alignment,
         }
         if bundle["normalized_user"]:
@@ -787,6 +788,7 @@ class RAGEngine:
             "resolved_medications": self._summarize_resolved_medications(
                 medication_check.get("resolved_medications", [])
             ),
+            "evidence_quality": evidence_quality_report,
             "trace": trace,
         }
 
@@ -1342,7 +1344,7 @@ class RAGEngine:
         if vital_lines:
             sections.append(
                 "RECENT VITALS AND LABS (last 30 days — quote these exact values in follow-up questions):\n"
-                + "\n".join(f"- {l}" for l in vital_lines)
+                + "\n".join(f"- {line}" for line in vital_lines)
             )
         else:
             sections.append("RECENT VITALS AND LABS: None recorded in the last 30 days — do not reference vitals.")
@@ -1369,7 +1371,7 @@ class RAGEngine:
             sections.append(
                 "MEDICATIONS ON RECORD (ask whether the patient is still taking it if you think it "
                 "could be causing or worsening the current issue):\n"
-                + "\n".join(f"- {l}" for l in med_lines)
+                + "\n".join(f"- {line}" for line in med_lines)
             )
 
         # --- ALLERGIES: all, no date filter ---
@@ -1393,7 +1395,7 @@ class RAGEngine:
         if allergy_lines:
             sections.append(
                 "KNOWN ALLERGIES (use these if possibly related to the current issue):\n"
-                + "\n".join(f"- {l}" for l in allergy_lines)
+                + "\n".join(f"- {line}" for line in allergy_lines)
             )
 
         # --- CONDITIONS: active / not resolved ---
@@ -1416,7 +1418,7 @@ class RAGEngine:
         if condition_lines:
             sections.append(
                 "ACTIVE CONDITIONS:\n"
-                + "\n".join(f"- {l}" for l in condition_lines)
+                + "\n".join(f"- {line}" for line in condition_lines)
             )
 
         # --- SYMPTOMS: last 30 days only ---
@@ -1441,7 +1443,7 @@ class RAGEngine:
         if symptom_lines:
             sections.append(
                 "RECENT SYMPTOMS (last 30 days):\n"
-                + "\n".join(f"- {l}" for l in symptom_lines)
+                + "\n".join(f"- {line}" for line in symptom_lines)
             )
 
         return "\n\n".join(sections)

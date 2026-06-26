@@ -10,7 +10,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from backend.audit_models import ClinicalAuditTrace
 from backend.clinical_decision_support import ClinicalDecision, ClinicalDecisionSupportEngine
 from backend.evidence_ranker import EvidenceRanker
 from backend.intent_risk_classifier import IntentClassification, IntentRiskClassifier
@@ -191,16 +190,23 @@ class ClinicalOrchestrator:
         raw_sources = self._combine_sources(pubmed_sources, official_sources)
 
         # ── Step 10: Evidence ranking with tiers ───────────────────────────────
-        combined_sources = self.evidence_ranker.rank_and_tier(
+        combined_sources, evidence_quality_report = self.evidence_ranker.rank_and_tier_with_report(
             sources=raw_sources,
             question=question,
             role_config=role_config,
             intent=intent,
             memory_store=self.memory,
             top_k=6,
+            patient_history=patient_history,
+            context_graph=context_graph,
         )
 
-        retrieval_mode = "live_multi_source" if combined_sources else "general_knowledge"
+        if combined_sources:
+            retrieval_mode = "live_multi_source"
+        elif raw_sources:
+            retrieval_mode = "evidence_quality_filtered"
+        else:
+            retrieval_mode = "general_knowledge"
 
         # ── Step 11: Build role-aware context for LLM ─────────────────────────
         full_context = self._build_role_context(
@@ -209,6 +215,7 @@ class ClinicalOrchestrator:
             policy_decision=policy_decision,
             pathway_context=pathway_context,
             clinical_decision=clinical_decision,
+            evidence_quality_report=evidence_quality_report,
             no_sources=not combined_sources,
         )
 
@@ -224,6 +231,7 @@ class ClinicalOrchestrator:
             "matches": matches,
             "retrieval_mode": retrieval_mode,
             "full_context": full_context,
+            "evidence_quality_report": evidence_quality_report,
             # New clinical governance keys
             "role_config": role_config,
             "intent": intent,
@@ -249,7 +257,7 @@ class ClinicalOrchestrator:
                 "sources": [],
                 "personal_context": [],
                 "trace": {
-                    "trace_id": f"trace-crisis",
+                    "trace_id": "trace-crisis",
                     "created_at": _utc_now(),
                     "question": question,
                     "answer_preview": CRISIS_RESPONSE[:280],
@@ -281,7 +289,7 @@ class ClinicalOrchestrator:
                 "sources": [],
                 "personal_context": [],
                 "trace": {
-                    "trace_id": f"trace-mod",
+                    "trace_id": "trace-mod",
                     "created_at": _utc_now(),
                     "question": question,
                     "answer_preview": safe_msg[:280],
@@ -339,6 +347,7 @@ class ClinicalOrchestrator:
         policy_decision: PolicyDecision,
         pathway_context,
         clinical_decision: ClinicalDecision,
+        evidence_quality_report: Optional[Dict] = None,
         no_sources: bool = False,
     ) -> str:
         parts = []
@@ -385,6 +394,32 @@ class ClinicalOrchestrator:
             rules = "\n".join(f"- {r}" for r in pathway_context.safety_rules)
             parts.append(f"Pathway safety rules:\n{rules}")
 
+        if evidence_quality_report:
+            quality_lines = [
+                f"- Overall status: {evidence_quality_report.get('overall_status', 'unknown')}",
+                f"- Accepted sources: {evidence_quality_report.get('accepted_source_count', 0)}",
+                f"- Excluded sources: {evidence_quality_report.get('excluded_source_count', 0)}",
+            ]
+            profile_facts = evidence_quality_report.get("profile_facts_checked") or []
+            if profile_facts:
+                quality_lines.append(
+                    "- Profile facts checked: " + "; ".join(str(item) for item in profile_facts[:8])
+                )
+            status_counts = evidence_quality_report.get("status_counts") or {}
+            if status_counts:
+                counts_text = ", ".join(f"{key}={value}" for key, value in status_counts.items())
+                quality_lines.append(f"- Source usability counts: {counts_text}")
+            excluded = evidence_quality_report.get("excluded_sources") or []
+            for item in excluded[:3]:
+                reasons = "; ".join(str(reason) for reason in item.get("reasons", [])[:2])
+                title = item.get("title", "Source")
+                quality_lines.append(f"- Filtered out: {title} ({reasons})")
+            quality_lines.append(
+                "- Binding rule: use patient_aligned sources for patient-specific guidance; "
+                "use question_aligned or background_only sources only for general context."
+            )
+            parts.append("Evidence quality gate:\n" + "\n".join(quality_lines))
+
         # Evidence with tier labelling
         if combined_sources:
             evidence_parts = []
@@ -392,18 +427,41 @@ class ClinicalOrchestrator:
                 tier = source.get("evidence_tier", 3)
                 tier_label = source.get("tier_label", f"Tier {tier}")
                 snippet = source.get("detail_snippet") or source.get("snippet", "")
+                quality_status = source.get("evidence_quality_status", "question_aligned")
+                use_label = (
+                    "patient-specific guidance"
+                    if source.get("usable_for_patient_specific_guidance")
+                    else "general/background context"
+                )
+                quality_notes = "; ".join(
+                    str(reason) for reason in source.get("evidence_quality_reasons", [])[:2]
+                )
                 evidence_parts.append(
-                    f"[{tier_label}] {source.get('title', 'Source')}: {snippet}"
+                    f"[{tier_label}] {source.get('title', 'Source')} "
+                    f"(quality: {quality_status}; use: {use_label}): {snippet}"
+                    + (f"\nQuality notes: {quality_notes}" if quality_notes else "")
                 )
             parts.append("Biomedical evidence (tiered by source authority):\n" + "\n\n".join(evidence_parts))
         elif no_sources:
-            parts.append(
-                "Note: No live evidence was retrieved for this query. "
-                "Answer from your general clinical knowledge, clearly indicating this is general guidance "
-                "and not based on retrieved literature. Still provide a clear disposition and concrete next-step "
-                "management plan where possible. Do not present yourself as a senior specialist, and do not fall "
-                "back to generic hedging when a safer proportionate route can be stated."
+            filtered = (
+                evidence_quality_report
+                and evidence_quality_report.get("overall_status") == "no_sources_passed_quality_gate"
             )
+            if filtered:
+                parts.append(
+                    "Note: Retrieved evidence was found but did not pass the evidence-quality gate for this "
+                    "question and stored patient profile. Do not cite filtered sources or treat them as support. "
+                    "If answering, clearly state that patient-aligned live evidence was not available and keep "
+                    "guidance safety-oriented, proportionate, and grounded in the deterministic clinical pathway."
+                )
+            else:
+                parts.append(
+                    "Note: No live evidence was retrieved for this query. "
+                    "Answer from your general clinical knowledge, clearly indicating this is general guidance "
+                    "and not based on retrieved literature. Still provide a clear disposition and concrete next-step "
+                    "management plan where possible. Do not present yourself as a senior specialist, and do not fall "
+                    "back to generic hedging when a safer proportionate route can be stated."
+                )
 
         return "\n\n".join(parts)
 

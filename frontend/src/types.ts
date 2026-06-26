@@ -54,6 +54,13 @@ export type Source = {
   evidence_tier?: number;
   tier_label?: string;
   tier_description?: string;
+  evidence_quality_status?: string;
+  evidence_quality_score?: number;
+  question_alignment_score?: number;
+  patient_alignment_score?: number;
+  patient_alignment_facts?: string[];
+  evidence_quality_reasons?: string[];
+  usable_for_patient_specific_guidance?: boolean;
 };
 
 export type Snapshot = {

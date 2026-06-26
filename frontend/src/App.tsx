@@ -945,11 +945,29 @@ const RISK_PLAIN: Record<string, { label: string; color: string }> = {
   crisis:   { label: "Seek immediate help",            color: "var(--danger)" },
 };
 
+function toNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function EvidenceBasis({ trace, sourceCount }: { trace: Dict<any>; sourceCount: number }) {
   const tiers: number[] = Array.isArray(trace.evidence_tiers_present) ? trace.evidence_tiers_present : [];
   const risk = RISK_PLAIN[String(trace.risk_level ?? "").toLowerCase()];
   const escalated: boolean = !!trace.escalation_triggered;
   const crisis: boolean = !!trace.crisis_detected;
+  const quality = trace.evidence_quality as Dict<any> | undefined;
+  const qualityCounts = quality?.status_counts as Dict<any> | undefined;
+  const patientAligned = toNumber(qualityCounts?.patient_aligned);
+  const backgroundOnly = toNumber(qualityCounts?.background_only) + toNumber(qualityCounts?.question_aligned);
+  const excluded = toNumber(quality?.excluded_source_count);
+  const qualityStatus = clean(quality?.overall_status);
+  const qualityLabel = patientAligned
+    ? `${patientAligned} patient-aligned`
+    : qualityStatus === "question_aligned_only"
+      ? "Question-aligned only"
+      : qualityStatus === "no_sources_passed_quality_gate"
+        ? "Quality gate filtered"
+        : "";
 
   const tierBadges = tiers.map((t) => TIER_LABELS[t]).filter(Boolean);
 
@@ -962,6 +980,17 @@ function EvidenceBasis({ trace, sourceCount }: { trace: Dict<any>; sourceCount: 
         ))}
         {sourceCount > 0 && (
           <span className="ev-chip ev-chip--count">{sourceCount} source{sourceCount === 1 ? "" : "s"} reviewed</span>
+        )}
+        {qualityLabel && (
+          <span className={`ev-chip ev-chip--quality ${patientAligned ? "aligned" : excluded ? "filtered" : ""}`}>
+            {qualityLabel}
+          </span>
+        )}
+        {backgroundOnly > 0 && patientAligned > 0 && (
+          <span className="ev-chip ev-chip--count">{backgroundOnly} general-context source{backgroundOnly === 1 ? "" : "s"}</span>
+        )}
+        {excluded > 0 && (
+          <span className="ev-chip ev-chip--filtered">{excluded} filtered</span>
         )}
         {risk && (
           <span className="ev-chip ev-chip--risk" style={{ color: risk.color, borderColor: risk.color }}>
@@ -981,13 +1010,31 @@ function SourceList({ sources }: { sources: NonNullable<Message["sources"]> }) {
     <details className="details-block">
       <summary>{sources.length} source{sources.length === 1 ? "" : "s"}</summary>
       <div className="source-grid">
-        {sources.map((source, index) => (
-          <a key={source.source_id ?? index} href={source.url || undefined} target="_blank" rel="noreferrer">
-            <span>{source.source_id ?? `S${index + 1}`}</span>
-            <strong>{clean(source.title, "Untitled source")}</strong>
-            <small>{unique([source.journal, source.year, source.tier_label]).join(" - ")}</small>
-          </a>
-        ))}
+        {sources.map((source, index) => {
+          const qualityStatus = clean(source.evidence_quality_status);
+          const qualityLabel = source.usable_for_patient_specific_guidance
+            ? "Patient-aligned"
+            : qualityStatus === "background_only"
+              ? "Background only"
+              : qualityStatus === "question_aligned"
+                ? "Question-aligned"
+                : "";
+          return (
+            <a key={source.source_id ?? index} href={source.url || undefined} target="_blank" rel="noreferrer">
+              <span>{source.source_id ?? `S${index + 1}`}</span>
+              <strong>{clean(source.title, "Untitled source")}</strong>
+              <small>{unique([source.journal, source.year, source.tier_label]).join(" - ")}</small>
+              {qualityLabel && (
+                <em className={`source-quality ${source.usable_for_patient_specific_guidance ? "aligned" : ""}`}>
+                  {qualityLabel}
+                </em>
+              )}
+              {!!source.patient_alignment_facts?.length && (
+                <small>Matches: {source.patient_alignment_facts.slice(0, 3).join(", ")}</small>
+              )}
+            </a>
+          );
+        })}
       </div>
     </details>
   );
