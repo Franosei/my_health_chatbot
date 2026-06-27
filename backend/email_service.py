@@ -33,9 +33,15 @@ def _smtp_config() -> tuple[str, int, str, str]:
 
 def _send(to_address: str, subject: str, html: str, text: str) -> None:
     host, port, user, password = _smtp_config()
-    if not all([host, user, password]):
+    if not host or not user or not password:
         raise ValueError(
-            "Email not configured. Add SMTP_HOST, SMTP_USER, SMTP_PASSWORD to .env"
+            "Email is not configured. Add SMTP_HOST, SMTP_USER, SMTP_PASSWORD to your .env file "
+            "and restart the server. For Gmail, use an App Password (not your regular password)."
+        )
+    if password == "your-16-char-app-password-here":
+        raise ValueError(
+            "Replace SMTP_PASSWORD in .env with a real Gmail App Password. "
+            "Go to myaccount.google.com → Security → 2-Step Verification → App passwords."
         )
     from_addr = os.getenv("EMAIL_FROM") or f"Dr. Charlotte <{user}>"
     msg = MIMEMultipart("alternative")
@@ -44,11 +50,26 @@ def _send(to_address: str, subject: str, html: str, text: str) -> None:
     msg["To"] = to_address
     msg.attach(MIMEText(text, "plain"))
     msg.attach(MIMEText(html, "html"))
-    with smtplib.SMTP(host, port) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.login(user, password)
-        smtp.sendmail(user, to_address, msg.as_string())
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port) as smtp:
+                smtp.login(user, password)
+                smtp.sendmail(user, to_address, msg.as_string())
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as smtp:
+                smtp.ehlo()
+                smtp.starttls()
+                smtp.ehlo()
+                smtp.login(user, password)
+                smtp.sendmail(user, to_address, msg.as_string())
+    except smtplib.SMTPAuthenticationError:
+        raise ValueError(
+            "Gmail rejected the login. Make sure you are using a Gmail App Password, "
+            "not your regular Gmail password. "
+            "Generate one at: myaccount.google.com → Security → App passwords."
+        )
+    except smtplib.SMTPException as exc:
+        raise ValueError(f"SMTP error: {exc}")
 
 
 def send_clinical_note_email(to_address: str, display_name: str, note: Dict) -> None:

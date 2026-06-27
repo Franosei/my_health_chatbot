@@ -1,58 +1,52 @@
 # Dr. Charlotte
 
-Dr. Charlotte is a mobile-first React app backed by a FastAPI API. It gives signed-in users one workspace for health questions, uploaded records, symptom and measurement tracking, medicine lists, GP-ready summaries, evidence review and clinical-trial search.
+Dr. Charlotte is a clinical AI assistant for patients and healthcare professionals. It gives signed-in users a workspace for evidence-based health questions, document upload, symptom and measurement tracking, medication management, SOAP clinical notes, GP-ready summaries, clinical trial search and secure email delivery -- all role-aware, so patients and clinicians see what is appropriate for them.
 
-The Python backend keeps the clinical workflow, retrieval, extraction, persistence and export services. The React client lives in `frontend/` and calls `/api/*` endpoints exposed by `backend/api.py`.
+The Python backend runs the full clinical workflow including retrieval, evidence ranking, role routing, safety policy gates, note generation and email. The React frontend lives in `frontend/` and calls `/api/*` endpoints served by `backend/api.py`. Both are deployed as a single service.
 
-## Screenshots and Flow
+---
 
-Dr. Charlotte now runs as a React client with a FastAPI backend. The user flow is:
+## Screenshots
 
-1. Sign in or create an account with role-aware consent and a saved profile.
-2. Land in the workspace home, where saved documents, symptoms, conditions, medicines, vitals and labs are summarised.
-3. Use evidence chat to ask health questions, upload PDFs, export a health summary, and manage the health record.
-4. Review cited answer sections, evidence basis, safety-netting and structured triage.
-5. Open the timeline to review saved context, trend summaries and longitudinal notes.
-6. Search ClinicalTrials.gov using the saved health profile and chosen location.
-7. Review ranked recruiting trials with score, location, site, contact and official record links.
-
-The screenshots are ordered as: `image.png`, `image 2.png`, `image 3.png`, `image33.png`, `image 4.png`, `image 5.png`, `image 6.png`, then `pipeline.png`.
+The screenshots below show the app in order of user flow.
 
 ### 1. Account Access
 
-![Dr Charlotte workspace screen](image/image.png)
+![Account access](image/image.png)
 
 ### 2. Workspace Home
 
-![Dr Charlotte health record screen](image/image%202.png)
+![Workspace home](image/image%202.png)
 
 ### 3. Evidence Chat
 
-![Dr Charlotte evidence chat screen](image/image%203.png)
+![Evidence chat](image/image%203.png)
 
-### 4. Evidence Basis And Triage
+### 4. Evidence Basis and Triage
 
-![Dr Charlotte evidence basis screen](image/image33.png)
+![Evidence basis](image/image33.png)
 
 ### 5. Health Timeline
 
-![Dr Charlotte timeline screen](image/image%204.png)
+![Health timeline](image/image%204.png)
 
 ### 6. Clinical Trial Search
 
-![Dr Charlotte clinical trial search screen](image/image%205.png)
+![Trial search](image/image%205.png)
 
 ### 7. Ranked Trial Results
 
-![Dr Charlotte clinical trial results screen](image/image%206.png)
+![Trial results](image/image%206.png)
 
 ### 8. Backend Processing Pipeline
 
-![Dr Charlotte processing pipeline](image/pipeline.png)
+![Processing pipeline](image/pipeline.png)
+
+---
 
 ## Quick Start
 
-From the repository root in PowerShell:
+### 1. Python environment
 
 ```powershell
 py -3.12 -m venv .venv
@@ -61,17 +55,35 @@ py -3.12 -m pip install --upgrade pip
 py -3.12 -m pip install -r requirements.txt
 ```
 
-Create a `.env` file with your settings:
+### 2. Environment variables
+
+Create a `.env` file in the project root:
 
 ```env
-OPENAI_API_KEY=your_openai_api_key_here
+# OpenAI
+OPENAI_API_KEY=your_openai_api_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+
+# Email (Gmail SMTP)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your@gmail.com
+SMTP_PASSWORD=your-16-char-app-password
+EMAIL_FROM=Dr. Charlotte <your@gmail.com>
+
+# Database (optional -- defaults to local users.json)
 DATABASE_URL=
+
+# MCP API key (optional -- protects /mcp endpoint)
+MCP_API_KEY=
 ```
 
-Install and build the frontend:
+Gmail requires an App Password, not your regular password. Generate one at:
+`myaccount.google.com -> Security -> 2-Step Verification -> App passwords`
+
+### 3. Frontend
 
 ```powershell
 cd frontend
@@ -80,7 +92,7 @@ npm run build
 cd ..
 ```
 
-Start the app:
+### 4. Start the server
 
 ```powershell
 py -m uvicorn backend.api:app --host 127.0.0.1 --port 8000
@@ -88,7 +100,9 @@ py -m uvicorn backend.api:app --host 127.0.0.1 --port 8000
 
 Open `http://127.0.0.1:8000`.
 
-For frontend-only development, keep the backend running on port `8000`, then run this in `frontend/`:
+### 5. Frontend development
+
+Keep the backend running on port 8000, then in `frontend/`:
 
 ```powershell
 npm run dev
@@ -96,47 +110,108 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8000`.
 
-## Runtime Flow
+---
 
-### Account and Consent
+## User Roles
 
-The React client handles sign-in, account creation, role selection, profile details, date of birth, biological sex, role terms and privacy acceptance. `backend/user_store.py` validates and stores the account, hashes passwords with PBKDF2, and normalises older user records when new fields are added.
+Dr. Charlotte adapts its interface and responses to the signed-in user's role.
+
+| Role | What they see |
+|---|---|
+| Patient | Clean response text, no clinical metadata, simplified SOAP note view, urgent care strip only when action is needed |
+| Doctor | Full SOAP notes (Subjective / Objective / Assessment / Plan), sources, evidence basis, triage card, editable notes |
+| Nurse | Role-adapted notes (Presenting concern / Observations / Nursing assessment / Care plan), editable |
+| Midwife | Maternal-focused notes (Maternal concern / Maternal and fetal assessment / Risk assessment / Maternity plan), editable |
+| Physiotherapist | MSK-focused notes (Presenting complaint / Physical assessment / Clinical impression / Treatment plan), editable |
+
+Patients never see raw clinical metadata, source lists, evidence tiers, trace IDs or SOAP edit controls. Clinicians receive the full clinical picture.
+
+---
+
+## Features
+
+### Account and Access
+- Role-aware sign-up with consent gate (GDPR-compliant)
+- Role terms shown per clinical role at sign-up
+- Password hashed with bcrypt; minimum 8 characters enforced
+- Persistent session via JWT stored in localStorage
+- Profile editing: display name, email, date of birth, biological sex, care context, organisation
+
+### Evidence Chat
+- Streaming evidence-based responses via GPT-4o-mini
+- Role-aware clinical workflow: crisis pre-screen, intent classification, risk stratification, tiered evidence retrieval, policy gates and pathway logic applied before every answer
+- Follow-up chips after each response: short first-person statements generated from the evidence that the user can tap to refine the answer
+- Voice input via OpenAI Whisper (browser microphone permission required)
+- Enter to send; Shift+Enter for a new line
+- Patient view: clean response text with subtle urgency strip only for high, urgent or crisis levels
+- Clinician view: collapsible triage card, source list and evidence basis chips after response text
+
+### Evidence Tiers
+Evidence is retrieved and ranked across three tiers:
+- Tier 1: NHS guidance and NICE guidelines
+- Tier 2: Systematic reviews and Cochrane-style evidence
+- Tier 3: Primary research papers from Europe PMC and PubMed Central
+
+### SOAP Clinical Notes
+- Generate a SOAP note from the current conversation at any time
+- Role-specific section labels and LLM prompt guidance per clinical role
+- Backend formats all fields as clean markdown -- no raw Python dicts or lists
+- Clinicians can edit all four sections inline and save changes
+- Patients see a simplified read-only view: "What was discussed" and "What happens next"
+- Notes stored per user and restored on next login
+- Email a note directly to the user's registered email address
+- Send a GP alert email for notes flagged as requiring a GP visit
+
+### Health Record
+- Symptom log with dates, severity, triggers and notes
+- Medication list with dose, schedule and openFDA interaction checks
+- Allergy and adverse drug reaction list
+- Conditions list (active and past)
+- Vitals and lab readings: blood pressure, heart rate, weight, blood glucose, oxygen saturation, temperature, HbA1c, eGFR and more
+- All record sections editable from the chat side panel
 
 ### Document Uploads
+- PDF upload with anonymisation and patient-name verification before extraction
+- Structured extraction of measurements, allergies, medications, conditions, heights, weights and lab values from uploaded documents
+- Extracted data added to the user's retrieval context automatically
 
-Uploaded PDFs are saved under `data/uploads/<username>/`. The backend checks the filename and extracted PDF text for patient-name candidates before processing. If the name is missing, unclear or mismatched, the API returns a verification state so the user can decide whether to continue.
+### Health Timeline
+- Scrollable timeline of conditions, medications, allergies, readings, triage summaries and uploaded records
+- Trend cards for chartable vital types when at least two readings are saved
 
-After verification, the document text is extracted, anonymised where possible, summarised and added to the user's retrieval context. `backend/document_extractor.py` extracts structured health data and `backend/user_store.py` saves it into the correct collections.
-
-### Chat Answers
-
-`backend/rag_system.RAGEngine` restores saved documents, symptoms, medicines, allergies, conditions, vitals and longitudinal memory for the signed-in user. The clinical orchestrator applies role routing, crisis checks, moderation, policy gates and pathway logic before retrieval. Retrieved evidence is ranked and the model writes a cited, role-aware answer. The response includes evidence basis, safety wording and a structured triage summary.
+### GP Summary Export
+- One-click PDF export of the user's saved health record, documents, longitudinal memory and recent triage summaries ready for a GP or hospital appointment
 
 ### Clinical Trial Search
+- Searches ClinicalTrials.gov for recruiting trials matched to the user's saved conditions, medications and symptom logs
+- Deterministic scoring plus model-based clinical alignment scoring
+- Ranked results show trial title, phase, location, contact and link to the official record
+- Results saved and restored on next login
 
-`backend/clinical_trials.py` builds a trial-search profile from saved health context, searches ClinicalTrials.gov, merges results by NCT ID, applies deterministic scoring and asks the model for clinical-alignment scoring. The ranked result is saved so it can be restored after a restart.
+### Email Delivery
+- SOAP notes emailed as formatted HTML to the user's registered address
+- Urgent care alert emails for high, urgent or crisis cases
+- Sent via Gmail SMTP (or any SMTP provider) using App Password authentication
+- Clear error messages if SMTP is not configured
 
-### Timeline and GP Summary
+### Model Context Protocol (MCP) Server
+- Mounted at `/mcp` on the same server process -- no separate service needed
+- Works in Railway deployments (streamable HTTP) and locally (stdio)
+- Optional API key guard via `MCP_API_KEY` environment variable
+- Exposes five tools to AI agents and Claude Desktop:
+  - `get_patient_context`: full patient profile, conditions, medications, vitals and memory
+  - `extract_article_evidence`: structured evidence extraction from a medical article matched to a patient
+  - `generate_clinical_note`: generate and save a SOAP note from a consultation summary
+  - `send_health_email`: send a clinical note or urgent alert by email
+  - `search_trials_for_patient`: search ClinicalTrials.gov for a patient's conditions
 
-The API exposes saved symptoms, measurements, medicines, allergies, conditions, uploads and triage summaries for the React timeline. `backend/gp_summary.py` creates a concise PDF handover from the user's saved profile, documents, trackers, memory and recent triage summaries.
+### Safety and Moderation
+- Crisis pre-screen on every message before the main pipeline
+- Eight hard policy gates: crisis, pregnancy, paediatric, medication, diagnosis, elderly, mental health, urgent
+- Role-adaptive moderation using Detoxify (RoBERTa) and regex rules
+- Escalation triggers and safety-netting included in every clinical answer
 
-## What It Can Do
-
-- Create an account, sign back in and keep a saved workspace.
-- Store chat history, uploaded records, health trackers, audit events and clinical trial results per user.
-- Upload PDFs such as blood results, discharge summaries, clinic letters and medical records.
-- Check whether the patient name found in an uploaded document matches the full name saved on the account.
-- Extract health information from uploaded documents, including measurements, allergies, medicines, conditions, height, weight, blood pressure and lab values where present.
-- Log symptoms over time with dates, severity, triggers and notes.
-- Keep a medication list and check openFDA label sections for possible interaction warnings.
-- Build a health timeline across symptoms, measurements, triage summaries, medicines and records.
-- Search live evidence from NHS guidance, MedlinePlus, Europe PMC, PubMed Central and openFDA.
-- Generate structured triage summaries with urgency, next steps and monitoring points.
-- Rate assistant responses with thumbs up or thumbs down so anonymised quality metadata can be reviewed.
-- Export a short GP handover PDF using the account's saved data.
-- Search ClinicalTrials.gov for recruiting trials that fit the user's saved health profile.
-- Accept voice input through Whisper transcription when the browser supports recording.
-- Generate clinical-style educational images and short demonstration videos when explicitly requested.
+---
 
 ## Architecture
 
@@ -146,115 +221,217 @@ flowchart TD
     React --> API[backend/api.py]
     API --> Store[backend/user_store.py]
     API --> RAG[backend/rag_system.py]
+    API --> Notes[backend/clinical_notes.py]
+    API --> Email[backend/email_service.py]
     API --> Trials[backend/clinical_trials.py]
-    API --> Uploads[backend/upload_verification.py]
-    RAG --> Extractor[backend/document_extractor.py]
+    API --> MCP[backend/mcp_server.py]
+    API --> GP[backend/gp_summary.py]
     RAG --> Orchestrator[backend/clinical_orchestrator.py]
     RAG --> Memory[backend/memory_store.py]
-    RAG --> GP[backend/gp_summary.py]
-    Orchestrator --> Safety[moderation, policy, intent and role routing]
-    Orchestrator --> Evidence[NHS, MedlinePlus, Europe PMC, PubMed Central and openFDA]
+    Orchestrator --> Safety[moderation, policy gates, intent and role routing]
+    Orchestrator --> Evidence[NHS, NICE, Europe PMC, PubMed Central, openFDA]
+    Orchestrator --> Ranker[backend/evidence_ranker.py]
     Orchestrator --> LLM[backend/summarizer.py]
     Store --> Local[users.json and data/uploads]
     Store --> Postgres[PostgreSQL when DATABASE_URL is set]
 ```
 
+---
+
 ## Project Structure
 
 ```text
 backend/
-  api.py                     FastAPI app and React static-file serving
-  anonymizer.py              document redaction helpers
-  clinical_orchestrator.py   main clinical workflow engine
-  clinical_trials.py         ClinicalTrials.gov search and scoring
-  context_graph.py           health context graph helpers
-  document_extractor.py      structured extraction from uploaded documents
-  evidence_ranker.py         source ranking and evidence tiers
-  gp_summary.py              GP handover PDF generation
-  image_generator.py         image generation integration
-  medication_checker.py      openFDA interaction checks
-  memory_store.py            longitudinal memory refresh
-  official_guidance.py       NHS and MedlinePlus retrieval
-  patient_history.py         account health context builder
-  policy_engine.py           safety policy checks
-  pubmed_search.py           Europe PMC and PubMed Central retrieval
-  rag_system.py              retrieval, generation and ingestion engine
-  role_router.py             role-aware routing
-  summarizer.py              document summarisation
-  symptom_tracker.py         symptom helpers
-  triage_summary.py          structured triage cards
-  upload_verification.py     upload name checks and verification helpers
-  user_store.py              accounts, profiles and persistence
-  video_generator.py         video generation integration
-  voice_transcriber.py       Whisper transcription
+  api.py                      FastAPI app, all endpoints and React static file serving
+  anonymizer.py               document redaction helpers
+  audit_models.py             ClinicalAuditTrace and PolicyGateRecord dataclasses
+  clinical_notes.py           SOAP note generation, role-specific prompts and coercion
+  clinical_orchestrator.py    main clinical workflow engine
+  clinical_trials.py          ClinicalTrials.gov search and scoring
+  document_extractor.py       structured extraction from uploaded PDFs
+  email_service.py            Gmail SMTP sender for notes and urgent alerts
+  evidence_extractor.py       anti-hallucination article evidence extraction
+  evidence_ranker.py          three-tier source ranking
+  gp_summary.py               GP handover PDF generation
+  image_generator.py          image generation integration
+  intent_risk_classifier.py   intent and risk level classification
+  mcp_server.py               Model Context Protocol server
+  medication_checker.py       openFDA interaction checks
+  memory_store.py             longitudinal memory refresh
+  moderation_ml.py            role-adaptive Detoxify and regex moderation
+  official_guidance.py        NHS and MedlinePlus retrieval
+  pathways/                   five specialty clinical pathways
+    general_triage.py
+    maternity.py
+    msk.py
+    medications.py
+    chronic_conditions.py
+  policy_engine.py            eight hard safety gates
+  pubmed_search.py            Europe PMC and PubMed Central retrieval
+  rag_system.py               retrieval, generation and document ingestion engine
+  response_templates.py       role-specific headings, personas and tier labels
+  role_router.py              RoleConfig and RoleRouter per clinical role
+  summarizer.py               LLM wrapper, follow-up chips and SOAP generation helpers
+  test_evidence_ranker.py     evidence ranker unit tests
+  triage_summary.py           structured triage output
+  upload_verification.py      upload name checks and verification helpers
+  user_store.py               accounts, profiles, chat history, notes and persistence
 
 frontend/
-  index.html                 Vite entry HTML
-  package.json               frontend scripts and dependencies
-  src/                       React app, API client, styles and types
-  public/                    static frontend assets
+  index.html                  Vite entry HTML
+  package.json                scripts and dependencies
+  src/
+    App.tsx                   full React app: all views, components and chat logic
+    api.ts                    typed API client for all backend endpoints
+    styles.css                design system and component styles
+    types.ts                  TypeScript types for all shared data shapes
+    utils.ts                  formatting and helper functions
+  public/                     static assets
 
-requirements.txt             Python dependencies
-Procfile                     hosted FastAPI start command
+agents/
+  commands/                   Claude Code skills
+
+Dockerfile                    container build
+Procfile                      Railway/Heroku start command
+requirements.txt              Python dependencies
 ```
+
+---
 
 ## Tech Stack
 
-- Frontend: React, TypeScript and Vite
-- API: FastAPI and Uvicorn
-- Answer generation, extraction and trial scoring: OpenAI Chat Completions
-- Embeddings: OpenAI `text-embedding-3-small`
-- Voice transcription: OpenAI Whisper
-- Image generation: OpenAI `gpt-image-1`
-- Video generation: OpenAI `sora-2`
-- Official guidance retrieval: NHS and MedlinePlus
-- Biomedical literature retrieval: Europe PMC and PubMed Central
-- Medicine interaction support: openFDA drug label API
-- Clinical trial search: ClinicalTrials.gov API v2
-- PDF parsing and GP summary export: PyMuPDF
-- Persistence: local JSON or PostgreSQL
-- Moderation: rule-based checks with Detoxify support when available
+| Layer | Technology |
+|---|---|
+| Frontend | React 18, TypeScript, Vite |
+| API | FastAPI, Uvicorn |
+| LLM | OpenAI Chat Completions (gpt-4o-mini) |
+| Embeddings | OpenAI text-embedding-3-small |
+| Voice | OpenAI Whisper |
+| Image generation | OpenAI gpt-image-1 |
+| Video generation | OpenAI sora-2 |
+| Biomedical literature | Europe PMC and PubMed Central |
+| Official guidance | NHS Conditions and MedlinePlus |
+| Drug interactions | openFDA drug label API |
+| Clinical trials | ClinicalTrials.gov API v2 |
+| Moderation | Detoxify (RoBERTa) with regex fallback |
+| PDF parsing and export | PyMuPDF |
+| Email | Gmail SMTP via App Password (or any SMTP provider) |
+| MCP | FastMCP streamable HTTP |
+| Persistence | Local JSON or PostgreSQL |
+| Deployment | Railway, Docker or any ASGI host |
 
-## PostgreSQL and Hosted Use
+---
 
-For local development, `users.json` is usually enough. For hosted or shared use, configure PostgreSQL so data does not disappear between deployments.
+## Environment Variables
 
-1. Create a Neon database or another PostgreSQL database.
+| Variable | Required | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | Yes | OpenAI API key |
+| `OPENAI_BASE_URL` | Yes | OpenAI base URL |
+| `OPENAI_MODEL` | Yes | Chat model name |
+| `OPENAI_EMBEDDING_MODEL` | No | Embedding model (default: text-embedding-3-small) |
+| `DATABASE_URL` | No | PostgreSQL connection string; uses local JSON if unset |
+| `SMTP_HOST` | No | SMTP host (e.g. smtp.gmail.com) |
+| `SMTP_PORT` | No | SMTP port (587 for STARTTLS, 465 for SSL) |
+| `SMTP_USER` | No | Sender email address |
+| `SMTP_PASSWORD` | No | App password for the sender account |
+| `EMAIL_FROM` | No | Display name and address, e.g. `Dr. Charlotte <you@gmail.com>` |
+| `MCP_API_KEY` | No | Bearer token to restrict access to the /mcp endpoint |
+
+---
+
+## Deployment
+
+### Docker
+
+```bash
+docker build -t dr-charlotte .
+docker run -p 8000:8000 --env-file .env dr-charlotte
+```
+
+### Railway
+
+1. Connect the repository in Railway.
+2. Set all environment variables in the Railway Variables panel.
+3. Railway reads `Procfile` and starts the server automatically.
+4. The MCP server is available at `https://your-app.railway.app/mcp`.
+
+### Claude Desktop (MCP)
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "dr-charlotte": {
+      "url": "https://your-app.railway.app/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_API_KEY"
+      }
+    }
+  }
+}
+```
+
+For local stdio mode:
+
+```json
+{
+  "mcpServers": {
+    "dr-charlotte": {
+      "command": "python",
+      "args": ["-m", "backend.mcp_server"],
+      "cwd": "/path/to/my_health_chatbot"
+    }
+  }
+}
+```
+
+---
+
+## PostgreSQL
+
+For hosted or shared deployments, set `DATABASE_URL` so data persists between deployments.
+
+1. Create a PostgreSQL database (Neon, Supabase or any provider).
 2. Add `DATABASE_URL` to the environment.
-3. Restart the app.
+3. Restart the server. The app migrates the schema automatically.
+
+---
 
 ## Troubleshooting
 
-### `OPENAI_API_KEY not found in environment variables`
+**`OPENAI_API_KEY not found`**
+Create `.env` with a valid API key and restart the server from the project root.
 
-Create `.env`, add a real key and start FastAPI from the project root.
+**Accounts or trial results disappear after a deployment**
+Set `DATABASE_URL` so the app uses PostgreSQL. Local `users.json` does not persist across Railway deployments.
 
-### Accounts or trial results disappear on a hosted deployment
+**Email button returns an error**
+Check that `SMTP_HOST`, `SMTP_USER` and `SMTP_PASSWORD` are set in `.env` and that the server was restarted after editing the file. For Gmail, use an App Password generated at `myaccount.google.com -> Security -> App passwords`, not your regular Gmail password.
 
-Set `DATABASE_URL` so the app uses PostgreSQL instead of the local `users.json` file.
+**User gets "no email address saved" error**
+The email is sent to the address stored in the user's Dr. Charlotte profile. The user must have registered with a valid email or updated their profile email in app settings.
 
-### A PDF says the name cannot be found
+**PDF says the patient name cannot be found**
+The upload checker reads the document text and filename. Make sure the full name on the account matches the name in the document. If it differs, the user can choose to continue anyway.
 
-Make sure the full name saved on the account is the patient's real full name. The app checks the document text and filename. If the document is correct but the name cannot be detected, verify it before extraction.
+**Extracted data from a PDF looks wrong**
+Review the entries in the trackers and remove anything incorrect. The extractor reads free-text documents and may occasionally misread a value, unit or date.
 
-### Auto-populated data from a PDF looks wrong
+**Clinical trial search returns no results**
+The trial finder needs saved health context such as conditions, symptoms or medications. Also confirm the server can make outbound HTTPS requests to `clinicaltrials.gov`.
 
-Review the entries in the trackers and remove anything incorrect. The extractor reads free-text documents and may misread a value, date or unit.
+**Voice input is unavailable**
+Allow microphone access in the browser and confirm the backend has a valid OpenAI API key for Whisper transcription.
 
-### Clinical trial search returns no results
+**MCP tools fail in Claude Desktop**
+Confirm `MCP_API_KEY` in your environment matches the key in `claude_desktop_config.json`. For local stdio mode, install the `mcp` package with `pip install mcp` first.
 
-The trial finder needs saved health context such as conditions, symptoms, medicines or uploaded documents. Also check that the host can make outbound HTTPS requests to ClinicalTrials.gov.
-
-### Voice input is unavailable
-
-Make sure the browser allows microphone access and that the backend has a valid OpenAI API key for transcription.
-
-### Medication warnings do not appear
-
-The interaction checker uses public openFDA label sections. If a medicine name cannot be resolved, or if the label does not mention the paired medicine, the app may not show a pair-specific warning. A pharmacist or clinician should still review any medicine concern.
+---
 
 ## Important Note
 
-Dr. Charlotte is for health education, evidence review and decision support. It is not a substitute for emergency care, diagnosis or a clinician's judgement.
+Dr. Charlotte is for health education, evidence review and clinical decision support. It is not a substitute for emergency care, a clinical diagnosis or a qualified clinician's judgement.
 
-If someone may be seriously unwell, use the right urgent care route, such as NHS 111 or 999 in the UK.
+If someone may be seriously unwell, use the appropriate urgent care route -- NHS 111 or 999 in the UK.
