@@ -305,10 +305,103 @@ label {
   color: var(--danger);
 }
 
+.notice.success {
+  border-color: #9dd5cb;
+  background: #edf8f4;
+  color: #1a6b5a;
+}
+
 .notice.warn {
   border-color: #e9d5a7;
   background: #fff8e5;
   color: #75540f;
+}
+
+/* Required asterisk and optional tag */
+.req {
+  color: var(--danger);
+  font-weight: 700;
+  margin-left: 0.18em;
+  font-size: 0.9em;
+}
+
+.optional-tag {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #7a9099;
+  background: #edf4f3;
+  border-radius: 4px;
+  padding: 0.1em 0.45em;
+  margin-left: 0.3em;
+  vertical-align: middle;
+}
+
+.field-hint {
+  font-size: 0.78rem;
+  color: #7a9099;
+  margin: 0;
+}
+
+.field-hint.center {
+  text-align: center;
+}
+
+/* Verify email screen */
+.verify-page {
+  place-items: center;
+}
+
+.verify-panel {
+  max-width: 420px;
+  width: 100%;
+  text-align: left;
+}
+
+.verify-header {
+  text-align: center;
+  margin-bottom: 1.4rem;
+}
+
+.verify-header h2 {
+  margin: 0.6rem 0 0.3rem;
+  font-size: 1.4rem;
+}
+
+.verify-header p {
+  color: #627174;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.code-input {
+  font-size: 1.8rem !important;
+  font-weight: 800;
+  letter-spacing: 0.35em;
+  text-align: center;
+  padding: 0.7rem 1rem !important;
+  border-radius: 10px !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.verify-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-btn:hover {
+  color: var(--primary-strong);
 }
 
 .app-shell {

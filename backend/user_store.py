@@ -593,6 +593,7 @@ class UserStore:
                 "salt": pwh["salt"],
                 "created_at": _utc_now(),
                 "last_login": None,
+                "email_verified": False,
                 "profile": profile,
                 "conversation": [],
                 "audit": [],
@@ -639,6 +640,24 @@ class UserStore:
             return
         user["last_login"] = _utc_now()
         _append_audit(user, "login", "User logged in")
+        _save_user_record(username, user)
+
+    @staticmethod
+    def is_email_verified(username: str) -> bool:
+        user = _get_user_record(username)
+        if not user:
+            return False
+        # None means account pre-dates verification -- treat as verified so existing users are not locked out
+        verified = user.get("email_verified")
+        return verified is None or verified is True
+
+    @staticmethod
+    def set_email_verified(username: str) -> None:
+        user = _get_user_record(username)
+        if not user:
+            return
+        user["email_verified"] = True
+        _append_audit(user, "email_verified", "Email address verified")
         _save_user_record(username, user)
 
     @staticmethod

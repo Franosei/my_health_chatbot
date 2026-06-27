@@ -329,11 +329,12 @@ def config() -> Dict:
 
 @app.post("/api/auth/login")
 def login(payload: LoginPayload) -> Dict:
-    if not payload.identifier.strip() or not payload.password:
+    identifier = payload.identifier.strip().lower()
+    if not identifier or not payload.password:
         raise HTTPException(status_code=400, detail="Enter your email or username and password.")
-    if not UserStore.authenticate(payload.identifier, payload.password):
+    if not UserStore.authenticate(identifier, payload.password):
         raise HTTPException(status_code=401, detail="The email, username, or password is incorrect.")
-    username = UserStore.resolve_login_username(payload.identifier)
+    username = UserStore.resolve_login_username(identifier)
     if not username:
         raise HTTPException(status_code=401, detail="We could not open your account.")
     UserStore.update_last_login(username)

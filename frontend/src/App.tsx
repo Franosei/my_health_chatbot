@@ -5,7 +5,6 @@ import {
   Activity,
   BadgePlus,
   CalendarClock,
-  CheckCircle2,
   ClipboardList,
   Download,
   FileDown,
@@ -217,6 +216,10 @@ function App() {
   );
 }
 
+function Req() {
+  return <span className="req" aria-label="required">*</span>;
+}
+
 function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (response: AuthResponse) => void }) {
   const [mode, setMode] = useState<"Sign in" | "Create account">("Sign in");
   const [role, setRole] = useState(config.role_options[0]);
@@ -237,13 +240,35 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
   });
 
   const terms = config.role_terms[role] ?? config.role_terms[config.role_options[0]];
+  const isClinician = role !== "Patient" && role !== "Individual";
+
+  function validateSignup(): string {
+    const f = signupForm;
+    if (!f.full_name.trim()) return "Full name is required.";
+    if (f.full_name.trim().split(/\s+/).filter(Boolean).length < 2) return "Enter your first and last name.";
+    if (!f.email.trim()) return "Email address is required.";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) return "Enter a valid email address.";
+    if (!f.username.trim()) return "Username is required.";
+    if (f.username.trim().length < 3) return "Username must be at least 3 characters.";
+    if (!f.password) return "Password is required.";
+    if (f.password.length < 8) return "Password must be at least 8 characters.";
+    if (f.password !== f.confirm_password) return "Passwords do not match.";
+    if (!f.accept_role_terms) return "You must accept the role terms to continue.";
+    if (!f.accept_privacy) return "You must accept the privacy notice to continue.";
+    return "";
+  }
 
   async function submitLogin(event: FormEvent) {
     event.preventDefault();
+    const identifier = loginForm.identifier.trim().toLowerCase();
+    if (!identifier || !loginForm.password) {
+      setError("Enter your email or username and password.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      onSuccess(await login(loginForm.identifier, loginForm.password));
+      onSuccess(await login(identifier, loginForm.password));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Sign in failed.");
     } finally {
@@ -253,15 +278,12 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
 
   async function submitSignup(event: FormEvent) {
     event.preventDefault();
+    const validationError = validateSignup();
+    if (validationError) { setError(validationError); return; }
     setBusy(true);
     setError("");
     try {
-      onSuccess(
-        await signup({
-          ...signupForm,
-          role
-        })
-      );
+      onSuccess(await signup({ ...signupForm, role }) as AuthResponse);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Account creation failed.");
     } finally {
@@ -281,7 +303,7 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
       <section className="auth-panel" aria-label="Account access">
         <div className="segmented">
           {(["Sign in", "Create account"] as const).map((item) => (
-            <button key={item} className={mode === item ? "active" : ""} onClick={() => setMode(item)} type="button">
+            <button key={item} className={mode === item ? "active" : ""} onClick={() => { setMode(item); setError(""); }} type="button">
               {item}
             </button>
           ))}
@@ -292,32 +314,34 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
         {mode === "Sign in" ? (
           <form onSubmit={submitLogin} className="stack">
             <label>
-              Email or username
+              Email or username <Req />
               <input
                 value={loginForm.identifier}
                 onChange={(event) => setLoginForm({ ...loginForm, identifier: event.target.value })}
                 autoComplete="username"
+                placeholder="your@email.com or username"
               />
             </label>
             <label>
-              Password
+              Password <Req />
               <input
                 type="password"
                 value={loginForm.password}
                 onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })}
                 autoComplete="current-password"
+                placeholder="Min. 8 characters"
               />
             </label>
             <button className="primary full" disabled={busy} type="submit">
               <ShieldCheck size={18} />
-              Sign in
+              {busy ? "Signing in..." : "Sign in"}
             </button>
-            <p className="support-line">Support: {config.support_email}</p>
+            <p className="field-hint center">Not case-sensitive. Support: {config.support_email}</p>
           </form>
         ) : (
           <form onSubmit={submitSignup} className="stack">
             <label>
-              Account role
+              Account role <Req />
               <select value={role} onChange={(event) => setRole(event.target.value)}>
                 {config.role_options.map((option) => (
                   <option key={option}>{option}</option>
@@ -333,41 +357,46 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
                 ))}
               </ul>
             </div>
+            <p className="field-hint"><Req /> Required fields</p>
             <div className="form-grid">
               <label>
-                Full name
+                Full name <Req />
                 <input
                   value={signupForm.full_name}
                   onChange={(event) => setSignupForm({ ...signupForm, full_name: event.target.value })}
                   autoComplete="name"
+                  placeholder="First and last name"
                 />
               </label>
               <label>
-                Email address
+                Email address <Req />
                 <input
                   type="email"
                   value={signupForm.email}
                   onChange={(event) => setSignupForm({ ...signupForm, email: event.target.value })}
                   autoComplete="email"
+                  placeholder="your@email.com"
                 />
               </label>
               <label>
-                Username
+                Username <Req />
                 <input
                   value={signupForm.username}
                   onChange={(event) => setSignupForm({ ...signupForm, username: event.target.value })}
                   autoComplete="username"
+                  placeholder="At least 3 characters"
                 />
               </label>
               <label>
-                Organisation
+                {isClinician ? "Organisation" : "Organisation"} <span className="optional-tag">Optional</span>
                 <input
                   value={signupForm.organization}
                   onChange={(event) => setSignupForm({ ...signupForm, organization: event.target.value })}
+                  placeholder={isClinician ? "Hospital or clinic name" : "Optional"}
                 />
               </label>
               <label>
-                Date of birth
+                Date of birth <span className="optional-tag">Optional</span>
                 <input
                   type="date"
                   value={signupForm.date_of_birth}
@@ -375,7 +404,7 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
                 />
               </label>
               <label>
-                Biological sex
+                Biological sex <span className="optional-tag">Optional</span>
                 <select
                   value={signupForm.biological_sex}
                   onChange={(event) => setSignupForm({ ...signupForm, biological_sex: event.target.value })}
@@ -387,21 +416,23 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
                 </select>
               </label>
               <label>
-                Password
+                Password <Req />
                 <input
                   type="password"
                   value={signupForm.password}
                   onChange={(event) => setSignupForm({ ...signupForm, password: event.target.value })}
                   autoComplete="new-password"
+                  placeholder="Min. 8 characters"
                 />
               </label>
               <label>
-                Confirm password
+                Confirm password <Req />
                 <input
                   type="password"
                   value={signupForm.confirm_password}
                   onChange={(event) => setSignupForm({ ...signupForm, confirm_password: event.target.value })}
                   autoComplete="new-password"
+                  placeholder="Repeat your password"
                 />
               </label>
             </div>
@@ -411,7 +442,7 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
                 checked={signupForm.accept_role_terms}
                 onChange={(event) => setSignupForm({ ...signupForm, accept_role_terms: event.target.checked })}
               />
-              {terms.acknowledgement}
+              <span>{terms.acknowledgement} <Req /></span>
             </label>
             <label className="check-row">
               <input
@@ -419,12 +450,13 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
                 checked={signupForm.accept_privacy}
                 onChange={(event) => setSignupForm({ ...signupForm, accept_privacy: event.target.checked })}
               />
-              I have read the privacy notice and understand account support is available at {config.support_email}.
+              <span>I have read the privacy notice and understand account support is available at {config.support_email}. <Req /></span>
             </label>
             <button className="primary full" disabled={busy} type="submit">
               <BadgePlus size={18} />
-              Create account
+              {busy ? "Creating account..." : "Create account"}
             </button>
+            <p className="field-hint center">A verification code will be emailed to you.</p>
           </form>
         )}
       </section>
@@ -1678,7 +1710,7 @@ function RecordPanel({
             </label>
           </div>
           <button className="primary full" type="submit">
-            <CheckCircle2 size={18} />
+            <ShieldCheck size={18} />
             Save profile
           </button>
         </form>
