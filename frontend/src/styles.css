@@ -528,6 +528,35 @@ label {
   align-items: center;
   justify-content: space-between;
   gap: 0.7rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0.1rem;
+}
+
+.chat-head-title {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.chat-head-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--primary);
+  flex-shrink: 0;
+}
+
+.chat-head-title strong {
+  display: block;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.chat-head-role {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: capitalize;
 }
 
 .panel-head {
@@ -535,24 +564,43 @@ label {
   margin-bottom: 0.8rem;
 }
 
+.urgency-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
 .panel-head svg {
   color: var(--primary);
 }
 
 .starter-row {
-  display: grid;
-  gap: 0.55rem;
-  margin: 0.8rem 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.75rem 0;
 }
 
 .starter-row button {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f8fbfa;
-  padding: 0.75rem;
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 0.4rem 0.85rem;
   text-align: left;
-  color: var(--ink);
-  font-weight: 750;
+  color: var(--primary);
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.starter-row button:hover {
+  background: #eaf7f5;
+  border-color: var(--primary);
 }
 
 .message-list {
@@ -563,41 +611,65 @@ label {
 }
 
 .message {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 0.65rem;
-  margin-bottom: 0.9rem;
+  display: flex;
+  gap: 0.55rem;
+  margin-bottom: 0.75rem;
+  align-items: flex-start;
 }
 
 .message > img {
-  width: 36px;
-  height: 36px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   border: 1px solid var(--line);
+  flex-shrink: 0;
+  margin-top: 0.15rem;
 }
 
-.message-body {
-  padding: 0.75rem 0.85rem;
-  box-shadow: none;
-  font-size: 0.875rem;
-  line-height: 1.6;
+/* User messages: right-aligned bubble */
+.user-message {
+  flex-direction: row-reverse;
 }
 
 .user-message .message-body {
-  background: #eaf7f5;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 16px 4px 16px 16px;
+  border-color: var(--primary);
+  max-width: 78%;
+}
+
+.user-message .message-body .markdown p {
+  color: #fff;
+}
+
+/* Assistant messages: open, no heavy border */
+.assistant-message {
+  max-width: 100%;
 }
 
 .assistant-message .message-body {
-  background: #fff;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding-left: 0;
+  flex: 1;
+}
+
+.message-body {
+  padding: 0.6rem 0.75rem;
+  box-shadow: none;
+  font-size: 0.875rem;
+  line-height: 1.58;
 }
 
 .message-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
-  margin-bottom: 0.35rem;
+  gap: 0.35rem;
+  margin-bottom: 0.25rem;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
 }
 
 .message-meta strong {
@@ -649,13 +721,29 @@ label {
   font-size: 0.82rem;
 }
 
+.triage-details {
+  margin-top: 0.6rem;
+}
+
+.triage-details summary {
+  font-size: 0.82rem;
+  color: var(--muted);
+  padding: 0.3rem 0;
+}
+
+.triage-details summary strong {
+  color: var(--ink);
+}
+
 .triage-card {
   display: grid;
   gap: 0.45rem;
   border: 1px solid #c7deda;
   border-radius: 8px;
   background: #f0faf8;
-  padding: 0.8rem;
+  padding: 0.75rem;
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
 }
 
 .triage-card div:first-child {
@@ -756,15 +844,19 @@ label {
 }
 
 .follow-ups {
-  grid-template-columns: 1fr;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
 }
 
 .follow-up-btn {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
-  padding: 0.45rem 0.65rem;
+  padding: 0.3rem 0.7rem;
   color: var(--primary);
+  font-size: 0.8rem;
   font-size: 0.88rem;
   font-weight: 700;
   text-align: left;
@@ -779,8 +871,10 @@ label {
 .feedback-row {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  margin-top: 0.8rem;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--line);
 }
 
 .feedback-row span {
@@ -791,12 +885,12 @@ label {
 
 .feedback-button {
   display: inline-grid;
-  width: 34px;
-  height: 34px;
+  width: 26px;
+  height: 26px;
   place-items: center;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
+  border-radius: 6px;
+  background: transparent;
   color: var(--muted);
 }
 
@@ -968,16 +1062,77 @@ label {
 }
 
 .composer {
-  display: grid;
-  gap: 0.55rem;
-  border-top: 1px solid var(--line);
-  padding-top: 0.75rem;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+  overflow: hidden;
+  margin-top: 0.6rem;
+}
+
+.composer:focus-within {
+  border-color: var(--primary);
+}
+
+.composer textarea {
+  display: block;
+  width: 100%;
+  border: none;
+  padding: 0.75rem 1rem 0.3rem;
+  font-size: 0.93rem;
+  resize: none;
+  line-height: 1.5;
+  background: transparent;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.composer textarea:focus {
+  outline: none;
 }
 
 .composer-actions {
-  display: grid;
-  gap: 0.5rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.5rem 0.5rem 0.7rem;
+}
+
+.composer-spacer {
+  flex: 1;
+}
+
+.composer-actions .primary {
+  min-height: 32px;
+  padding: 0.25rem 0.9rem;
+  font-size: 0.875rem;
+  border-radius: 8px;
+}
+
+.icon-btn {
+  min-height: 32px;
+  min-width: 32px;
+  width: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.icon-btn.recording {
+  color: var(--danger);
+  background: #fff0ed;
 }
 
 .side-panel {
@@ -1265,6 +1420,183 @@ label {
   display: inline-flex;
   margin-top: 0.75rem;
   font-weight: 850;
+}
+
+/* ── Clinical Notes Panel ─────────────────────────────────────────────────── */
+
+.notes-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.notes-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.note-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.note-card-head {
+  padding: 0.7rem 0.85rem 0.6rem;
+  cursor: pointer;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.note-card-head:hover {
+  background: var(--surface-2);
+}
+
+.note-card-head > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.note-card-head time {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.note-edited {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.note-question {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.note-body,
+.note-editor {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem 0.85rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.soap-section {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.soap-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--primary);
+  padding-bottom: 0.1rem;
+  border-bottom: 1.5px solid var(--primary);
+  margin-bottom: 0.2rem;
+}
+
+.soap-content {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.soap-content p { margin: 0 0 0.35rem; }
+.soap-content ul, .soap-content ol { margin: 0 0 0.35rem; padding-left: 1.3rem; }
+.soap-content li { margin-bottom: 0.2rem; }
+.soap-content strong { color: var(--ink); }
+
+.soap-section textarea {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  min-height: 90px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  resize: vertical;
+  font-family: inherit;
+  background: #fafcfb;
+}
+
+.soap-section textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* Patient-facing note view */
+.patient-note-view {
+  display: grid;
+  gap: 1rem;
+}
+
+.patient-note-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.patient-note-section {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.7rem;
+  background: #f8fbfa;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.note-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.65rem;
+}
+
+.note-actions .ghost,
+.note-actions .primary {
+  min-height: 34px;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+.urgent-btn {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+.urgency-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1.5px solid;
+  border-radius: 999px;
+  padding: 0.22rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 850;
+  color: var(--green);
+  background: #edf8f4;
+  border-color: var(--green);
+}
+
+.urgency-elevated {
+  color: var(--gold);
+  background: #fff8e5;
+  border-color: var(--gold);
+}
+
+.urgency-high,
+.urgency-urgent {
+  color: var(--danger);
+  background: #fff0ed;
+  border-color: var(--danger);
 }
 
 @media (min-width: 700px) {

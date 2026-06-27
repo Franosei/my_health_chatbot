@@ -18,7 +18,9 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from backend.clinical_notes import generate_soap_note
 from backend.clinical_trials import build_trial_search_profile, find_matching_trials
+from backend.email_service import send_clinical_note_email, send_urgent_care_alert
 from backend.feedback_store import save_feedback
 from backend.product_config import (
     FOUNDER_NAME,
@@ -186,6 +188,7 @@ def _snapshot(username: str) -> Dict:
         "audit": UserStore.get_audit(username, limit=20),
         "memory": UserStore.get_longitudinal_memory(username),
         "trial_search_result": UserStore.get_trial_search_result(username),
+        "clinical_notes": UserStore.get_clinical_notes(username),
     }
 
 
@@ -277,6 +280,31 @@ class VitalsPayload(BaseModel):
 class TrialSearchPayload(BaseModel):
     location: str
     max_results: int = 10
+
+
+class NoteGeneratePayload(BaseModel):
+    conversation_summary: str = ""
+    question: str = ""
+    trace_id: str = ""
+
+
+class NoteUpdatePayload(BaseModel):
+    subjective: Optional[str] = None
+    objective: Optional[str] = None
+    assessment: Optional[str] = None
+    plan: Optional[str] = None
+    urgency_level: Optional[str] = None
+    requires_gp_visit: Optional[bool] = None
+    gp_visit_reason: Optional[str] = None
+
+
+class EmailNotePayload(BaseModel):
+    note_id: str
+
+
+class UrgentAlertPayload(BaseModel):
+    reason: str
+    urgency_level: str = "high"
 
 
 @app.get("/api/health")
@@ -745,6 +773,168 @@ def trial_result(username: str = Depends(current_user)) -> Dict:
     return {"result": UserStore.get_trial_search_result(username)}
 
 
+# ── Clinical notes ─────────────────────────────────────────────────────────────
+
+@app.get("/api/notes")
+def list_notes(username: str = Depends(current_user)) -> Dict:
+    return {"notes": UserStore.get_clinical_notes(username)}
+
+
+@app.post("/api/notes")
+def create_note(payload: NoteGeneratePayload, username: str = Depends(current_user)) -> Dict:
+    """Generate a SOAP note from the current conversation context."""
+    llm = _get_rag_engine().llm
+    chat_history = UserStore.get_chat_history(username)
+
+    question = payload.question.strip()
+    conversation_summary = payload.conversation_summary.strip()
+
+    if not question and chat_history:
+        # Use last user message as the question
+        for msg in reversed(chat_history):
+            if msg.get("role") == "user":
+                question = msg.get("content", "")[:300]
+                break
+
+    if not conversation_summary and chat_history:
+        # Build a brief summary from the last 4 messages
+        recent = chat_history[-4:]
+        conversation_summary = " | ".join(
+            f"{m.get('role','?').title()}: {m.get('content','')[:150]}"
+            for m in recent
+        )
+
+    triage_list = UserStore.get_triage_summaries(username, limit=1)
+    triage = triage_list[0] if triage_list else None
+
+    note = generate_soap_note(
+        username=username,
+        conversation_summary=conversation_summary,
+        question=question,
+        triage_summary=triage,
+        llm=llm,
+        trace_id=payload.trace_id,
+    )
+    UserStore.save_clinical_note(username, note)
+    return {"note": note, "snapshot": _snapshot(username)}
+
+
+@app.get("/api/notes/{note_id}")
+def get_note(note_id: str, username: str = Depends(current_user)) -> Dict:
+    notes = UserStore.get_clinical_notes(username)
+    note = next((n for n in notes if n["note_id"] == note_id), None)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found.")
+    return {"note": note}
+
+
+@app.put("/api/notes/{note_id}")
+def update_note(
+    note_id: str, payload: NoteUpdatePayload, username: str = Depends(current_user)
+) -> Dict:
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    note = UserStore.update_clinical_note(username, note_id, updates)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found.")
+    return {"note": note, "snapshot": _snapshot(username)}
+
+
+@app.delete("/api/notes/{note_id}", status_code=204)
+def delete_note(note_id: str, username: str = Depends(current_user)) -> None:
+    if not UserStore.delete_clinical_note(username, note_id):
+        raise HTTPException(status_code=404, detail="Note not found.")
+
+
+@app.post("/api/notes/{note_id}/email")
+def email_note(
+    note_id: str, username: str = Depends(current_user)
+) -> Dict:
+    """Send a SOAP note to the user's registered email address."""
+    profile = UserStore.get_user_profile(username)
+    email_address = (profile or {}).get("email", "")
+    if not email_address:
+        raise HTTPException(status_code=400, detail="No email address saved on this account.")
+
+    notes = UserStore.get_clinical_notes(username)
+    note = next((n for n in notes if n["note_id"] == note_id), None)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found.")
+
+    try:
+        send_clinical_note_email(
+            email_address,
+            (profile or {}).get("display_name", username),
+            note,
+        )
+        UserStore.mark_note_email_sent(username, note_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Email failed: {exc}")
+
+    return {"ok": True, "sent_to": email_address, "snapshot": _snapshot(username)}
+
+
+# ── Urgent care email alert ────────────────────────────────────────────────────
+
+@app.post("/api/email/urgent")
+def send_urgent_alert(
+    payload: UrgentAlertPayload, username: str = Depends(current_user)
+) -> Dict:
+    """Send an urgent care alert email to the user."""
+    profile = UserStore.get_user_profile(username)
+    email_address = (profile or {}).get("email", "")
+    if not email_address:
+        raise HTTPException(status_code=400, detail="No email address saved on this account.")
+
+    try:
+        send_urgent_care_alert(
+            email_address,
+            (profile or {}).get("display_name", username),
+            payload.reason,
+            payload.urgency_level,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Email failed: {exc}")
+
+    return {"ok": True, "sent_to": email_address}
+
+
+# ── MCP server (streamable HTTP — works locally and on Railway) ───────────────
+# Mounted at /mcp so Claude Desktop / remote agents can connect to:
+#   https://<your-railway-app>.railway.app/mcp
+# Set MCP_API_KEY in Railway environment variables to restrict access.
+
+_MCP_KEY = os.getenv("MCP_API_KEY", "")
+
+try:
+    from backend.mcp_server import mcp as _mcp_server  # noqa: E402
+
+    _mcp_asgi = _mcp_server.streamable_http_app()
+
+    if _MCP_KEY:
+        # Wrap the ASGI app with a Bearer token gate
+        _unguarded = _mcp_asgi
+
+        async def _mcp_asgi(scope, receive, send):  # type: ignore[no-redef]
+            if scope.get("type") in ("http", "websocket"):
+                raw_headers = dict(scope.get("headers", []))
+                auth_header = raw_headers.get(b"authorization", b"").decode()
+                if auth_header != f"Bearer {_MCP_KEY}":
+                    from starlette.responses import Response as _R
+                    await _R("Unauthorized", status_code=401)(scope, receive, send)
+                    return
+            await _unguarded(scope, receive, send)
+
+    app.mount("/mcp", _mcp_asgi)
+    print("[API] MCP server mounted at /mcp")
+except Exception as _mcp_err:
+    print(f"[API] MCP server not mounted (non-fatal): {_mcp_err}")
+
+
+# ── Frontend static files ─────────────────────────────────────────────────────
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if _FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")

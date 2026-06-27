@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   Activity,
@@ -32,19 +33,24 @@ import {
 import type { LucideIcon } from "lucide-react";
 import {
   apiRequest,
+  deleteNote,
   downloadProtectedFile,
+  emailNote,
   fetchSnapshot,
+  generateNote,
   getConfig,
   getStoredToken,
   login,
   rateResponse,
+  sendUrgentAlert,
   setStoredToken,
   signup,
   streamChat,
   transcribeAudio,
+  updateNote,
   uploadDocuments
 } from "./api";
-import type { AuthResponse, Dict, FeedbackRating, Message, ProductConfig, Snapshot, TrialSearchResult } from "./types";
+import type { AuthResponse, ClinicalNote, Dict, FeedbackRating, Message, ProductConfig, Snapshot, TrialSearchResult } from "./types";
 import {
   buildSeries,
   buildSymptomSeries,
@@ -59,6 +65,24 @@ import {
 } from "./utils";
 
 type View = "workspace" | "chat" | "timeline" | "trials";
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      const msg = (this.state.error as Error).message;
+      return (
+        <main style={{ padding: "2rem", fontFamily: "sans-serif", color: "#122227", background: "#f7f9f7", minHeight: "100vh" }}>
+          <h2 style={{ color: "#c0392b" }}>Something went wrong</h2>
+          <p style={{ color: "#627174" }}>Please refresh the page. If this keeps happening, contact support.</p>
+          <pre style={{ background: "#fff", border: "1px solid #d8e2df", borderRadius: 6, padding: "0.8rem", fontSize: "0.8rem", overflowX: "auto" }}>{msg}</pre>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function isPatientRole(role: string | undefined): boolean {
   if (!role) return true;
@@ -182,12 +206,14 @@ function App() {
   }
 
   return (
-    <Shell snapshot={snapshot} view={view} setView={setView} signOut={signOut} notice={notice}>
-      {view === "workspace" && <WorkspaceView snapshot={snapshot} setView={setView} setSnapshot={setSnapshot} />}
-      {view === "chat" && <ChatView snapshot={snapshot} setSnapshot={setSnapshot} setNotice={setNotice} />}
-      {view === "timeline" && <TimelineView snapshot={snapshot} />}
-      {view === "trials" && <TrialsView snapshot={snapshot} setSnapshot={setSnapshot} setNotice={setNotice} />}
-    </Shell>
+    <ErrorBoundary>
+      <Shell snapshot={snapshot} view={view} setView={setView} signOut={signOut} notice={notice}>
+        {view === "workspace" && <WorkspaceView snapshot={snapshot} setView={setView} setSnapshot={setSnapshot} />}
+        {view === "chat" && <ChatView snapshot={snapshot} setSnapshot={setSnapshot} setNotice={setNotice} />}
+        {view === "timeline" && <TimelineView snapshot={snapshot} />}
+        {view === "trials" && <TrialsView snapshot={snapshot} setSnapshot={setSnapshot} setNotice={setNotice} />}
+      </Shell>
+    </ErrorBoundary>
   );
 }
 
@@ -597,7 +623,7 @@ function ChatView({
   setSnapshot: (snapshot: Snapshot) => void;
   setNotice: (notice: string) => void;
 }) {
-  const [messages, setMessages] = useState<Message[]>(snapshot.chat_history);
+  const [messages, setMessages] = useState<Message[]>(snapshot.chat_history ?? []);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -606,10 +632,7 @@ function ChatView({
   const [panelOpen, setPanelOpen] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
   const role = snapshot.profile.clinical_role || snapshot.profile.role;
-
-  useEffect(() => {
-    setMessages(snapshot.chat_history);
-  }, [snapshot.chat_history]);
+  const patientView = isPatientRole(role);
 
   useLayoutEffect(() => {
     if (listRef.current) {
@@ -694,25 +717,27 @@ function ChatView({
     <div className={`chat-layout${panelOpen ? "" : " panel-closed"}`}>
       <section className="chat-panel">
         <div className="chat-head">
-          <div>
-            <span className="eyebrow">Evidence chat</span>
-            <h2>Conversation</h2>
+          <div className="chat-head-title">
+            <img src="/assistant.png" alt="" className="chat-head-avatar" />
+            <div>
+              <strong>Dr. Charlotte</strong>
+              {!patientView && <span className="chat-head-role">{role}</span>}
+            </div>
           </div>
           <div className="chat-head-actions">
             <button
-              className="ghost"
+              className="ghost icon-btn"
               onClick={async () => {
                 setSnapshot(await apiRequest<Snapshot>("/api/chat", { method: "DELETE" }));
                 setMessages([]);
               }}
-              title="Clear chat"
+              title="Clear conversation"
             >
-              <Trash2 size={17} />
-              Clear
+              <Trash2 size={15} />
             </button>
             {!panelOpen && (
-              <button className="ghost" onClick={() => setPanelOpen(true)} title="Show panel">
-                <PanelRight size={17} />
+              <button className="ghost icon-btn" onClick={() => setPanelOpen(true)} title="Show panel">
+                <PanelRight size={15} />
               </button>
             )}
           </div>
@@ -764,16 +789,18 @@ function ChatView({
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="Ask a health question, request an evidence summary, or continue your saved conversation..."
-            rows={4}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+            placeholder="Type a question… (Enter to send, Shift+Enter for new line)"
+            rows={2}
           />
           <div className="composer-actions">
-            <VoiceRecorder onTranscript={(text) => setDraft((current) => `${current}${current ? "\n" : ""}${text}`)} />
-            <button className="ghost" onClick={() => setDraft("")} type="button">
-              Clear
+            <VoiceRecorder onTranscript={(text) => setDraft((current) => `${current}${current ? " " : ""}${text}`)} />
+            <div className="composer-spacer" />
+            <button className="ghost icon-btn" onClick={() => setDraft("")} type="button" title="Clear input">
+              <Trash2 size={14} />
             </button>
             <button className="primary" onClick={() => sendMessage()} disabled={busy}>
-              <Send size={18} />
+              <Send size={15} />
               Send
             </button>
           </div>
@@ -788,6 +815,12 @@ function ChatView({
               Hide panel
             </button>
           </div>
+          <NotesPanel
+            snapshot={snapshot}
+            setSnapshot={setSnapshot}
+            setNotice={setNotice}
+            role={role}
+          />
           <UploadPanel setSnapshot={setSnapshot} setNotice={setNotice} />
           <ExportPanel snapshot={snapshot} setNotice={setNotice} />
           <RecordPanel snapshot={snapshot} setSnapshot={setSnapshot} compact={false} />
@@ -826,13 +859,15 @@ function MessageBubble({
 
   return (
     <article className={`message ${isUser ? "user-message" : "assistant-message"} ${transient ? "transient" : ""}`}>
-      <img src={isUser ? "/user.png" : "/assistant.png"} alt="" />
+      {!isUser && <img src="/assistant.png" alt="" />}
       <div className="message-body">
-        <div className="message-meta">
-          <strong>{isUser ? "You" : "Dr. Charlotte"}</strong>
-          {message.timestamp && <span>{formatTimestamp(message.timestamp)}</span>}
-          {!patientView && message.trace_id && <span className="trace-id">{message.trace_id}</span>}
-        </div>
+        {!isUser && (
+          <div className="message-meta">
+            <strong>Dr. Charlotte</strong>
+            {message.timestamp && <span>{formatTimestamp(message.timestamp)}</span>}
+            {!patientView && message.trace_id && <span className="trace-id">{message.trace_id}</span>}
+          </div>
+        )}
         <div className="markdown">
           <ReactMarkdown>{message.content}</ReactMarkdown>
         </div>
@@ -850,10 +885,27 @@ function MessageBubble({
         )}
         {metadata.video_rate_limit_msg && <div className="notice warn">{metadata.video_rate_limit_msg}</div>}
 
-        {triage && Object.keys(triage).length > 0 && (
-          patientView
-            ? <PatientTriageCard summary={triage} />
-            : <TriageCard summary={triage} />
+        {/* Patient: subtle urgency strip only when action is needed (no duplicate triage card) */}
+        {patientView && triage && Object.keys(triage).length > 0 && (() => {
+          const urgencyKey = String(triage.urgency_level ?? "").toLowerCase();
+          if (urgencyKey === "high" || urgencyKey === "urgent" || urgencyKey === "crisis") {
+            const u = PATIENT_URGENCY[urgencyKey] ?? PATIENT_URGENCY.high;
+            return (
+              <div className="urgency-strip" style={{ borderColor: u.color, background: u.bg, color: u.color }}>
+                <ShieldCheck size={14} />
+                <span>{u.label}</span>
+              </div>
+            );
+          }
+          return null;
+        })()}
+
+        {/* Clinician: collapsible clinical summary */}
+        {!patientView && triage && Object.keys(triage).length > 0 && (
+          <details className="details-block triage-details">
+            <summary>Clinical triage · <strong>{clean(triage.urgency_level, "Routine")}</strong></summary>
+            <TriageCard summary={triage} />
+          </details>
         )}
 
         {alerts.length > 0 && <MedicationAlerts alerts={alerts} />}
@@ -864,11 +916,15 @@ function MessageBubble({
 
         {!isUser && metadata.follow_up_questions?.length > 0 && (
           <div className="follow-ups">
-            {metadata.follow_up_questions.slice(0, 3).map((question: string) => (
-              <button key={question} className="follow-up-btn" onClick={() => onFollowUp?.(question)}>
-                {question}
-              </button>
-            ))}
+            {metadata.follow_up_questions.slice(0, 3).map((q: string | { display: string; prompt: string }, i: number) => {
+              const display = typeof q === "string" ? q : q.display;
+              const prompt = typeof q === "string" ? q : q.prompt;
+              return (
+                <button key={i} className="follow-up-btn" onClick={() => onFollowUp?.(prompt)}>
+                  {display}
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -876,11 +932,7 @@ function MessageBubble({
           <EvidenceBasis trace={metadata.trace} sourceCount={message.sources?.length ?? 0} />
         )}
 
-        {!isUser && !patientView && !!triage && snapshot && (
-          <ClinicalTrendPanel snapshot={snapshot} />
-        )}
-
-        {canRate && (
+        {canRate && !isUser && (
           <ResponseFeedback
             selectedRating={selectedRating}
             busy={feedbackBusy}
@@ -978,15 +1030,16 @@ function PatientTriageCard({ summary }: { summary: Dict<any> }) {
 }
 
 function ClinicalTrendPanel({ snapshot }: { snapshot: Snapshot }) {
-  const vitalTypes = unique(snapshot.vitals.map((v) => v.type));
-  const chartable = vitalTypes.filter((type) => buildSeries(snapshot.vitals, type).length >= 2);
+  const vitals = snapshot.vitals ?? [];
+  const vitalTypes = unique(vitals.map((v) => v.type));
+  const chartable = vitalTypes.filter((type) => buildSeries(vitals, type).length >= 2);
   if (!chartable.length) return null;
   return (
     <div className="clinical-trends">
       <span className="evidence-label">Patient vitals trend</span>
       <div className="clinical-trends-grid">
         {chartable.slice(0, 4).map((type) => {
-          const series = buildSeries(snapshot.vitals, type).map((p) => ({
+          const series = buildSeries(vitals, type).map((p) => ({
             date: p.date,
             value: p.value,
             secondValue: p.secondValue
@@ -1169,10 +1222,289 @@ function VoiceRecorder({ onTranscript }: { onTranscript: (text: string) => void 
   }
 
   return (
-    <button className="ghost" onClick={toggle} type="button" disabled={busy} title="Voice input">
-      {recording ? <StopCircle size={18} /> : <Mic size={18} />}
-      {recording ? "Stop" : busy ? "Transcribing" : "Voice"}
+    <button
+      className={`ghost icon-btn${recording ? " recording" : ""}`}
+      onClick={toggle}
+      type="button"
+      disabled={busy}
+      title={recording ? "Stop recording" : busy ? "Transcribing…" : "Voice input"}
+    >
+      {recording ? <StopCircle size={16} /> : busy ? <span style={{ fontSize: "0.7rem", fontWeight: 750 }}>…</span> : <Mic size={16} />}
     </button>
+  );
+}
+
+const SOAP_ROLE_LABELS: Record<string, { s: string; o: string; a: string; p: string }> = {
+  doctor: {
+    s: "Subjective",
+    o: "Objective",
+    a: "Assessment",
+    p: "Plan",
+  },
+  nurse: {
+    s: "Presenting concern",
+    o: "Observations",
+    a: "Nursing assessment",
+    p: "Care plan",
+  },
+  midwife: {
+    s: "Maternal concern",
+    o: "Maternal & fetal assessment",
+    a: "Risk assessment",
+    p: "Maternity plan",
+  },
+  physiotherapist: {
+    s: "Presenting complaint",
+    o: "Physical assessment",
+    a: "Clinical impression",
+    p: "Treatment plan",
+  },
+};
+
+const SOAP_URGENCY_BADGE: Record<string, { label: string; cls: string }> = {
+  routine:  { label: "Routine",            cls: "urgency-badge" },
+  elevated: { label: "Worth monitoring",   cls: "urgency-badge urgency-elevated" },
+  high:     { label: "See GP soon",        cls: "urgency-badge urgency-high" },
+  urgent:   { label: "Urgent care",        cls: "urgency-badge urgency-urgent" },
+  crisis:   { label: "Emergency",          cls: "urgency-badge urgency-urgent" },
+};
+
+function NotesPanel({
+  snapshot,
+  setSnapshot,
+  setNotice,
+  role
+}: {
+  snapshot: Snapshot;
+  setSnapshot: (snapshot: Snapshot) => void;
+  setNotice: (notice: string) => void;
+  role?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<Partial<ClinicalNote>>({});
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const isClinician = !isPatientRole(role);
+  const notes = snapshot.clinical_notes ?? [];
+
+  async function handleGenerate() {
+    setBusy(true);
+    try {
+      const result = await generateNote({});
+      setSnapshot(result.snapshot);
+      setExpandedId(result.note.note_id);
+      setNotice("Clinical note generated.");
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Note generation failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveEdit(noteId: string) {
+    setBusy(true);
+    try {
+      const result = await updateNote(noteId, editDraft);
+      setSnapshot(result.snapshot);
+      setEditingId(null);
+      setEditDraft({});
+      setNotice("Note saved.");
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Save failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleEmail(noteId: string) {
+    setBusy(true);
+    try {
+      const result = await emailNote(noteId);
+      setSnapshot(result.snapshot);
+      setNotice(`Note sent to ${result.sent_to}`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Email failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(noteId: string) {
+    setBusy(true);
+    try {
+      await deleteNote(noteId);
+      const updated = await fetchSnapshot();
+      setSnapshot(updated);
+      if (expandedId === noteId) setExpandedId(null);
+      setNotice("Note deleted.");
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Delete failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUrgentAlert(note: ClinicalNote) {
+    setBusy(true);
+    try {
+      const result = await sendUrgentAlert(
+        note.gp_visit_reason || note.assessment || "Urgent clinical concern flagged",
+        note.urgency_level
+      );
+      setNotice(`Urgent alert sent to ${result.sent_to}`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Alert failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="tool-panel notes-panel">
+      <div className="panel-head">
+        <ClipboardList size={19} />
+        <strong>Clinical notes</strong>
+      </div>
+
+      {isClinician && (
+        <button className="primary full" onClick={handleGenerate} disabled={busy}>
+          <Plus size={17} />
+          {busy ? "Generating…" : "Generate SOAP note"}
+        </button>
+      )}
+
+      {notes.length === 0 && (
+        <p className="muted" style={{ fontSize: "0.85rem" }}>
+          {isClinician
+            ? "Generate a note from the current conversation."
+            : "No consultation notes yet."}
+        </p>
+      )}
+
+      <div className="notes-list">
+        {notes.slice(0, 5).map((note) => {
+          const badge = SOAP_URGENCY_BADGE[note.urgency_level] ?? SOAP_URGENCY_BADGE.routine;
+          const isExpanded = expandedId === note.note_id;
+          const isEditing = editingId === note.note_id;
+          const roleLabels = SOAP_ROLE_LABELS[String((note as any).role_key ?? "doctor")] ?? SOAP_ROLE_LABELS.doctor;
+
+          return (
+            <article key={note.note_id} className="note-card">
+              <div className="note-card-head" onClick={() => setExpandedId(isExpanded ? null : note.note_id)}>
+                <div>
+                  <span className={badge.cls}>{badge.label}</span>
+                  <time>{note.created_at.slice(0, 10)}</time>
+                  {note.edited_by && <span className="note-edited">edited</span>}
+                </div>
+                <p className="note-question">{note.question?.slice(0, 70) || "Consultation note"}</p>
+              </div>
+
+              {isExpanded && !isEditing && (
+                <div className="note-body">
+                  {isClinician ? (
+                    <>
+                      <SoapSection label={roleLabels.s} text={note.subjective} />
+                      <SoapSection label={roleLabels.o} text={note.objective} />
+                      <SoapSection label={roleLabels.a} text={note.assessment} />
+                      <SoapSection label={roleLabels.p} text={note.plan} />
+                    </>
+                  ) : (
+                    <PatientNoteView note={note} />
+                  )}
+
+                  <div className="note-actions">
+                    {isClinician && (
+                      <button className="ghost" onClick={() => { setEditingId(note.note_id); setEditDraft(note); }}>
+                        Edit note
+                      </button>
+                    )}
+                    <button className="ghost" onClick={() => handleEmail(note.note_id)} disabled={busy}>
+                      {note.email_sent ? "Resend" : "Email to me"}
+                    </button>
+                    {note.requires_gp_visit && isPatientRole(role) && (
+                      <button className="ghost urgent-btn" onClick={() => handleUrgentAlert(note)} disabled={busy}>
+                        Email GP advice
+                      </button>
+                    )}
+                    {note.requires_gp_visit && isClinician && (
+                      <button className="ghost urgent-btn" onClick={() => handleUrgentAlert(note)} disabled={busy}>
+                        Send GP alert
+                      </button>
+                    )}
+                    {isClinician && (
+                      <button className="ghost" onClick={() => handleDelete(note.note_id)} disabled={busy} title="Delete note">
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {isExpanded && isEditing && isClinician && (
+                <div className="note-editor">
+                  <SoapEditor label={roleLabels.s} value={editDraft.subjective ?? ""} onChange={v => setEditDraft(d => ({ ...d, subjective: v }))} />
+                  <SoapEditor label={roleLabels.o} value={editDraft.objective ?? ""} onChange={v => setEditDraft(d => ({ ...d, objective: v }))} />
+                  <SoapEditor label={roleLabels.a} value={editDraft.assessment ?? ""} onChange={v => setEditDraft(d => ({ ...d, assessment: v }))} />
+                  <SoapEditor label={roleLabels.p} value={editDraft.plan ?? ""} onChange={v => setEditDraft(d => ({ ...d, plan: v }))} />
+                  <div className="note-actions">
+                    <button className="primary" onClick={() => handleSaveEdit(note.note_id)} disabled={busy}>Save changes</button>
+                    <button className="ghost" onClick={() => { setEditingId(null); setEditDraft({}); }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function SoapSection({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="soap-section">
+      <span className="soap-label">{label}</span>
+      <div className="soap-content markdown">
+        <ReactMarkdown>{text || "—"}</ReactMarkdown>
+      </div>
+    </div>
+  );
+}
+
+function SoapEditor({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="soap-section">
+      <span className="soap-label">{label}</span>
+      <textarea value={value} onChange={e => onChange(e.target.value)} rows={5} />
+    </div>
+  );
+}
+
+function PatientNoteView({ note }: { note: ClinicalNote }) {
+  const urgency = PATIENT_URGENCY[String(note.urgency_level ?? "").toLowerCase()] ?? PATIENT_URGENCY.routine;
+  return (
+    <div className="patient-note-view">
+      <div className="patient-note-header">
+        <span className="urgency-badge" style={{ color: urgency.color, background: urgency.bg, borderColor: urgency.color }}>
+          {urgency.label}
+        </span>
+        {note.requires_gp_visit && (
+          <span style={{ fontSize: "0.78rem", color: "var(--accent)", fontWeight: 750 }}>GP visit recommended</span>
+        )}
+      </div>
+      <div className="patient-note-section">
+        <span className="soap-label">What was discussed</span>
+        <div className="soap-content markdown">
+          <ReactMarkdown>{note.subjective || "—"}</ReactMarkdown>
+        </div>
+      </div>
+      <div className="patient-note-section">
+        <span className="soap-label">What happens next</span>
+        <div className="soap-content markdown">
+          <ReactMarkdown>{note.plan || "—"}</ReactMarkdown>
+        </div>
+      </div>
+    </div>
   );
 }
 

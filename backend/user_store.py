@@ -251,6 +251,7 @@ def _normalize_user_record(username: str, record: Dict) -> Dict:
     normalized.setdefault("allergies", [])
     normalized.setdefault("conditions", [])
     normalized.setdefault("vitals", [])
+    normalized.setdefault("clinical_notes", [])
     normalized.setdefault("active_conversation_id", f"conv-{uuid4().hex[:12]}")
 
     normalized["conversation"] = [
@@ -1376,6 +1377,70 @@ class UserStore:
         if not user:
             return ""
         return user.get("profile", {}).get("last_video_generated_at", "")
+
+    # ── Clinical notes ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def get_clinical_notes(username: str) -> List[Dict]:
+        user = _get_user_record(username)
+        return deepcopy(user.get("clinical_notes", [])) if user else []
+
+    @staticmethod
+    def save_clinical_note(username: str, note: Dict) -> None:
+        user = _get_user_record(username)
+        if not user:
+            return
+        user.setdefault("clinical_notes", []).insert(0, deepcopy(note))
+        _append_audit(user, "clinical_note_created", f"SOAP note {note.get('note_id', '')} generated")
+        _save_user_record(username, user)
+
+    @staticmethod
+    def update_clinical_note(username: str, note_id: str, updates: Dict) -> Optional[Dict]:
+        user = _get_user_record(username)
+        if not user:
+            return None
+        notes = user.setdefault("clinical_notes", [])
+        for note in notes:
+            if note.get("note_id") == note_id:
+                allowed = {"subjective", "objective", "assessment", "plan", "urgency_level", "requires_gp_visit", "gp_visit_reason"}
+                for key, value in updates.items():
+                    if key in allowed:
+                        note[key] = value
+                note["updated_at"] = _utc_now()
+                note["edited_by"] = username
+                _append_audit(user, "clinical_note_edited", f"Note {note_id} edited by {username}")
+                _save_user_record(username, user)
+                return deepcopy(note)
+        return None
+
+    @staticmethod
+    def delete_clinical_note(username: str, note_id: str) -> bool:
+        user = _get_user_record(username)
+        if not user:
+            return False
+        notes = user.setdefault("clinical_notes", [])
+        original_len = len(notes)
+        user["clinical_notes"] = [n for n in notes if n.get("note_id") != note_id]
+        if len(user["clinical_notes"]) < original_len:
+            _append_audit(user, "clinical_note_deleted", f"Note {note_id} deleted")
+            _save_user_record(username, user)
+            return True
+        return False
+
+    @staticmethod
+    def mark_note_email_sent(username: str, note_id: str) -> None:
+        user = _get_user_record(username)
+        if not user:
+            return
+        for note in user.get("clinical_notes", []):
+            if note.get("note_id") == note_id:
+                note["email_sent"] = True
+                note["email_sent_at"] = _utc_now()
+                _append_audit(user, "clinical_note_emailed", f"Note {note_id} sent by email")
+                _save_user_record(username, user)
+                return
+
+    # ── Export ──────────────────────────────────────────────────────────────────
 
     @staticmethod
     def export_user_snapshot(username: str) -> Dict:

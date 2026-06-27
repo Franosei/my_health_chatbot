@@ -1,4 +1,4 @@
-import type { AuthResponse, ChatStreamEvent, FeedbackRating, FeedbackResponse, ProductConfig, Snapshot } from "./types";
+import type { AuthResponse, ChatStreamEvent, ClinicalNote, FeedbackRating, FeedbackResponse, ProductConfig, Snapshot } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const TOKEN_KEY = "dr_charlotte_token";
@@ -163,6 +163,38 @@ export function rateResponse(payload: {
   return apiRequest<FeedbackResponse>("/api/feedback", {
     method: "POST",
     body: JSON.stringify(payload)
+  });
+}
+
+// ── Clinical notes ─────────────────────────────────────────────────────────
+
+export function generateNote(payload: {
+  question?: string;
+  conversation_summary?: string;
+  trace_id?: string;
+}): Promise<{ note: ClinicalNote; snapshot: Snapshot }> {
+  return apiRequest("/api/notes", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateNote(
+  noteId: string,
+  updates: Partial<Pick<ClinicalNote, "subjective" | "objective" | "assessment" | "plan" | "urgency_level" | "requires_gp_visit" | "gp_visit_reason">>
+): Promise<{ note: ClinicalNote; snapshot: Snapshot }> {
+  return apiRequest(`/api/notes/${noteId}`, { method: "PUT", body: JSON.stringify(updates) });
+}
+
+export function deleteNote(noteId: string): Promise<void> {
+  return apiRequest(`/api/notes/${noteId}`, { method: "DELETE" });
+}
+
+export function emailNote(noteId: string): Promise<{ ok: boolean; sent_to: string; snapshot: Snapshot }> {
+  return apiRequest(`/api/notes/${noteId}/email`, { method: "POST" });
+}
+
+export function sendUrgentAlert(reason: string, urgencyLevel: string): Promise<{ ok: boolean; sent_to: string }> {
+  return apiRequest("/api/email/urgent", {
+    method: "POST",
+    body: JSON.stringify({ reason, urgency_level: urgencyLevel })
   });
 }
 

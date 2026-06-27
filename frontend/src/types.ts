@@ -63,6 +63,27 @@ export type Source = {
   usable_for_patient_specific_guidance?: boolean;
 };
 
+export type ClinicalNote = {
+  note_id: string;
+  created_at: string;
+  updated_at: string;
+  username: string;
+  display_name?: string;
+  trace_id?: string;
+  question?: string;
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
+  urgency_level: string;
+  requires_gp_visit: boolean;
+  gp_visit_reason?: string;
+  generated_by: string;
+  edited_by?: string | null;
+  email_sent: boolean;
+  email_sent_at?: string | null;
+};
+
 export type Snapshot = {
   product: {
     name: string;
@@ -87,6 +108,7 @@ export type Snapshot = {
   audit: Dict<any>[];
   memory: Dict<any>;
   trial_search_result?: TrialSearchResult | null;
+  clinical_notes: ClinicalNote[];
 };
 
 export type AuthResponse = {

@@ -208,6 +208,26 @@ class ClinicalOrchestrator:
         else:
             retrieval_mode = "general_knowledge"
 
+        # ── Step 10.5: Structured evidence extraction (anti-hallucination layer) ─
+        # Each ranked source is processed through the evidence extractor which uses
+        # gpt-4o-mini to map article facts specifically to this patient's profile.
+        # The resulting dossier replaces raw snippets in the LLM prompt.
+        evidence_dossier = None
+        if combined_sources:
+            try:
+                from backend.evidence_extractor import build_evidence_dossier
+                evidence_dossier = build_evidence_dossier(
+                    llm=self.llm,
+                    sources=combined_sources,
+                    question=question,
+                    user_profile=user_profile,
+                    patient_history_ctx=patient_history,
+                    medications=medications or [],
+                    conditions=conditions or [],
+                )
+            except Exception as exc:
+                print(f"[Orchestrator] Evidence dossier build failed (non-fatal): {exc}")
+
         # ── Step 11: Build role-aware context for LLM ─────────────────────────
         full_context = self._build_role_context(
             combined_sources=combined_sources,
@@ -217,6 +237,7 @@ class ClinicalOrchestrator:
             clinical_decision=clinical_decision,
             evidence_quality_report=evidence_quality_report,
             no_sources=not combined_sources,
+            evidence_dossier=evidence_dossier,
         )
 
         return {
@@ -232,12 +253,14 @@ class ClinicalOrchestrator:
             "retrieval_mode": retrieval_mode,
             "full_context": full_context,
             "evidence_quality_report": evidence_quality_report,
-            # New clinical governance keys
+            # Clinical governance
             "role_config": role_config,
             "intent": intent,
             "policy_decision": policy_decision,
             "pathway_context": pathway_context,
             "clinical_decision": clinical_decision,
+            # Structured evidence dossier (anti-hallucination layer)
+            "evidence_dossier": evidence_dossier,
         }
 
     # ── Bundle builders ────────────────────────────────────────────────────────
@@ -349,6 +372,7 @@ class ClinicalOrchestrator:
         clinical_decision: ClinicalDecision,
         evidence_quality_report: Optional[Dict] = None,
         no_sources: bool = False,
+        evidence_dossier=None,
     ) -> str:
         parts = []
 
@@ -420,8 +444,15 @@ class ClinicalOrchestrator:
             )
             parts.append("Evidence quality gate:\n" + "\n".join(quality_lines))
 
-        # Evidence with tier labelling
-        if combined_sources:
+        # Evidence: use structured dossier when available (anti-hallucination layer),
+        # otherwise fall back to raw source snippets for backward compatibility.
+        if evidence_dossier and evidence_dossier.articles:
+            parts.append(
+                "Structured patient-aligned evidence dossier "
+                "(extracted facts matched to this patient — do not cite facts not present here):\n"
+                + evidence_dossier.to_prompt_context()
+            )
+        elif combined_sources:
             evidence_parts = []
             for source in combined_sources:
                 tier = source.get("evidence_tier", 3)
