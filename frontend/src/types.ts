@@ -137,6 +137,91 @@ export type ChatStreamEvent =
 
 export type FeedbackRating = "thumbs_up" | "thumbs_down";
 
+// ── Care Plans ──────────────────────────────────────────────────────────────
+
+export type CarePlanGoal = {
+  id: string;
+  text: string;
+  metric?: string;
+  target_months?: number;
+  achieved?: boolean;
+};
+
+export type CarePlanTask = {
+  id: string;
+  text: string;
+  time_of_day?: "morning" | "afternoon" | "evening" | "bedtime" | "any";
+  rationale?: string;
+  completed_dates?: string[];
+};
+
+export type MedReminder = {
+  id: string;
+  medication: string;
+  dose?: string;
+  timing?: string;
+  notes?: string;
+};
+
+export type LabReminder = {
+  id: string;
+  test: string;
+  frequency_months?: number;
+  notes?: string;
+  target_value?: string;
+  last_done?: string | null;
+  next_due?: string | null;
+};
+
+export type EscalationThreshold = {
+  id: string;
+  symptom: string;
+  threshold?: string;
+  action: string;
+  urgency?: "call_999" | "a_and_e" | "gp_same_day" | "gp_routine" | "self_monitor";
+};
+
+export type CarePlanLifestyle = {
+  diet?: string;
+  exercise?: string;
+  sleep?: string;
+  weight?: string;
+  mental_health?: string;
+  smoking?: string;
+  alcohol?: string;
+  other?: string;
+};
+
+export type MissedCareItem = {
+  id: string;
+  item: string;
+  frequency_months?: number;
+  notes?: string;
+  last_done?: string | null;
+  overdue?: boolean;
+};
+
+export type CarePlan = {
+  id: string;
+  condition: string;
+  title: string;
+  status: "active" | "completed" | "paused";
+  created_at: string;
+  updated_at: string;
+  goals: CarePlanGoal[];
+  daily_tasks: CarePlanTask[];
+  weekly_tasks: CarePlanTask[];
+  medication_reminders: MedReminder[];
+  lab_reminders: LabReminder[];
+  escalation_thresholds: EscalationThreshold[];
+  lifestyle: CarePlanLifestyle;
+  missed_care_checklist: MissedCareItem[];
+  evidence_summary: string;
+  safety_notes?: string;
+  gp_prep_summary?: string | null;
+  after_visit_notes?: { text: string; date: string }[];
+};
+
 export type FeedbackResponse = {
   ok: boolean;
   already_rated: boolean;

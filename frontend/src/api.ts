@@ -1,4 +1,4 @@
-import type { AuthResponse, ChatStreamEvent, ClinicalNote, FeedbackRating, FeedbackResponse, ProductConfig, Snapshot } from "./types";
+import type { AuthResponse, CarePlan, ChatStreamEvent, ClinicalNote, FeedbackRating, FeedbackResponse, ProductConfig, Snapshot } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const TOKEN_KEY = "dr_charlotte_token";
@@ -217,4 +217,84 @@ export async function downloadProtectedFile(path: string, filename: string): Pro
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+// ── Care Plans ───────────────────────────────────────────────────────────────
+
+export function listCarePlans(): Promise<CarePlan[]> {
+  return apiRequest<CarePlan[]>("/api/care-plans");
+}
+
+export function deleteCarePlan(planId: string): Promise<{ ok: boolean }> {
+  return apiRequest(`/api/care-plans/${planId}`, { method: "DELETE" });
+}
+
+export function toggleCarePlanTask(
+  planId: string,
+  taskId: string,
+  done: boolean
+): Promise<CarePlan> {
+  return apiRequest<CarePlan>(`/api/care-plans/${planId}/tasks/${taskId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ done })
+  });
+}
+
+export function addAfterVisitNote(planId: string, note: string): Promise<CarePlan> {
+  return apiRequest<CarePlan>(`/api/care-plans/${planId}/after-visit`, {
+    method: "POST",
+    body: JSON.stringify({ note })
+  });
+}
+
+export function generateGpPrep(planId: string): Promise<{ gp_prep_summary: string; plan: CarePlan }> {
+  return apiRequest(`/api/care-plans/${planId}/gp-prep`, { method: "POST" });
+}
+
+export async function generateCarePlan(
+  condition: string,
+  chatSummary: string,
+  onProgress: (msg: string) => void
+): Promise<CarePlan> {
+  const token = getStoredToken();
+  const response = await fetch(`${API_BASE}/api/care-plans/generate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ condition, chat_summary: chatSummary })
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(await readError(response));
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalPlan: CarePlan | null = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const event = JSON.parse(trimmed);
+        if (event.type === "progress") onProgress(event.message as string);
+        else if (event.type === "done") finalPlan = event.plan as CarePlan;
+        else if (event.type === "error") throw new Error(event.message as string);
+      } catch {
+        /* partial flush */
+      }
+    }
+  }
+
+  if (!finalPlan) throw new Error("Care plan generation did not complete.");
+  return finalPlan;
 }

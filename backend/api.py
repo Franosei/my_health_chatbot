@@ -19,6 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.clinical_notes import generate_soap_note
+from backend.care_plan_agent import CarePlanAgent
+from backend.care_plan_store import CarePlanStore
 from backend.clinical_trials import build_trial_search_profile, find_matching_trials
 from backend.email_service import send_clinical_note_email, send_urgent_care_alert
 from backend.feedback_store import save_feedback
@@ -397,6 +399,134 @@ def signup(payload: SignupPayload) -> Dict:
         "profile": _public_profile(username),
         "snapshot": _snapshot(username),
     }
+
+
+# ---------------------------------------------------------------------------
+# Care Plans
+# ---------------------------------------------------------------------------
+
+class GeneratePlanPayload(BaseModel):
+    condition: str
+    chat_summary: str = ""
+
+
+class TaskTogglePayload(BaseModel):
+    done: bool
+
+
+class AfterVisitPayload(BaseModel):
+    note: str
+
+
+@app.get("/api/care-plans")
+def list_care_plans(username: str = Depends(current_user)) -> List[Dict]:
+    return CarePlanStore.list_plans(username)
+
+
+@app.post("/api/care-plans/generate")
+def generate_care_plan(
+    payload: GeneratePlanPayload,
+    username: str = Depends(current_user),
+) -> StreamingResponse:
+    """Streams NDJSON progress events, then emits a final 'done' event with the plan."""
+    profile = UserStore.get_user_profile(username) or {}
+    snap = _snapshot(username)
+
+    user_context = {
+        "profile": profile,
+        "medications": snap.get("medications", []),
+        "conditions": snap.get("conditions", []),
+        "chat_summary": payload.chat_summary,
+    }
+
+    def stream() -> Generator[str, None, None]:
+        agent = CarePlanAgent()
+        plan: Dict = {}
+        error_msg = ""
+
+        def on_progress(msg: str) -> None:
+            yield_event({"type": "progress", "message": msg})
+
+        # We can't yield from a nested callback directly in a generator, so
+        # we collect events via a list and flush them in the loop.
+        progress_events: List[str] = []
+
+        def collect(msg: str) -> None:
+            progress_events.append(msg)
+
+        try:
+            plan = agent.generate(payload.condition, user_context, on_progress=collect)
+        except Exception as exc:
+            error_msg = str(exc)
+
+        # First flush any collected progress messages
+        for msg in progress_events:
+            yield json.dumps({"type": "progress", "message": msg}) + "\n"
+
+        if error_msg:
+            yield json.dumps({"type": "error", "message": error_msg}) + "\n"
+            return
+
+        # Persist and return
+        saved = CarePlanStore.save_plan(username, plan)
+        yield json.dumps({"type": "done", "plan": saved}) + "\n"
+
+    def yield_event(event: Dict) -> str:
+        return json.dumps(event) + "\n"
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+@app.get("/api/care-plans/{plan_id}")
+def get_care_plan(plan_id: str, username: str = Depends(current_user)) -> Dict:
+    plan = CarePlanStore.get_plan(username, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Care plan not found.")
+    return plan
+
+
+@app.delete("/api/care-plans/{plan_id}")
+def delete_care_plan(plan_id: str, username: str = Depends(current_user)) -> Dict:
+    if not CarePlanStore.delete_plan(username, plan_id):
+        raise HTTPException(status_code=404, detail="Care plan not found.")
+    return {"ok": True}
+
+
+@app.patch("/api/care-plans/{plan_id}/tasks/{task_id}")
+def toggle_task(
+    plan_id: str,
+    task_id: str,
+    payload: TaskTogglePayload,
+    username: str = Depends(current_user),
+) -> Dict:
+    plan = CarePlanStore.toggle_task(username, plan_id, task_id, payload.done)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan or task not found.")
+    return plan
+
+
+@app.post("/api/care-plans/{plan_id}/after-visit")
+def after_visit_note(
+    plan_id: str,
+    payload: AfterVisitPayload,
+    username: str = Depends(current_user),
+) -> Dict:
+    plan = CarePlanStore.add_after_visit_note(username, plan_id, payload.note)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Care plan not found.")
+    return plan
+
+
+@app.post("/api/care-plans/{plan_id}/gp-prep")
+def gp_prep(plan_id: str, username: str = Depends(current_user)) -> Dict:
+    plan = CarePlanStore.get_plan(username, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Care plan not found.")
+    profile = UserStore.get_user_profile(username) or {}
+    agent = CarePlanAgent()
+    summary = agent.generate_gp_prep(plan, {"profile": profile})
+    updated = CarePlanStore.set_gp_prep(username, plan_id, summary)
+    return {"gp_prep_summary": summary, "plan": updated}
 
 
 @app.get("/api/me")

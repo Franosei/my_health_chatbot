@@ -3,8 +3,10 @@ import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   Activity,
+  AlertTriangle,
   BadgePlus,
   CalendarClock,
+  CheckCircle2,
   ClipboardList,
   Download,
   FileDown,
@@ -12,6 +14,7 @@ import {
   FlaskConical,
   HeartPulse,
   Home,
+  ListChecks,
   LogOut,
   MessageSquare,
   Mic,
@@ -19,9 +22,11 @@ import {
   PanelRight,
   Pill,
   Plus,
+  RefreshCw,
   Search,
   Send,
   ShieldCheck,
+  Sparkles,
   Stethoscope,
   StopCircle,
   ThumbsDown,
@@ -31,25 +36,31 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
+  addAfterVisitNote,
   apiRequest,
+  deleteCarePlan,
   deleteNote,
   downloadProtectedFile,
   emailNote,
   fetchSnapshot,
+  generateCarePlan,
+  generateGpPrep,
   generateNote,
   getConfig,
   getStoredToken,
+  listCarePlans,
   login,
   rateResponse,
   sendUrgentAlert,
   setStoredToken,
   signup,
   streamChat,
+  toggleCarePlanTask,
   transcribeAudio,
   updateNote,
   uploadDocuments
 } from "./api";
-import type { AuthResponse, ClinicalNote, Dict, FeedbackRating, Message, ProductConfig, Snapshot, TrialSearchResult } from "./types";
+import type { AuthResponse, CarePlan, CarePlanTask, ClinicalNote, Dict, EscalationThreshold, FeedbackRating, LabReminder, MedReminder, Message, MissedCareItem, ProductConfig, Snapshot, TrialSearchResult } from "./types";
 import {
   buildSeries,
   buildSymptomSeries,
@@ -63,7 +74,7 @@ import {
   vitalLabel
 } from "./utils";
 
-type View = "workspace" | "chat" | "timeline" | "trials";
+type View = "workspace" | "chat" | "timeline" | "trials" | "care-plans";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null };
@@ -211,6 +222,7 @@ function App() {
         {view === "chat" && <ChatView snapshot={snapshot} setSnapshot={setSnapshot} setNotice={setNotice} />}
         {view === "timeline" && <TimelineView snapshot={snapshot} />}
         {view === "trials" && <TrialsView snapshot={snapshot} setSnapshot={setSnapshot} setNotice={setNotice} />}
+        {view === "care-plans" && <CarePlanScreen snapshot={snapshot} />}
       </Shell>
     </ErrorBoundary>
   );
@@ -483,6 +495,7 @@ function Shell({
   const nav = [
     { id: "workspace" as const, label: "Home", icon: Home },
     { id: "chat" as const, label: "Chat", icon: MessageSquare },
+    { id: "care-plans" as const, label: "Care Plans", icon: ListChecks },
     { id: "timeline" as const, label: "Timeline", icon: CalendarClock },
     { id: "trials" as const, label: "Trials", icon: FlaskConical }
   ];
@@ -2256,6 +2269,607 @@ function TrialCard({ trial, index }: { trial: Dict<any>; index: number }) {
         {Array.isArray(trial.exclusion_risks) && trial.exclusion_risks.length > 0 && <p>Potential exclusion factors: {trial.exclusion_risks.join("; ")}</p>}
       </details>
     </article>
+  );
+}
+
+// ── Care Plans ───────────────────────────────────────────────────────────────
+
+const CONDITION_SUGGESTIONS = [
+  "Type 2 Diabetes",
+  "Hypertension",
+  "Asthma",
+  "Chronic Kidney Disease",
+  "Mental Health & Wellbeing",
+  "Weight Management",
+  "MSK Rehabilitation",
+  "Menopause",
+  "Pregnancy & Maternity",
+  "Heart Disease",
+  "COPD",
+  "Anxiety & Depression",
+  "Osteoporosis",
+  "Atrial Fibrillation",
+];
+
+const URGENCY_META: Record<string, { label: string; color: string; bg: string }> = {
+  call_999:   { label: "Call 999 now",    color: "#fff", bg: "#c0392b" },
+  a_and_e:    { label: "Go to A&E",       color: "#c0392b", bg: "#fff0ed" },
+  gp_same_day:{ label: "See GP today",    color: "#b07d00", bg: "#fff8e5" },
+  gp_routine: { label: "Book GP visit",   color: "#1a6b5a", bg: "#edf8f4" },
+  self_monitor:{ label: "Self-monitor",   color: "#4a7a8a", bg: "#edf4f3" },
+};
+
+const TIME_OF_DAY_ICON: Record<string, string> = {
+  morning: "🌅",
+  afternoon: "☀️",
+  evening: "🌆",
+  bedtime: "🌙",
+  any: "⏱️",
+};
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isTaskDoneToday(task: CarePlanTask): boolean {
+  return (task.completed_dates ?? []).includes(todayStr());
+}
+
+function planProgress(plan: CarePlan): { done: number; total: number } {
+  const today = todayStr();
+  const daily = plan.daily_tasks ?? [];
+  const done = daily.filter((t) => (t.completed_dates ?? []).includes(today)).length;
+  return { done, total: daily.length };
+}
+
+function ProgressRing({ done, total, size = 52 }: { done: number; total: number; size?: number }) {
+  const r = (size - 8) / 2;
+  const circ = 2 * Math.PI * r;
+  const pct = total === 0 ? 0 : done / total;
+  const dash = circ * pct;
+  return (
+    <svg width={size} height={size} className="progress-ring">
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#e0eceb" strokeWidth={6} />
+      <circle
+        cx={size / 2} cy={size / 2} r={r}
+        fill="none"
+        stroke="var(--primary)"
+        strokeWidth={6}
+        strokeDasharray={`${dash} ${circ}`}
+        strokeLinecap="round"
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      />
+      <text x={size / 2} y={size / 2 + 5} textAnchor="middle" fontSize={11} fill="var(--primary)" fontWeight={700}>
+        {total === 0 ? "--" : `${done}/${total}`}
+      </text>
+    </svg>
+  );
+}
+
+function CarePlanCard({
+  plan,
+  onOpen,
+  onDelete,
+}: {
+  plan: CarePlan;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  const { done, total } = planProgress(plan);
+  const hasAlerts = (plan.missed_care_checklist ?? []).some((i) => i.overdue);
+
+  return (
+    <article className="cp-card" onClick={onOpen}>
+      <div className="cp-card-top">
+        <div className="cp-card-info">
+          <h3>{plan.title}</h3>
+          <span className="cp-condition-tag">{plan.condition}</span>
+        </div>
+        <ProgressRing done={done} total={total} />
+      </div>
+      <p className="cp-card-evidence">{plan.evidence_summary?.slice(0, 120)}…</p>
+      <div className="cp-card-footer">
+        <span className="cp-card-date">Created {plan.created_at?.slice(0, 10)}</span>
+        {hasAlerts && (
+          <span className="cp-alert-chip">
+            <AlertTriangle size={12} /> Overdue care
+          </span>
+        )}
+        <button
+          className="icon-button danger-hover"
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          title="Remove plan"
+        >
+          <Trash2 size={15} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function NewPlanPanel({
+  snapshot,
+  onCreated,
+}: {
+  snapshot: Snapshot;
+  onCreated: (plan: CarePlan) => void;
+}) {
+  const knownConditions = (snapshot.conditions ?? []).map((c: Dict) => c.name as string).filter(Boolean);
+  const suggestFirst = knownConditions.length > 0 ? knownConditions[0] : CONDITION_SUGGESTIONS[0];
+
+  const [condition, setCondition] = useState(suggestFirst);
+  const [custom, setCustom] = useState("");
+  const [progress, setProgress] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const effectiveCondition = custom.trim() || condition;
+
+  async function handleGenerate() {
+    if (!effectiveCondition) return;
+    setBusy(true);
+    setError("");
+    setProgress(["Starting evidence search..."]);
+    try {
+      const recentMessages = (snapshot.chat_history ?? []).slice(-6);
+      const chatSummary = recentMessages.map((m: Message) => `${m.role}: ${m.content}`).join("\n");
+      const plan = await generateCarePlan(effectiveCondition, chatSummary, (msg) =>
+        setProgress((prev) => [...prev, msg])
+      );
+      onCreated(plan);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Generation failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="cp-new-panel">
+      <div className="cp-new-header">
+        <Sparkles size={22} color="var(--primary)" />
+        <div>
+          <h3>Create a care plan</h3>
+          <p>The AI agent searches NHS/NICE guidelines and clinical evidence to build a personalised plan.</p>
+        </div>
+      </div>
+
+      {knownConditions.length > 0 && (
+        <div className="cp-condition-chips">
+          {knownConditions.map((c) => (
+            <button
+              key={c}
+              className={`cp-chip${effectiveCondition === c && !custom ? " active" : ""}`}
+              onClick={() => { setCondition(c); setCustom(""); }}
+              type="button"
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="cp-condition-row">
+        <select
+          value={custom ? "__custom__" : condition}
+          onChange={(e) => {
+            setCustom("");
+            setCondition(e.target.value);
+          }}
+        >
+          {CONDITION_SUGGESTIONS.map((s) => <option key={s}>{s}</option>)}
+          {custom && <option value="__custom__">{custom}</option>}
+        </select>
+        <span className="cp-or">or type:</span>
+        <input
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          placeholder="e.g. Migraine, Psoriasis…"
+          className="cp-custom-input"
+        />
+      </div>
+
+      {error && <div className="notice error">{error}</div>}
+
+      {busy && (
+        <div className="cp-progress-log">
+          {progress.map((msg, i) => (
+            <div key={i} className={`cp-progress-line${i === progress.length - 1 ? " active" : " done"}`}>
+              {i === progress.length - 1 ? <RefreshCw size={13} className="spin" /> : <CheckCircle2 size={13} />}
+              {msg}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button className="primary" disabled={busy || !effectiveCondition} onClick={handleGenerate} type="button">
+        <Sparkles size={16} />
+        {busy ? "Building plan…" : "Generate evidence-based plan"}
+      </button>
+    </div>
+  );
+}
+
+type PlanTab = "tasks" | "lifestyle" | "meds" | "labs" | "escalation" | "gp-prep" | "after-visit";
+
+function CarePlanDetail({
+  plan: initialPlan,
+  onBack,
+  onUpdated,
+}: {
+  plan: CarePlan;
+  onBack: () => void;
+  onUpdated: (plan: CarePlan) => void;
+}) {
+  const [plan, setPlan] = useState(initialPlan);
+  const [tab, setTab] = useState<PlanTab>("tasks");
+  const [gpBusy, setGpBusy] = useState(false);
+  const [afterVisitText, setAfterVisitText] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+
+  async function handleToggle(taskId: string, done: boolean) {
+    try {
+      const updated = await toggleCarePlanTask(plan.id, taskId, done);
+      setPlan(updated);
+      onUpdated(updated);
+    } catch { /* ignore */ }
+  }
+
+  async function handleGpPrep() {
+    setGpBusy(true);
+    try {
+      const { plan: updated } = await generateGpPrep(plan.id);
+      setPlan(updated);
+      onUpdated(updated);
+      setTab("gp-prep");
+    } catch { /* ignore */ } finally {
+      setGpBusy(false);
+    }
+  }
+
+  async function handleAfterVisit() {
+    if (!afterVisitText.trim()) return;
+    setSavingNote(true);
+    try {
+      const updated = await addAfterVisitNote(plan.id, afterVisitText.trim());
+      setPlan(updated);
+      onUpdated(updated);
+      setAfterVisitText("");
+    } catch { /* ignore */ } finally {
+      setSavingNote(false);
+    }
+  }
+
+  const { done, total } = planProgress(plan);
+  const tabs: { id: PlanTab; label: string }[] = [
+    { id: "tasks", label: "Daily Plan" },
+    { id: "lifestyle", label: "Lifestyle" },
+    { id: "meds", label: "Medications" },
+    { id: "labs", label: "Monitoring" },
+    { id: "escalation", label: "Warning Signs" },
+    { id: "gp-prep", label: "GP Prep" },
+    { id: "after-visit", label: "After Visit" },
+  ];
+
+  return (
+    <div className="cp-detail">
+      <div className="cp-detail-header">
+        <button className="link-btn" onClick={onBack} type="button">← All plans</button>
+        <div className="cp-detail-title">
+          <h2>{plan.title}</h2>
+          <span className="cp-condition-tag">{plan.condition}</span>
+        </div>
+        <div className="cp-detail-actions">
+          <ProgressRing done={done} total={total} size={48} />
+          <button className="secondary" onClick={handleGpPrep} disabled={gpBusy} type="button">
+            <Stethoscope size={15} />
+            {gpBusy ? "Preparing…" : "Prepare for GP"}
+          </button>
+        </div>
+      </div>
+
+      {plan.safety_notes && (
+        <div className="notice warn cp-safety">
+          <AlertTriangle size={15} /> {plan.safety_notes}
+        </div>
+      )}
+
+      <div className="cp-tabs">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            className={`cp-tab${tab === t.id ? " active" : ""}`}
+            onClick={() => setTab(t.id)}
+            type="button"
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="cp-tab-content">
+        {tab === "tasks" && (
+          <div className="cp-tasks-view">
+            <div className="cp-section-label">
+              <Activity size={15} /> Today's tasks ({done}/{total} done)
+            </div>
+            {plan.daily_tasks.map((task) => {
+              const done = isTaskDoneToday(task);
+              return (
+                <label key={task.id} className={`cp-task-row${done ? " done" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={done}
+                    onChange={(e) => handleToggle(task.id, e.target.checked)}
+                  />
+                  <span className="cp-task-time">{TIME_OF_DAY_ICON[task.time_of_day ?? "any"]}</span>
+                  <div>
+                    <span className="cp-task-text">{task.text}</span>
+                    {task.rationale && <p className="cp-task-rationale">{task.rationale}</p>}
+                  </div>
+                </label>
+              );
+            })}
+            {plan.weekly_tasks.length > 0 && (
+              <>
+                <div className="cp-section-label" style={{ marginTop: "1.2rem" }}>
+                  <CalendarClock size={15} /> This week
+                </div>
+                {plan.weekly_tasks.map((task) => (
+                  <div key={task.id} className="cp-weekly-task">
+                    <span>{task.text}</span>
+                    {task.rationale && <p className="cp-task-rationale">{task.rationale}</p>}
+                  </div>
+                ))}
+              </>
+            )}
+            {plan.goals.length > 0 && (
+              <>
+                <div className="cp-section-label" style={{ marginTop: "1.4rem" }}>
+                  <CheckCircle2 size={15} /> Your goals
+                </div>
+                {plan.goals.map((g) => (
+                  <div key={g.id} className="cp-goal-row">
+                    <span>{g.text}</span>
+                    {g.metric && <span className="cp-goal-metric">{g.metric}</span>}
+                    {g.target_months && <span className="cp-goal-target">Target: {g.target_months} months</span>}
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
+
+        {tab === "lifestyle" && (
+          <div className="cp-lifestyle-view">
+            {(Object.entries(plan.lifestyle ?? {}) as [string, string][])
+              .filter(([, v]) => v)
+              .map(([key, value]) => (
+                <div key={key} className="cp-lifestyle-block">
+                  <h4 className="cp-lifestyle-heading">{key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</h4>
+                  <p>{value}</p>
+                </div>
+              ))}
+            {plan.missed_care_checklist.length > 0 && (
+              <div className="cp-missed-section">
+                <h4 className="cp-lifestyle-heading">
+                  <AlertTriangle size={14} /> Preventive care checklist
+                </h4>
+                {plan.missed_care_checklist.map((item: MissedCareItem) => (
+                  <div key={item.id} className={`cp-missed-item${item.overdue ? " overdue" : ""}`}>
+                    <span>{item.item}</span>
+                    <span className="cp-freq">Every {item.frequency_months}m</span>
+                    {item.overdue && <span className="cp-overdue-tag">Overdue</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "meds" && (
+          <div className="cp-meds-view">
+            {plan.medication_reminders.length === 0 ? (
+              <p className="cp-empty">No medication reminders in this plan.</p>
+            ) : (
+              plan.medication_reminders.map((med: MedReminder) => (
+                <div key={med.id} className="cp-med-card">
+                  <div className="cp-med-name">
+                    <Pill size={16} color="var(--primary)" />
+                    <strong>{med.medication}</strong>
+                    {med.dose && <span className="cp-med-dose">{med.dose}</span>}
+                  </div>
+                  <div className="cp-med-timing">{med.timing}</div>
+                  {med.notes && <p className="cp-med-notes">{med.notes}</p>}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {tab === "labs" && (
+          <div className="cp-labs-view">
+            {plan.lab_reminders.map((lab: LabReminder) => (
+              <div key={lab.id} className="cp-lab-card">
+                <div className="cp-lab-name">
+                  <Activity size={15} color="var(--primary)" />
+                  <strong>{lab.test}</strong>
+                </div>
+                <div className="cp-lab-meta">
+                  <span>Every {lab.frequency_months} months</span>
+                  {lab.target_value && <span className="cp-lab-target">Target: {lab.target_value}</span>}
+                </div>
+                {lab.notes && <p className="cp-lab-notes">{lab.notes}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "escalation" && (
+          <div className="cp-escalation-view">
+            <p className="cp-escalation-intro">
+              If you experience any of the following, act as described. Always call 999 for life-threatening emergencies.
+            </p>
+            {plan.escalation_thresholds.map((esc: EscalationThreshold) => {
+              const meta = URGENCY_META[esc.urgency ?? "gp_routine"];
+              return (
+                <div
+                  key={esc.id}
+                  className="cp-esc-card"
+                  style={{ borderLeftColor: meta.bg === "#fff0ed" ? "var(--danger)" : meta.bg === "#fff8e5" ? "var(--gold)" : "var(--primary)" }}
+                >
+                  <div className="cp-esc-top">
+                    <strong>{esc.symptom}</strong>
+                    <span className="cp-urgency-badge" style={{ background: meta.bg, color: meta.color }}>
+                      {meta.label}
+                    </span>
+                  </div>
+                  {esc.threshold && <p className="cp-esc-threshold">Threshold: {esc.threshold}</p>}
+                  <p className="cp-esc-action">{esc.action}</p>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {tab === "gp-prep" && (
+          <div className="cp-gp-view">
+            {plan.gp_prep_summary ? (
+              <div className="cp-gp-content">
+                <ReactMarkdown>{plan.gp_prep_summary}</ReactMarkdown>
+                <button className="secondary" onClick={handleGpPrep} disabled={gpBusy} type="button">
+                  <RefreshCw size={14} />
+                  {gpBusy ? "Refreshing…" : "Regenerate"}
+                </button>
+              </div>
+            ) : (
+              <div className="cp-gp-empty">
+                <Stethoscope size={36} color="var(--primary)" strokeWidth={1.5} />
+                <p>Generate a personalised GP appointment guide based on your current plan, goals, and medications.</p>
+                <button className="primary" onClick={handleGpPrep} disabled={gpBusy} type="button">
+                  <Stethoscope size={16} />
+                  {gpBusy ? "Preparing…" : "Prepare for my GP appointment"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "after-visit" && (
+          <div className="cp-after-view">
+            <div className="cp-after-input-row">
+              <textarea
+                value={afterVisitText}
+                onChange={(e) => setAfterVisitText(e.target.value)}
+                placeholder="Log what your GP said, new instructions, or next steps…"
+                rows={3}
+              />
+              <button className="primary" disabled={savingNote || !afterVisitText.trim()} onClick={handleAfterVisit} type="button">
+                Save note
+              </button>
+            </div>
+            {(plan.after_visit_notes ?? []).length === 0 ? (
+              <p className="cp-empty">No after-visit notes yet.</p>
+            ) : (
+              [...(plan.after_visit_notes ?? [])].reverse().map((note, i) => (
+                <div key={i} className="cp-after-note">
+                  <span className="cp-after-date">{note.date}</span>
+                  <p>{note.text}</p>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="cp-evidence-footer">
+        <ShieldCheck size={13} />
+        {plan.evidence_summary}
+      </div>
+    </div>
+  );
+}
+
+function CarePlanScreen({ snapshot }: { snapshot: Snapshot }) {
+  const [plans, setPlans] = useState<CarePlan[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<CarePlan | null>(null);
+  const [showNew, setShowNew] = useState(false);
+
+  useEffect(() => {
+    listCarePlans()
+      .then(setPlans)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  function handleCreated(plan: CarePlan) {
+    setPlans((prev) => [plan, ...prev]);
+    setSelected(plan);
+    setShowNew(false);
+  }
+
+  function handleUpdated(plan: CarePlan) {
+    setPlans((prev) => prev.map((p) => (p.id === plan.id ? plan : p)));
+    setSelected(plan);
+  }
+
+  async function handleDelete(planId: string) {
+    await deleteCarePlan(planId);
+    setPlans((prev) => prev.filter((p) => p.id !== planId));
+    if (selected?.id === planId) setSelected(null);
+  }
+
+  if (selected) {
+    return (
+      <CarePlanDetail
+        plan={selected}
+        onBack={() => setSelected(null)}
+        onUpdated={handleUpdated}
+      />
+    );
+  }
+
+  return (
+    <div className="cp-screen">
+      <div className="cp-screen-header">
+        <div>
+          <h2>Care Plans</h2>
+          <p>Personalised, evidence-based plans built from NHS/NICE guidelines and your health context.</p>
+        </div>
+        <button className="primary" onClick={() => setShowNew(true)} type="button">
+          <Plus size={16} /> New plan
+        </button>
+      </div>
+
+      {showNew && (
+        <NewPlanPanel snapshot={snapshot} onCreated={handleCreated} />
+      )}
+
+      {loading ? (
+        <div className="cp-loading">Building your care plans view…</div>
+      ) : plans.length === 0 && !showNew ? (
+        <div className="cp-empty-state">
+          <ListChecks size={48} strokeWidth={1} color="var(--primary)" />
+          <h3>No care plans yet</h3>
+          <p>Create your first plan, the AI agent will search NHS guidelines and build a comprehensive, personalised care roadmap.</p>
+          <button className="primary" onClick={() => setShowNew(true)} type="button">
+            <Sparkles size={16} /> Create your first plan
+          </button>
+        </div>
+      ) : (
+        <div className="cp-grid">
+          {plans.map((plan) => (
+            <CarePlanCard
+              key={plan.id}
+              plan={plan}
+              onOpen={() => setSelected(plan)}
+              onDelete={() => handleDelete(plan.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
