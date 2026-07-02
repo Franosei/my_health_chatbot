@@ -24,6 +24,12 @@ from backend.care_plan_store import CarePlanStore
 from backend.clinical_trials import build_trial_search_profile, find_matching_trials
 from backend.email_service import send_clinical_note_email, send_urgent_care_alert
 from backend.feedback_store import save_feedback
+from backend.image_analysis_agent import (
+    ImageAnalysisError,
+    MAX_IMAGE_BYTES,
+    SUPPORTED_IMAGE_MIME_TYPES,
+    normalize_image_mime_type,
+)
 from backend.product_config import (
     FOUNDER_NAME,
     PRIVACY_NOTICE_POINTS,
@@ -649,6 +655,142 @@ def stream_chat(payload: ChatPayload, username: str = Depends(current_user)) -> 
                 "## Response unavailable\n"
                 f"I ran into an issue while building the answer: `{exc}`.\n\n"
                 "Please try again, or narrow the question if the request is very broad."
+            )
+            assistant_entry = {
+                "role": "assistant",
+                "content": error_message,
+                "timestamp": _utc_now(),
+                "sources": [],
+                "metadata": {},
+            }
+            UserStore.append_chat(username, assistant_entry)
+            yield _json_line({"type": "error", "message": str(exc), "assistant_message": assistant_entry})
+            yield _json_line({"type": "snapshot", "snapshot": _snapshot(username)})
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+@app.post("/api/chat/image/stream")
+async def stream_image_chat(
+    message: str = Form(""),
+    image: UploadFile = File(...),
+    username: str = Depends(current_user),
+) -> StreamingResponse:
+    user_note = message.strip()
+    filename = _safe_filename(image.filename or "medical-image")
+    mime_type = normalize_image_mime_type(image.content_type or "", filename)
+    if mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+        raise HTTPException(status_code=400, detail="Upload a JPG, PNG, or WebP medical image.")
+
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="The uploaded image was empty.")
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        max_mb = max(1, MAX_IMAGE_BYTES // (1024 * 1024))
+        raise HTTPException(status_code=400, detail=f"Image uploads must be {max_mb} MB or smaller.")
+
+    display_message = user_note or f"Please analyse uploaded image: {filename}"
+
+    def generate() -> Generator[bytes, None, None]:
+        try:
+            rag_engine = _get_rag_engine()
+            chat_history = UserStore.get_chat_history(username)
+        except Exception as exc:
+            yield _json_line({"type": "error", "message": f"Failed to start the image pipeline: {exc}"})
+            yield _json_line({"type": "done"})
+            return
+
+        now = _utc_now()
+        user_entry = {
+            "role": "user",
+            "content": display_message,
+            "timestamp": now,
+            "sources": [],
+            "metadata": {
+                "image_analysis_request": True,
+                "uploaded_image_name": filename,
+                "uploaded_image_mime": mime_type,
+            },
+        }
+        UserStore.append_chat(username, user_entry)
+        chat_history.append(user_entry)
+
+        event_user_entry = dict(user_entry)
+        event_user_entry["metadata"] = dict(user_entry["metadata"])
+        if len(image_bytes) <= 1_500_000:
+            event_user_entry["metadata"]["uploaded_image_b64"] = base64.b64encode(image_bytes).decode("ascii")
+        yield _json_line({"type": "user_message", "message": event_user_entry})
+
+        try:
+            payload_final = None
+            streamed_answer_parts: List[str] = []
+            for event in rag_engine.stream_image_analysis_events(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                filename=filename,
+                user_note=user_note,
+                chat_history=chat_history,
+                user=username,
+            ):
+                event_type = event.get("type")
+                if event_type == "status":
+                    yield _json_line({"type": "status", "message": event.get("message", "Working...")})
+                elif event_type == "token":
+                    delta = event.get("delta", "")
+                    streamed_answer_parts.append(delta)
+                    yield _json_line({"type": "token", "delta": delta})
+                elif event_type == "final":
+                    payload_final = event.get("payload")
+
+            if not payload_final:
+                raise RuntimeError("The image analysis pipeline did not return a payload.")
+
+            assistant_entry = {
+                "role": "assistant",
+                "content": payload_final["answer_markdown"],
+                "timestamp": _utc_now(),
+                "sources": payload_final.get("sources", []),
+                "trace_id": payload_final.get("trace", {}).get("trace_id"),
+                "metadata": {
+                    "personal_context": payload_final.get("personal_context", []),
+                    "longitudinal_memory": payload_final.get("longitudinal_memory", ""),
+                    "triage_summary": payload_final.get("triage_summary", {}),
+                    "medication_alerts": payload_final.get("medication_alerts", []),
+                    "resolved_medications": payload_final.get("resolved_medications", []),
+                    "trace": payload_final.get("trace", {}),
+                    "follow_up_questions": payload_final.get("follow_up_questions", []),
+                    "image_analysis": payload_final.get("image_analysis", {}),
+                    "image_original_question": payload_final.get("image_original_question", user_note),
+                    "uploaded_image_name": filename,
+                    "uploaded_image_mime": mime_type,
+                },
+            }
+
+            UserStore.append_chat(username, assistant_entry)
+            yield _json_line({"type": "assistant_message", "message": assistant_entry})
+            yield _json_line({"type": "snapshot", "snapshot": _snapshot(username)})
+            yield _json_line({"type": "done"})
+        except ImageAnalysisError as exc:
+            error_message = (
+                "## Image Not Analysed\n\n"
+                f"{exc}\n\n"
+                "Please upload a clear JPG, PNG, or WebP medical image."
+            )
+            assistant_entry = {
+                "role": "assistant",
+                "content": error_message,
+                "timestamp": _utc_now(),
+                "sources": [],
+                "metadata": {},
+            }
+            UserStore.append_chat(username, assistant_entry)
+            yield _json_line({"type": "error", "message": str(exc), "assistant_message": assistant_entry})
+            yield _json_line({"type": "snapshot", "snapshot": _snapshot(username)})
+        except Exception as exc:
+            error_message = (
+                "## Image Analysis Unavailable\n\n"
+                f"I ran into an issue while analysing the image: `{exc}`.\n\n"
+                "Please try again with a clearer image, or describe the concern in text."
             )
             assistant_entry = {
                 "role": "assistant",

@@ -132,6 +132,58 @@ export async function streamChat(
   }
 }
 
+export async function streamImageAnalysis(
+  message: string,
+  image: File,
+  onEvent: (event: ChatStreamEvent) => void
+): Promise<void> {
+  const token = getStoredToken();
+  const form = new FormData();
+  form.append("message", message);
+  form.append("image", image);
+
+  const response = await fetch(`${API_BASE}/api/chat/image/stream`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: form
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(await readError(response));
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const processLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      onEvent(JSON.parse(trimmed) as ChatStreamEvent);
+    } catch {
+      // Ignore unparseable lines (partial flushes, heartbeats)
+    }
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) processLine(line);
+    }
+    if (buffer.trim()) processLine(buffer);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "The connection was interrupted.";
+    onEvent({ type: "error", message: `Stream interrupted: ${message}` });
+  }
+}
+
 export function uploadDocuments(files: File[], processUnverified: boolean): Promise<{
   processed: unknown[];
   pending: unknown[];

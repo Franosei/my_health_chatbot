@@ -11,6 +11,7 @@ import numpy as np
 from backend.anonymizer import DocumentAnonymizer
 from backend.document_extractor import extract_health_data_from_document
 from backend.clinical_orchestrator import ClinicalOrchestrator
+from backend.image_analysis_agent import ImageAnalysisAgent, ImageAnalysisError
 from backend.image_generator import ImageGenerator
 from backend.medication_checker import MedicationInteractionChecker
 from backend.memory_store import MemoryStore
@@ -51,6 +52,7 @@ class RAGEngine:
             query_expander=self.query_expander,
             moderation=self.moderation,
         )
+        self._image_analysis_agent = ImageAnalysisAgent(self.llm)
         self._image_generator = ImageGenerator()
         self._video_generator = VideoGenerator()
         self._medication_checker = MedicationInteractionChecker()
@@ -413,6 +415,9 @@ class RAGEngine:
         question: str,
         chat_history: Optional[List[dict]] = None,
         user: Optional[str] = None,
+        allow_generated_media: bool = True,
+        extra_trace_metadata: Optional[Dict] = None,
+        require_live_evidence: bool = False,
     ) -> Generator[Dict, None, None]:
         """
         Streams retrieval progress events and final answer tokens so the UI can
@@ -424,18 +429,41 @@ class RAGEngine:
         }
 
         # Detect if an illustration or video is needed early (fast regex, before retrieval)
-        needs_illustration = self._image_generator.detect_illustration_need(question)
-        needs_video = self._video_generator.detect_video_request(question)
+        needs_illustration = (
+            self._image_generator.detect_illustration_need(question)
+            if allow_generated_media
+            else False
+        )
+        needs_video = self._video_generator.detect_video_request(question) if allow_generated_media else False
         # Video takes priority over static illustration when both match
         if needs_video:
             needs_illustration = False
 
         bundle = self._prepare_answer_bundle(question=question, user=user)
         if bundle["kind"] == "final":
+            payload = self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user)
+            if extra_trace_metadata:
+                payload.setdefault("trace", {}).update(extra_trace_metadata)
             yield {
                 "type": "final",
-                "payload": self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user),
+                "payload": payload,
             }
+            return
+        if extra_trace_metadata:
+            bundle["extra_trace_metadata"] = dict(extra_trace_metadata)
+        if require_live_evidence and not bundle.get("combined_sources"):
+            payload = self._build_limited_payload(
+                question=question,
+                normalized_user=bundle.get("normalized_user"),
+                personal_context=bundle.get("personal_context", []),
+                retrieval_mode="required_image_evidence_unavailable",
+                expanded_queries=bundle.get("expanded_queries", [question]),
+            )
+            if extra_trace_metadata:
+                payload.setdefault("trace", {}).update(extra_trace_metadata)
+                payload["image_analysis"] = extra_trace_metadata.get("image_analysis", {})
+                payload["image_original_question"] = extra_trace_metadata.get("image_original_question", "")
+            yield {"type": "final", "payload": payload}
             return
 
         yield {
@@ -543,6 +571,76 @@ class RAGEngine:
 
         yield {"type": "final", "payload": payload}
 
+    def stream_image_analysis_events(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        filename: str,
+        user_note: str = "",
+        chat_history: Optional[List[dict]] = None,
+        user: Optional[str] = None,
+    ) -> Generator[Dict, None, None]:
+        """
+        Streams uploaded-image analysis through the same agentic evidence
+        workflow as chat, after a strict medical-image intake screen.
+        """
+        normalized_user = user.strip().lower() if user else None
+        yield {"type": "status", "message": "Checking whether the image is clinically relevant..."}
+
+        profile = UserStore.get_user_profile(normalized_user) if normalized_user else {}
+        try:
+            visual_result = self._image_analysis_agent.inspect(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                user_note=user_note,
+                user_profile=profile,
+                filename=filename,
+            )
+        except ImageAnalysisError:
+            raise
+        except Exception as exc:
+            raise ImageAnalysisError(f"Image analysis is unavailable: {exc}") from exc
+
+        if visual_result.get("analysis_status") != "accepted":
+            yield {
+                "type": "final",
+                "payload": self._build_image_refusal_payload(
+                    user_note=user_note,
+                    normalized_user=normalized_user,
+                    visual_result=visual_result,
+                ),
+            }
+            return
+
+        yield {"type": "status", "message": "Searching clinical guidance and research for the image findings..."}
+        clinical_question = self._image_analysis_agent.build_clinical_question(
+            visual_result=visual_result,
+            user_note=user_note,
+        )
+        extra_trace = {
+            "image_analysis": visual_result,
+            "image_original_question": user_note,
+            "image_uploaded_filename": filename,
+            "image_analysis_model": self._image_analysis_agent.model,
+        }
+
+        for event in self.stream_user_question_events(
+            question=clinical_question,
+            chat_history=chat_history,
+            user=user,
+            allow_generated_media=False,
+            extra_trace_metadata=extra_trace,
+            require_live_evidence=True,
+        ):
+            if event.get("type") == "final":
+                payload = event.get("payload", {})
+                payload["image_analysis"] = visual_result
+                payload["image_original_question"] = user_note
+                payload.setdefault("trace", {}).update(extra_trace)
+                yield {"type": "final", "payload": payload}
+            else:
+                yield event
+
     def _prepare_answer_bundle(self, question: str, user: Optional[str] = None) -> Dict:
         normalized_user = user.strip().lower() if user else None
 
@@ -642,6 +740,50 @@ class RAGEngine:
             "trace": trace,
         }
 
+    def _build_image_refusal_payload(
+        self,
+        user_note: str,
+        normalized_user: Optional[str],
+        visual_result: Dict,
+    ) -> Dict:
+        reason = (
+            visual_result.get("reason_if_rejected")
+            or "This image does not contain a clear medical concern that can be safely analysed."
+        )
+        answer = (
+            "## Image Not Analysed\n\n"
+            f"{reason}\n\n"
+            "Please upload a clear image of the health concern, such as a rash, wound, swelling, "
+            "colour change, medication label, test strip, or other medical finding. I can only "
+            "analyse medical images and will not assess unrelated pictures."
+        )
+        trace_id = f"trace-{uuid4().hex[:12]}"
+        trace = {
+            "trace_id": trace_id,
+            "created_at": self._utc_now(),
+            "question": user_note or "Uploaded image for analysis",
+            "answer_preview": answer[:280],
+            "sources": [],
+            "personal_context": [],
+            "retrieval_mode": "image_rejected",
+            "risk_level": "routine",
+            "image_analysis": visual_result,
+        }
+        if normalized_user:
+            UserStore.save_interaction_trace(normalized_user, trace)
+        return {
+            "answer_markdown": answer,
+            "answer_text": answer,
+            "sources": [],
+            "personal_context": [],
+            "longitudinal_memory": "",
+            "triage_summary": {},
+            "medication_alerts": [],
+            "resolved_medications": [],
+            "trace": trace,
+            "image_analysis": visual_result,
+        }
+
     def _build_limited_payload(
         self,
         question: str,
@@ -673,7 +815,13 @@ class RAGEngine:
             "trace": trace,
         }
 
-    def _finalize_answer_payload(self, question: str, raw_answer: str, bundle: Dict, run_claim_check: bool = True) -> Dict:
+    def _finalize_answer_payload(
+        self,
+        question: str,
+        raw_answer: str,
+        bundle: Dict,
+        run_claim_check: bool = True,
+    ) -> Dict:
         answer_markdown = self._link_citations(raw_answer, bundle["combined_sources"])
 
         # Prepend escalation banner to answer if policy triggered one
@@ -767,6 +915,9 @@ class RAGEngine:
             "evidence_quality": evidence_quality_report,
             "claim_alignment": claim_alignment,
         }
+        extra_trace_metadata = bundle.get("extra_trace_metadata")
+        if isinstance(extra_trace_metadata, dict):
+            trace.update(extra_trace_metadata)
         if bundle["normalized_user"]:
             UserStore.save_interaction_trace(bundle["normalized_user"], trace)
             UserStore.save_triage_summary(

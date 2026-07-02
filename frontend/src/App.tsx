@@ -14,6 +14,7 @@ import {
   FlaskConical,
   HeartPulse,
   Home,
+  Image as ImageIcon,
   ListChecks,
   LogOut,
   MessageSquare,
@@ -32,7 +33,8 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
-  Upload
+  Upload,
+  X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -55,12 +57,13 @@ import {
   setStoredToken,
   signup,
   streamChat,
+  streamImageAnalysis,
   toggleCarePlanTask,
   transcribeAudio,
   updateNote,
   uploadDocuments
 } from "./api";
-import type { AuthResponse, CarePlan, CarePlanTask, ClinicalNote, Dict, EscalationThreshold, FeedbackRating, LabReminder, MedReminder, Message, MissedCareItem, ProductConfig, Snapshot, TrialSearchResult } from "./types";
+import type { AuthResponse, CarePlan, CarePlanTask, ChatStreamEvent, ClinicalNote, Dict, EscalationThreshold, FeedbackRating, LabReminder, MedReminder, Message, MissedCareItem, ProductConfig, Snapshot, TrialSearchResult } from "./types";
 import {
   buildSeries,
   buildSymptomSeries,
@@ -147,6 +150,8 @@ const VITAL_OPTIONS = [
   ["hba1c", "HbA1c", "mmol/mol", "48"],
   ["egfr", "eGFR", "mL/min/1.73m2", "65"]
 ];
+
+const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 function App() {
   const [config, setConfig] = useState<ProductConfig | null>(null);
@@ -673,9 +678,12 @@ function ChatView({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [streamText, setStreamText] = useState("");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState("");
   const [feedbackBusy, setFeedbackBusy] = useState<Record<string, boolean>>({});
   const [panelOpen, setPanelOpen] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const role = snapshot.profile.clinical_role || snapshot.profile.role;
   const patientView = isPatientRole(role);
 
@@ -689,17 +697,33 @@ function ChatView({
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streamText, status]);
 
-  async function sendMessage(text = draft) {
-    const message = text.trim();
-    if (!message || busy) {
+  useEffect(() => {
+    if (!imageFile) {
+      setImagePreviewUrl("");
       return;
     }
+    const url = URL.createObjectURL(imageFile);
+    setImagePreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [imageFile]);
+
+  async function sendMessage(text = draft) {
+    const message = text.trim();
+    if ((!message && !imageFile) || busy) {
+      return;
+    }
+    const pendingImage = imageFile;
     setDraft("");
+    setImageFile(null);
     setBusy(true);
-    setStatus("Starting evidence review...");
+    setStatus(pendingImage ? "Checking image..." : "Starting evidence review...");
     setStreamText("");
     try {
-      await streamChat(message, (event) => {
+      const stream = pendingImage
+        ? streamImageAnalysis(message, pendingImage, handleStreamEvent)
+        : streamChat(message, handleStreamEvent);
+
+      function handleStreamEvent(event: ChatStreamEvent) {
         if (event.type === "user_message") {
           setMessages((current) => [...current, event.message]);
         }
@@ -725,13 +749,30 @@ function ChatView({
           setStreamText("");
           setStatus("");
         }
-      });
+      }
+
+      await stream;
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : "Message failed.");
     } finally {
       setBusy(false);
       setStatus("");
     }
+  }
+
+  function handleImagePick(file: File | null) {
+    if (!file) {
+      return;
+    }
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setNotice("Upload a JPG, PNG, or WebP medical image.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+      setNotice("Image uploads must be 5 MB or smaller.");
+      return;
+    }
+    setImageFile(file);
   }
 
   async function rateMessage(message: Message, rating: FeedbackRating) {
@@ -831,20 +872,55 @@ function ChatView({
         </div>
 
         <div className="composer">
+          {imageFile && (
+            <div className="composer-attachment">
+              {imagePreviewUrl && <img src={imagePreviewUrl} alt="" />}
+              <div>
+                <strong>{imageFile.name}</strong>
+                <span>{Math.max(1, Math.round(imageFile.size / 1024))} KB</span>
+              </div>
+              <button
+                className="ghost icon-btn"
+                onClick={() => setImageFile(null)}
+                type="button"
+                title="Remove image"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-            placeholder="Type a question… (Enter to send, Shift+Enter for new line)"
+            placeholder="Type a question or attach a medical image…"
             rows={2}
           />
           <div className="composer-actions">
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="sr-only"
+              onChange={(event) => {
+                handleImagePick(event.target.files?.[0] ?? null);
+                event.target.value = "";
+              }}
+            />
+            <button
+              className={`ghost icon-btn${imageFile ? " active" : ""}`}
+              onClick={() => imageInputRef.current?.click()}
+              type="button"
+              title="Attach medical image"
+            >
+              <ImageIcon size={16} />
+            </button>
             <VoiceRecorder onTranscript={(text) => setDraft((current) => `${current}${current ? " " : ""}${text}`)} />
             <div className="composer-spacer" />
-            <button className="ghost icon-btn" onClick={() => setDraft("")} type="button" title="Clear input">
+            <button className="ghost icon-btn" onClick={() => { setDraft(""); setImageFile(null); }} type="button" title="Clear input">
               <Trash2 size={14} />
             </button>
-            <button className="primary" onClick={() => sendMessage()} disabled={busy}>
+            <button className="primary" onClick={() => sendMessage()} disabled={busy || (!draft.trim() && !imageFile)}>
               <Send size={15} />
               Send
             </button>
@@ -898,6 +974,9 @@ function MessageBubble({
   const triage = metadata.triage_summary;
   const alerts = metadata.medication_alerts ?? [];
   const imageSrc = metadata.image_b64 ? `data:image/png;base64,${metadata.image_b64}` : metadata.image_url;
+  const uploadedImageSrc = metadata.uploaded_image_b64
+    ? `data:${clean(metadata.uploaded_image_mime, "image/jpeg")};base64,${metadata.uploaded_image_b64}`
+    : "";
   const feedback = metadata.feedback as Dict<any> | undefined;
   const selectedRating = clean(feedback?.rating);
   const canRate = !isUser && !transient && !!message.trace_id;
@@ -912,6 +991,12 @@ function MessageBubble({
             {message.timestamp && <span>{formatTimestamp(message.timestamp)}</span>}
             {!patientView && message.trace_id && <span className="trace-id">{message.trace_id}</span>}
           </div>
+        )}
+        {isUser && (uploadedImageSrc || metadata.uploaded_image_name) && (
+          <figure className="uploaded-image-block">
+            {uploadedImageSrc && <img src={uploadedImageSrc} alt="" />}
+            <figcaption>{clean(metadata.uploaded_image_name, "Uploaded medical image")}</figcaption>
+          </figure>
         )}
         <div className="markdown">
           <ReactMarkdown>{message.content}</ReactMarkdown>

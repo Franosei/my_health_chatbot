@@ -64,6 +64,7 @@ Create a `.env` file in the project root:
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
+OPENAI_VISION_MODEL=gpt-4o
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 
 # Email (Gmail SMTP)
@@ -140,6 +141,7 @@ Patients never see raw clinical metadata, source lists, evidence tiers, trace ID
 ### Evidence Chat
 - Streaming evidence-based responses via GPT-4o-mini
 - Role-aware clinical workflow: crisis pre-screen, intent classification, risk stratification, tiered evidence retrieval, policy gates and pathway logic applied before every answer
+- Medical image analysis for JPG, PNG and WebP uploads: non-medical images are rejected, visual findings are screened first, then the agentic evidence pipeline searches guidance and research before answering
 - Follow-up chips after each response: short first-person statements generated from the evidence that the user can tap to refine the answer
 - Voice input via OpenAI Whisper (browser microphone permission required)
 - Enter to send; Shift+Enter for a new line
@@ -307,6 +309,7 @@ requirements.txt              Python dependencies
 | LLM | OpenAI Chat Completions (gpt-4o-mini) |
 | Embeddings | OpenAI text-embedding-3-small |
 | Voice | OpenAI Whisper |
+| Image analysis | OpenAI vision-capable chat model, then agentic evidence retrieval |
 | Image generation | OpenAI gpt-image-1 |
 | Video generation | OpenAI sora-2 |
 | Biomedical literature | Europe PMC and PubMed Central |
@@ -329,6 +332,7 @@ requirements.txt              Python dependencies
 | `OPENAI_API_KEY` | Yes | OpenAI API key |
 | `OPENAI_BASE_URL` | Yes | OpenAI base URL |
 | `OPENAI_MODEL` | Yes | Chat model name |
+| `OPENAI_VISION_MODEL` | No | Vision-capable model for medical image intake (default: OPENAI_MODEL or gpt-4o) |
 | `OPENAI_EMBEDDING_MODEL` | No | Embedding model (default: text-embedding-3-small) |
 | `DATABASE_URL` | No | PostgreSQL connection string; uses local JSON if unset |
 | `SMTP_HOST` | No | SMTP host (e.g. smtp.gmail.com) |
