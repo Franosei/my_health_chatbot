@@ -266,7 +266,7 @@ class RAGEngine:
                     extracted = extract_health_data_from_document(raw_text, path.name)
                     source_note = f"Auto-extracted from {path.name}"
 
-                    # Vitals / lab results — content-based dedup (type + value + date)
+                    # Vitals / lab results -- content-based dedup (type + value + date)
                     existing_vitals = UserStore.get_vitals(normalized_user, limit=None)
                     existing_keys = {
                         (v.get("type", "").lower(), v.get("value", "").lower(), v.get("recorded_on", ""))
@@ -292,7 +292,7 @@ class RAGEngine:
                             ).strip(),
                         })
 
-                    # Medications — UserStore.save_medication deduplicates by name
+                    # Medications -- UserStore.save_medication deduplicates by name
                     for med in extracted.get("medications", []):
                         if not str(med.get("name") or "").strip():
                             continue
@@ -308,7 +308,7 @@ class RAGEngine:
                             ).strip(),
                         })
 
-                    # Allergies — UserStore.save_allergy deduplicates by name
+                    # Allergies -- UserStore.save_allergy deduplicates by name
                     for allergy in extracted.get("allergies", []):
                         if not str(allergy.get("name") or "").strip():
                             continue
@@ -533,7 +533,7 @@ class RAGEngine:
             question=question,
             raw_answer=raw_answer,
             bundle=bundle,
-            run_claim_check=False,  # skip in streaming path — audit-only, saves ~0.8 s
+            run_claim_check=False,  # skip in streaming path -- audit-only, saves ~0.8 s
         )
         if illustration:
             payload["image_url"] = illustration.image_url
@@ -862,7 +862,7 @@ class RAGEngine:
             clinical_decision=clinical_decision,
         )
 
-        # Append structured safety netting block — triggers come from triage_summary, no hardcoding
+        # Append structured safety netting block -- triggers come from triage_summary, no hardcoding
         safety_net = self._build_safety_net_block(risk_level, triage_summary, role_config)
         if safety_net and "**Return immediately if**" not in answer_markdown:
             answer_markdown = answer_markdown + safety_net
@@ -1433,7 +1433,7 @@ class RAGEngine:
             severity = (allergy.get("severity") or "").strip()
             line = name
             if reaction:
-                line += f" — {reaction}"
+                line += f" -- {reaction}"
             if severity and severity not in ("unknown", ""):
                 line += f" ({severity})"
             lines.append(line)
@@ -1453,9 +1453,9 @@ class RAGEngine:
         Builds the structured patient context used exclusively for follow-up question generation.
         Rules:
         - Vitals/labs: deduplicate by type (most recent per type), include only if recorded within 30 days.
-        - Medications: include all regardless of age — the LLM may ask whether the patient is still
+        - Medications: include all regardless of age -- the LLM may ask whether the patient is still
           taking a medication if it could be causative.
-        - Allergies: include all — always relevant if causally connected to the current issue.
+        - Allergies: include all -- always relevant if causally connected to the current issue.
         - Conditions: include active/current only.
         - Symptoms: include only those logged within the last 30 days.
         """
@@ -1494,11 +1494,11 @@ class RAGEngine:
 
         if vital_lines:
             sections.append(
-                "RECENT VITALS AND LABS (last 30 days — quote these exact values in follow-up questions):\n"
+                "RECENT VITALS AND LABS (last 30 days -- quote these exact values in follow-up questions):\n"
                 + "\n".join(f"- {line}" for line in vital_lines)
             )
         else:
-            sections.append("RECENT VITALS AND LABS: None recorded in the last 30 days — do not reference vitals.")
+            sections.append("RECENT VITALS AND LABS: None recorded in the last 30 days -- do not reference vitals.")
 
         # --- MEDICATIONS: all, no date filter ---
         med_lines: List[str] = []
@@ -1563,7 +1563,7 @@ class RAGEngine:
             if status and status != "unknown":
                 line += f" ({status})"
             if recorded:
-                line += f" — since {recorded}"
+                line += f" -- since {recorded}"
             condition_lines.append(line)
 
         if condition_lines:
@@ -1603,7 +1603,7 @@ class RAGEngine:
     def _build_safety_net_block(risk_level: str, triage_summary: dict, role_config) -> str:
         """
         Appends a structured safety netting block for elevated/urgent/crisis answers.
-        Escalation triggers come entirely from the LLM-generated triage_summary — no
+        Escalation triggers come entirely from the LLM-generated triage_summary -- no
         hardcoded clinical content here.
         """
         if risk_level not in ("elevated", "urgent", "crisis"):
@@ -1634,7 +1634,7 @@ class RAGEngine:
         if is_clinical:
             return (
                 "\n\n---\n"
-                "**Safety Netting — Return Criteria**\n\n"
+                "**Safety Netting -- Return Criteria**\n\n"
                 "Reassess or escalate if any of the following occur:\n"
                 f"{trigger_lines}\n\n"
                 "Document the safety-netting advice given and the agreed review timeframe."

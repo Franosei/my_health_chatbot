@@ -4,9 +4,9 @@
 
 # FlynnMed
 
-FlynnMed is a clinical AI platform for patients and healthcare professionals. It gives signed-in users a role-aware workspace for evidence-based health questions, medical image triage, document upload, symptom and measurement tracking, medication management, agentic care-plan generation, SOAP clinical notes, GP-ready summaries, clinical trial search and secure email delivery — with every answer passed through deterministic safety gates and evidence-tier ranking before it reaches the user.
+FlynnMed is a clinical AI platform for patients and healthcare professionals. It gives signed-in users a role-aware workspace for evidence-based health questions, medical image triage, document upload, symptom and measurement tracking, medication management, agentic care-plan generation, SOAP clinical notes, GP-ready summaries, clinical trial search and secure email delivery -- with every answer passed through deterministic safety gates and evidence-tier ranking before it reaches the user.
 
-The Python backend (`backend/`) runs the full clinical workflow: crisis pre-screen, intent and risk classification, role routing, tiered evidence retrieval, hard policy gates, note generation, care-plan generation and email. The React/TypeScript frontend (`frontend/`) is a single-page app that talks to `/api/*` endpoints served by `backend/api.py`. Both are built and deployed as one ASGI service — there is no separate frontend host.
+The Python backend (`backend/`) runs the full clinical workflow: crisis pre-screen, intent and risk classification, role routing, tiered evidence retrieval, hard policy gates, note generation, care-plan generation and email. The React/TypeScript frontend (`frontend/`) is a single-page app that talks to `/api/*` endpoints served by `backend/api.py`. Both are built and deployed as one ASGI service -- there is no separate frontend host.
 
 This README is written for developers working on the codebase: it documents the system architecture, every backend module, the full REST API surface, environment configuration and deployment. If you're looking for end-user documentation, see the [Features](#features) section below instead.
 
@@ -50,16 +50,16 @@ FlynnMed is organised as seven layers, from the role-aware UI down to governance
 ![FlynnMed unified clinical AI platform architecture](image/architecture.png)
 
 ### 1. Experience layer
-Role-aware React SPA (`frontend/src/App.tsx`) rendering the patient workspace, clinician dashboard, evidence chat, voice input, image upload, document upload, health timeline and trial search — all from one component tree, gated on the signed-in user's `role`.
+Role-aware React SPA (`frontend/src/App.tsx`) rendering the patient workspace, clinician dashboard, evidence chat, voice input, image upload, document upload, health timeline and trial search -- all from one component tree, gated on the signed-in user's `role`.
 
 ### 2. Access and API layer
 `backend/api.py` is the single FastAPI application. It owns:
-- **Auth & consent** — JWT issuance/verification (HMAC-signed, `_token_secret()`), bcrypt password hashing, signup consent gate
-- **Profile & sessions** — `/api/me`, `/api/snapshot`, `/api/profile`
-- **REST / streaming API** — all `/api/*` endpoints, including Server-Sent Events streaming for chat (`/api/chat/stream`, `/api/chat/image/stream`)
-- **MCP server** — `backend/mcp_server.py` mounted at `/mcp` on the same process
-- **Role-aware UI state** — `backend/role_router.py` and `backend/product_config.py` resolve profile role strings into `RoleConfig` bundles the frontend renders against
-- **Endpoint router** — FastAPI also serves the built `frontend/dist` as static files, so one process handles both the API and the SPA
+- **Auth & consent** -- JWT issuance/verification (HMAC-signed, `_token_secret()`), bcrypt password hashing, signup consent gate
+- **Profile & sessions** -- `/api/me`, `/api/snapshot`, `/api/profile`
+- **REST / streaming API** -- all `/api/*` endpoints, including Server-Sent Events streaming for chat (`/api/chat/stream`, `/api/chat/image/stream`)
+- **MCP server** -- `backend/mcp_server.py` mounted at `/mcp` on the same process
+- **Role-aware UI state** -- `backend/role_router.py` and `backend/product_config.py` resolve profile role strings into `RoleConfig` bundles the frontend renders against
+- **Endpoint router** -- FastAPI also serves the built `frontend/dist` as static files, so one process handles both the API and the SPA
 
 ### 3. Governed clinical intelligence core
 `backend/clinical_orchestrator.py` (`ClinicalOrchestrator`) is the central workflow engine every chat message passes through, in five stages:
@@ -67,12 +67,12 @@ Role-aware React SPA (`frontend/src/App.tsx`) rendering the patient workspace, c
 | Stage | Responsibility | Key modules |
 |---|---|---|
 | A. Control plane | Moderation, crisis pre-screen, role resolution, intent & risk classification, policy gate evaluation, pathway selection | `moderation_ml.py`, `intent_risk_classifier.py`, `role_router.py`, `policy_engine.py`, `pathways/` |
-| B. Reasoning plane | Bounded tool router — an LLM tool-calling loop that decides which evidence sources to query before any answer is drafted | `clinical_orchestrator.py`, `official_guidance.py`, `pubmed_search.py`, `medication_checker.py`, `clinical_trials.py`, `memory_store.py` |
+| B. Reasoning plane | Bounded tool router -- an LLM tool-calling loop that decides which evidence sources to query before any answer is drafted | `clinical_orchestrator.py`, `official_guidance.py`, `pubmed_search.py`, `medication_checker.py`, `clinical_trials.py`, `memory_store.py` |
 | C. Evidence handling | Provenance tracking, tiering, similarity scoring, rank & truncate into structured evidence | `evidence_ranker.py`, `evidence_schema.py` |
-| D. Extraction boundary | Per-source, facts-only extraction with conflict detection and confidence scoring — this is the anti-hallucination layer between raw sources and the LLM | `evidence_extractor.py` |
+| D. Extraction boundary | Per-source, facts-only extraction with conflict detection and confidence scoring -- this is the anti-hallucination layer between raw sources and the LLM | `evidence_extractor.py` |
 | E. Disclosure & synthesis | Role-scoped response schema, patient-facing vs clinician-facing construction, safety-netting text | `response_templates.py`, `summarizer.py` |
 
-Authority tiers applied in stage C: **Tier 1** — NHS guidance and NICE guidelines · **Tier 2** — systematic reviews and Cochrane-style evidence · **Tier 3** — primary research from Europe PMC / PubMed Central.
+Authority tiers applied in stage C: **Tier 1** -- NHS guidance and NICE guidelines · **Tier 2** -- systematic reviews and Cochrane-style evidence · **Tier 3** -- primary research from Europe PMC / PubMed Central.
 
 ### 4. Clinical application services
 Domain workflows built on top of the governed core: `clinical_notes.py` (SOAP notes), `gp_summary.py` (GP handover PDF export), `medication_checker.py` (openFDA interaction checks), `symptom_tracker.py` (trend summaries), `care_plan_agent.py` + `care_plan_store.py` (agentic care-plan generation), `triage_summary.py` (structured triage output), `email_service.py` (note and alert delivery), `image_analysis_agent.py` (medical image intake), `voice_transcriber.py` (Whisper transcription).
@@ -84,13 +84,13 @@ Persistent patient context, all owned by `user_store.py` (`UserStore`): profile,
 OpenAI (chat, embeddings, vision, Whisper, image/video generation), NHS Conditions and NICE guidance, Europe PMC and PubMed Central, openFDA drug labels, ClinicalTrials.gov, SMTP (Gmail or any provider) for email, PyMuPDF for PDF parsing and export.
 
 ### 7. Governance, audit, and observability
-Every gate decision, tool call and evidence tier is reconstructable: `policy_engine.py` logs each of its eight hard gates, `audit_models.py` defines `ClinicalAuditTrace` and `PolicyGateRecord`, and `feedback_store.py` persists anonymised thumbs-up/down quality signals (intent, risk level, role, pathway, evidence tiers, policy gates, alignment flags — never question or answer text) to PostgreSQL for offline review.
+Every gate decision, tool call and evidence tier is reconstructable: `policy_engine.py` logs each of its eight hard gates, `audit_models.py` defines `ClinicalAuditTrace` and `PolicyGateRecord`, and `feedback_store.py` persists anonymised thumbs-up/down quality signals (intent, risk level, role, pathway, evidence tiers, policy gates, alignment flags -- never question or answer text) to PostgreSQL for offline review.
 
 ### Component diagram
 
 ```mermaid
 flowchart TD
-    User[Signed-in user] --> React[React client — frontend/src/App.tsx]
+    User[Signed-in user] --> React[React client -- frontend/src/App.tsx]
     React --> API[backend/api.py]
 
     API --> Store[backend/user_store.py]
@@ -118,7 +118,7 @@ flowchart TD
     API --> Feedback[backend/feedback_store.py]
 
     Store --> Local[users.json and data/uploads]
-    Store --> Postgres[(PostgreSQL — when DATABASE_URL is set)]
+    Store --> Postgres[(PostgreSQL -- when DATABASE_URL is set)]
     Feedback --> Postgres
 ```
 
@@ -285,7 +285,7 @@ Evidence is retrieved and ranked across three tiers:
 
 ### Feedback and Quality Signals
 - Thumbs-up / thumbs-down rating on any assistant response (`POST /api/feedback`)
-- Stores only anonymised quality metadata — intent category, risk level, user role, pathway used, evidence tiers, source count, policy gates and alignment flags
+- Stores only anonymised quality metadata -- intent category, risk level, user role, pathway used, evidence tiers, source count, policy gates and alignment flags
 - Never stores question text, answer text, username or email address
 - Persisted to PostgreSQL via `backend/feedback_store.py` for offline model and prompt quality review
 
@@ -433,7 +433,7 @@ All endpoints are served from `backend/api.py` and prefixed `/api` unless noted.
 
 ## Model Context Protocol (MCP) Server
 
-`backend/mcp_server.py` mounts at `/mcp` on the same server process — no separate service needed. It works in Railway deployments (streamable HTTP) and locally (stdio), and is guarded by the optional `MCP_API_KEY` environment variable. It exposes five tools to AI agents and Claude Desktop:
+`backend/mcp_server.py` mounts at `/mcp` on the same server process -- no separate service needed. It works in Railway deployments (streamable HTTP) and locally (stdio), and is guarded by the optional `MCP_API_KEY` environment variable. It exposes five tools to AI agents and Claude Desktop:
 
 | Tool | Description |
 |---|---|
@@ -519,7 +519,7 @@ Install the `mcp` package first: `pip install mcp`.
 | `SMTP_PASSWORD` | No | App password for the sender account |
 | `EMAIL_FROM` | No | Display name and address, e.g. `FlynnMed <you@gmail.com>` |
 | `MCP_API_KEY` | No | Bearer token to restrict access to the /mcp endpoint |
-| `APP_SECRET` / `SECRET_KEY` | No | HMAC secret used to sign session JWTs; falls back to a local dev secret if unset — always set this in production |
+| `APP_SECRET` / `SECRET_KEY` | No | HMAC secret used to sign session JWTs; falls back to a local dev secret if unset -- always set this in production |
 
 ---
 
@@ -532,7 +532,7 @@ py -m pip install pytest
 py -m pytest backend/
 ```
 
-Current coverage includes evidence ranking, response templates, the summarizer, PubMed search, moderation, image analysis, image generation, video generation and clinical decision support. There is no frontend test suite yet — verify UI changes by running `npm run dev` against a local backend and exercising the affected flow in the browser.
+Current coverage includes evidence ranking, response templates, the summarizer, PubMed search, moderation, image analysis, image generation, video generation and clinical decision support. There is no frontend test suite yet -- verify UI changes by running `npm run dev` against a local backend and exercising the affected flow in the browser.
 
 ---
 
@@ -597,7 +597,7 @@ Confirm `MCP_API_KEY` in your environment matches the key in `claude_desktop_con
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT -- see [LICENSE](LICENSE).
 
 ---
 

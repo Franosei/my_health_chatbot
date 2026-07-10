@@ -1,6 +1,6 @@
 # MCP Server
 
-FlynnMed exposes clinical tools via MCP — works both locally and on Railway.
+FlynnMed exposes clinical tools via MCP -- works both locally and on Railway.
 
 ## Tools exposed
 
@@ -28,7 +28,7 @@ conditions and medications. Returns ranked trial results.
 
 ### Deployed on Railway (recommended)
 The MCP server is mounted automatically at `/mcp` on your Railway service.
-No separate process needed — it runs as part of the main app.
+No separate process needed -- it runs as part of the main app.
 
 Add to `claude_desktop_config.json`:
 ```json
@@ -46,7 +46,7 @@ Add to `claude_desktop_config.json`:
 
 Set `MCP_API_KEY` in Railway environment variables to restrict access.
 
-### Local (stdio — dev only)
+### Local (stdio -- dev only)
 ```bash
 pip install mcp
 python -m backend.mcp_server

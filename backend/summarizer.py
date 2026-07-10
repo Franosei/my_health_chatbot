@@ -19,7 +19,7 @@ class LLMHelper:
     Wrapper around OpenAI's Chat Completions API for question answering and summarization.
     """
 
-    # gpt-4o for all answer generation — quality over cost for a health application.
+    # gpt-4o for all answer generation -- quality over cost for a health application.
     # gpt-4o-mini is used only for cheap auxiliary calls (triage JSON, extraction, etc.)
     ANSWER_MODEL = "gpt-4o"
     AUX_MODEL = "gpt-4o-mini"
@@ -69,24 +69,24 @@ class LLMHelper:
                     "3. Cite every factual claim inline with source markers [S1], [S1][S2], etc.\n"
                     "4. Do not state a definitive diagnosis. For clinicians, label impressions as provisional.\n"
                     "5. Always surface emergency or urgent patterns before educational content.\n"
-                    "6. Synthesize across sources — do not copy any single source.\n"
+                    "6. Synthesize across sources -- do not copy any single source.\n"
                     "7. Prioritize Tier 1 (formal guidance) first, then Tier 2/3 for nuance.\n"
                     "8. CAUSAL REASONING: Before composing your answer, review the longitudinal patient "
                     "memory. Reason explicitly about how this patient's specific conditions, medications, "
                     "lab results, and vitals modify the risk, differential, or management of their question. "
-                    "Name the connection out loud — do not silently ignore it.\n"
+                    "Name the connection out loud -- do not silently ignore it.\n"
                     "9. Evidence-quality labels are binding: use patient_aligned sources for patient-specific "
                     "guidance; use question_aligned or background_only sources only for general context. "
                     "Never imply that background-only evidence has been validated against the patient profile.\n"
                     "10. If a patient-profile fact is missing, say it is not recorded. Do not infer age, sex, "
                     "medications, diagnoses, allergies, pregnancy status, or test results.\n"
-                    "11. Do NOT add a disclaimer footer — one is appended automatically.\n\n"
-                    "SPECIFICITY REQUIREMENTS — these are mandatory:\n"
+                    "11. Do NOT add a disclaimer footer -- one is appended automatically.\n\n"
+                    "SPECIFICITY REQUIREMENTS -- these are mandatory:\n"
                     "- Quote the patient's actual recorded values where relevant. "
                     "Never write 'your blood pressure appears elevated' when you have the number; "
                     "write 'your last recorded BP of X/Y mmHg on [date] is Stage 2 hypertension'.\n"
                     "- Name every medication, condition, lab result, and vital sign by its actual name "
-                    "from the patient record — never say 'your medication' or 'your condition'.\n"
+                    "from the patient record -- never say 'your medication' or 'your condition'.\n"
                     "- Give concrete timeframes: not 'see a doctor soon' but 'book a GP appointment "
                     "within 2 working days' or 'seek same-day urgent review'.\n"
                     "- Give threshold values: not 'if it gets worse' but 'return if systolic BP exceeds "
@@ -94,7 +94,7 @@ class LLMHelper:
                     "- Every monitoring point must have a measurable threshold, not just a description.\n"
                     "- For clinical users: include specific investigation targets, drug doses where the "
                     "evidence explicitly supports them, and escalation criteria.\n\n"
-                    "FORBIDDEN — never write these vague phrases:\n"
+                    "FORBIDDEN -- never write these vague phrases:\n"
                     "'consult a healthcare professional', 'seek medical advice if concerned', "
                     "'this varies from person to person', 'it is always best to speak to your doctor', "
                     "'you should discuss this with your GP', 'everyone is different'. "
@@ -148,7 +148,7 @@ class LLMHelper:
                     + (
                         "MANDATORY: The patient's longitudinal memory contains specific lab values, vitals, "
                         "conditions, and medications. You MUST reference these by their actual numbers and names "
-                        "in your answer — connect this patient's specific data to your guidance.\n\n"
+                        "in your answer -- connect this patient's specific data to your guidance.\n\n"
                         if has_patient_data else ""
                     )
                     + "Every evidence-based statement must include source markers.\n"
@@ -197,7 +197,7 @@ class LLMHelper:
                     "6. If a section has no reliable facts, write `None noted`.\n"
                     "7. If there is no durable patient-specific information at all, return the existing memory unchanged.\n"
                     "8. Never invent medications, diagnoses, allergies, dates, or test results.\n"
-                    "9. Write in plain text only — no markdown, no asterisks, no bold, no bullet dashes, "
+                    "9. Write in plain text only -- no markdown, no asterisks, no bold, no bullet dashes, "
                     "no hyphens as list markers. Each fact should be a short plain sentence or phrase."
                 ),
             },
@@ -332,7 +332,7 @@ class LLMHelper:
             return []
 
         source_block = "\n".join(
-            f"[{s['source_id']}] {s.get('title', '')} — {s.get('snippet', '')[:200]}"
+            f"[{s['source_id']}] {s.get('title', '')} -- {s.get('snippet', '')[:200]}"
             for s in source_briefings[:8]
         )
 
@@ -389,7 +389,7 @@ class LLMHelper:
     ) -> list[str]:
         profile_text = self._render_profile_summary(user_profile)
         patient_data = (patient_context or "").strip() or "No structured patient data available."
-        # Last 3 conversation turns — full content, no truncation
+        # Last 3 conversation turns -- full content, no truncation
         recent_turns = ""
         if chat_history:
             turns = [
@@ -407,26 +407,26 @@ class LLMHelper:
                 "role": "system",
                 "content": (
                     "You generate clickable follow-up chips shown after a clinical answer.\n\n"
-                    "A chip is a SHORT STATEMENT in the patient's voice — something they might "
+                    "A chip is a SHORT STATEMENT in the patient's voice -- something they might "
                     "want to CONFIRM as true about themselves to refine the answer. "
                     "Clicking a chip means the patient is saying 'yes, I have / experience this.'\n\n"
                     "STRICT RULES:\n"
-                    "1. Chips must come from what the EVIDENCE AND ANSWER raised — risk factors, "
+                    "1. Chips must come from what the EVIDENCE AND ANSWER raised -- risk factors, "
                     "associated symptoms, red flags, lifestyle triggers, or family history the "
                     "research identified as relevant. Do NOT invent generic health questions.\n"
                     "2. Never ask something the patient already described in their question.\n"
                     "3. Never include source counts, numbers of papers, or any metadata from the "
-                    "answer — chips are about the PATIENT, not the evidence database.\n"
+                    "answer -- chips are about the PATIENT, not the evidence database.\n"
                     "4. Each chip 'display' must be a short first-person statement, max 8 words:\n"
                     "   GOOD: 'I also have a fever', 'My dad had a heart attack', "
                     "'Pain spreads to my jaw', 'I smoke about 10 a day'\n"
                     "   BAD: 'How long have you had symptoms?', '3 sources reviewed', "
                     "'Have you noticed any other symptoms?'\n"
-                    "5. Each chip 'prompt' is what gets sent to the model — it must:\n"
+                    "5. Each chip 'prompt' is what gets sent to the model -- it must:\n"
                     "   a) Start by identifying what the original question was about\n"
                     "   b) State the confirmation as a fact the patient is adding\n"
                     "   c) Ask how this changes or refines the answer\n"
-                    "   Example: 'Regarding my sore throat question — I also have a fever of "
+                    "   Example: 'Regarding my sore throat question -- I also have a fever of "
                     "around 38.5°C. Does this change whether I need antibiotics or a GP visit?'\n\n"
                     "Return JSON: {'questions': [{\"display\": str, \"prompt\": str}, ...]}, "
                     "up to 5 items."
@@ -514,7 +514,7 @@ class LLMHelper:
 
         fragments = []
 
-        # Demographics — listed first as they modify almost every clinical guideline
+        # Demographics -- listed first as they modify almost every clinical guideline
         dob = (user_profile.get("date_of_birth") or "").strip()
         age = compute_current_age(dob)
         if age is not None:

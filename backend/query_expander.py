@@ -57,7 +57,7 @@ class QueryExpander:
         """
         Generates history-enriched PubMed queries that capture causal and dependency
         relationships between the patient's known conditions and their current question.
-        The LLM uses the patient's actual stored history to form combined queries —
+        The LLM uses the patient's actual stored history to form combined queries --
         no conditions or symptom pairs are hardcoded here.
         """
         normalized_question = " ".join((user_question or "").split()).strip()

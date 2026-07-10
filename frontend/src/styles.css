@@ -1138,7 +1138,7 @@ label {
   font-weight: 850;
 }
 
-/* Trace ID — smaller and muted, clinicians only */
+/* Trace ID -- smaller and muted, clinicians only */
 .trace-id {
   font-size: 0.72rem;
   color: var(--muted);

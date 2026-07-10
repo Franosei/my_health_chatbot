@@ -121,7 +121,7 @@ class IntentRiskClassifier:
                 intent_category="crisis",
                 risk_level="crisis",
                 escalation_required=True,
-                escalation_reason="Potential emergency symptoms detected — please seek immediate help.",
+                escalation_reason="Potential emergency symptoms detected -- please seek immediate help.",
                 crisis_detected=True,
                 pathway_hint="general_triage",
                 confidence=0.95,
@@ -135,7 +135,7 @@ class IntentRiskClassifier:
             return self._safe_default()
 
     def _crisis_prescreen(self, question: str) -> bool:
-        """Fast regex check — runs synchronously before any LLM call."""
+        """Fast regex check -- runs synchronously before any LLM call."""
         text = (question or "").strip()
         return any(pattern.search(text) for pattern in _CRISIS_PATTERNS)
 
@@ -145,7 +145,7 @@ class IntentRiskClassifier:
         role_hint = f"The user's clinical role is: {role_key}." if role_key else ""
         pregnancy_hint = ""
         if "pregnan" in question.lower() or role_key == "midwife":
-            pregnancy_hint = " Note: pregnancy context may be present — apply maternity flags carefully."
+            pregnancy_hint = " Note: pregnancy context may be present -- apply maternity flags carefully."
 
         history_block = ""
         if patient_history is not None:
@@ -170,23 +170,23 @@ class IntentRiskClassifier:
             "- risk_level: one of [routine, elevated, urgent, crisis]\n"
             "- vulnerable_flags: array of applicable flags from "
             "[pregnancy, paediatric, elderly, renal_impairment, immunocompromised, postpartum, newborn]\n"
-            "- escalation_required: boolean — true if the question suggests urgent clinical need\n"
+            "- escalation_required: boolean -- true if the question suggests urgent clinical need\n"
             "- escalation_reason: short string (≤60 chars) explaining why escalation is needed, "
             "or empty string if not required\n"
             "- pathway_hint: one of [general_triage, maternity, msk, medications, chronic_conditions]\n"
             "- confidence: float 0.0–1.0\n"
-            "- presentation_hint: one of the following — set ONLY if the description clearly matches, "
+            "- presentation_hint: one of the following -- set ONLY if the description clearly matches, "
             "otherwise use 'none':\n"
-            "  'thunderclap_headache' — sudden-onset severe headache described as the worst ever, "
+            "  'thunderclap_headache' -- sudden-onset severe headache described as the worst ever, "
             "coming on in seconds; the patient does not need to use those exact words.\n"
-            "  'possible_sepsis' — ALL THREE present: altered mental state/confusion AND "
+            "  'possible_sepsis' -- ALL THREE present: altered mental state/confusion AND "
             "fever/high temperature AND reduced urine output.\n"
-            "  'recurrent_blackout' — multiple episodes of transient loss of consciousness, "
+            "  'recurrent_blackout' -- multiple episodes of transient loss of consciousness, "
             "near-fainting, or vision going black; must be recurrent (more than once).\n"
-            "  'chronic_cough_red_flags' — cough lasting 8+ weeks WITH any of: coughing blood, "
+            "  'chronic_cough_red_flags' -- cough lasting 8+ weeks WITH any of: coughing blood, "
             "unexplained weight loss, or drenching night sweats.\n"
-            "  'chronic_cough_no_red_flags' — cough lasting 8+ weeks WITHOUT those red flags.\n"
-            "  'none' — none of the above clearly apply.\n\n"
+            "  'chronic_cough_no_red_flags' -- cough lasting 8+ weeks WITHOUT those red flags.\n"
+            "  'none' -- none of the above clearly apply.\n\n"
             f"Question: {question}\n\n"
             "Return only valid JSON, no other text."
         )
@@ -225,7 +225,7 @@ class IntentRiskClassifier:
     def _safe_default() -> IntentClassification:
         """
         Fallback when LLM classification fails.
-        Returns the most conservative safe default without any keyword or symptom matching —
+        Returns the most conservative safe default without any keyword or symptom matching --
         downstream systems (policy gate, clinical decision support) apply their own logic.
         """
         return IntentClassification(

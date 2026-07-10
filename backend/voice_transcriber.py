@@ -40,5 +40,5 @@ class VoiceTranscriber:
             )
             return (result.text or "").strip()
         except Exception as exc:
-            print(f"VoiceTranscriber: transcription failed — {exc}")
+            print(f"VoiceTranscriber: transcription failed -- {exc}")
             return ""

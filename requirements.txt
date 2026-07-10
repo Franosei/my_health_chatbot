@@ -15,7 +15,7 @@ numpy
 # Optional persistent cloud user store
 psycopg[binary]
 
-# MCP server (Model Context Protocol — expose clinical tools to  agents)
+# MCP server (Model Context Protocol -- expose clinical tools to  agents)
 mcp
 
 # Safety / moderation

@@ -262,14 +262,14 @@ Patient context:
 - Recent health chat context: {chat_summary if chat_summary else "none"}
 
 AGENT RULES:
-1. Use tools to gather real evidence — do not invent guidelines or statistics.
+1. Use tools to gather real evidence -- do not invent guidelines or statistics.
 2. Search at minimum: (a) NHS/NICE monitoring targets and treatment thresholds, (b) lifestyle evidence (diet, exercise, sleep), (c) escalation/red-flag criteria.
-3. For each lifestyle domain (diet, exercise, sleep, weight, mental health, smoking, alcohol) provide specific, actionable, evidence-grounded advice — minimum 2-3 sentences per domain.
-4. Daily tasks must be concrete and achievable (e.g. "Take metformin 500mg with breakfast" — not "manage diabetes").
+3. For each lifestyle domain (diet, exercise, sleep, weight, mental health, smoking, alcohol) provide specific, actionable, evidence-grounded advice -- minimum 2-3 sentences per domain.
+4. Daily tasks must be concrete and achievable (e.g. "Take metformin 500mg with breakfast" -- not "manage diabetes").
 5. Lab reminders must use correct NHS/NICE frequencies in months.
 6. Escalation thresholds must state real clinical values (e.g. "BP > 180/120 mmHg" not "very high BP").
 7. Safety notes must flag medication interactions, red flags, and safeguarding concerns specific to this condition.
-8. After gathering evidence, generate the final plan JSON only — no prose outside the JSON."""
+8. After gathering evidence, generate the final plan JSON only -- no prose outside the JSON."""
 
         messages: List[Dict] = [
             {"role": "system", "content": system_prompt},
@@ -314,7 +314,7 @@ AGENT RULES:
                 if fname == "search_nhs_guidelines":
                     cond = args.get("condition", condition)
                     aspect = args.get("aspect", "")
-                    emit(f"Searching NHS/NICE: {cond} — {aspect or 'guidelines'}")
+                    emit(f"Searching NHS/NICE: {cond} -- {aspect or 'guidelines'}")
                     result = self._nhs(f"{cond} {aspect}".strip())
 
                 elif fname == "search_pubmed_evidence":
@@ -459,7 +459,7 @@ AGENT RULES:
                 abstract = (r.get("abstract") or "")[:450]
                 year = r.get("year", "")
                 journal = r.get("journal", "")
-                parts.append(f"[{title} — {journal} {year}]\n{abstract}")
+                parts.append(f"[{title} -- {journal} {year}]\n{abstract}")
             return "\n\n---\n\n".join(parts)
         except Exception as exc:
             return f"PubMed error: {exc}"

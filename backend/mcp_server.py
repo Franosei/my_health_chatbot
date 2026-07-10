@@ -16,15 +16,15 @@ Deployed (Railway):
       }
     }
 
-Local (stdio — Claude Desktop direct):
+Local (stdio -- Claude Desktop direct):
   python -m backend.mcp_server
 
 Tools:
-  get_patient_context           — full patient profile, vitals, meds, conditions
-  extract_article_evidence      — structured evidence extraction from a medical article
-  generate_clinical_note        — generate a SOAP note from a consultation
-  send_health_email             — send clinical note or urgent alert by email
-  search_trials_for_patient     — search ClinicalTrials.gov for this patient
+  get_patient_context           -- full patient profile, vitals, meds, conditions
+  extract_article_evidence      -- structured evidence extraction from a medical article
+  generate_clinical_note        -- generate a SOAP note from a consultation
+  send_health_email             -- send clinical note or urgent alert by email
+  search_trials_for_patient     -- search ClinicalTrials.gov for this patient
 """
 from __future__ import annotations
 
@@ -202,8 +202,8 @@ def send_health_email(
     Send a health email to the user.
 
     email_type:
-    - "clinical_note" — sends a saved SOAP note (requires note_id)
-    - "urgent_alert"  — sends an urgent care alert (uses urgency_level + reason)
+    - "clinical_note" -- sends a saved SOAP note (requires note_id)
+    - "urgent_alert"  -- sends an urgent care alert (uses urgency_level + reason)
 
     Returns {"ok": true, "sent_to": "email"} or {"error": "message"}.
     """

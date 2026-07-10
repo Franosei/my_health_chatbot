@@ -123,7 +123,7 @@ def generate_soap_note(
 ) -> Dict:
     """
     Generate a SOAP note from the conversation context and patient profile.
-    Returns a note dict ready for storage. Does NOT save — caller decides.
+    Returns a note dict ready for storage. Does NOT save -- caller decides.
     """
     from backend.summarizer import LLMHelper
 
@@ -187,7 +187,7 @@ def generate_soap_note(
         "Return ONLY a JSON object with these exact string fields:\n"
         "{\n"
         '  "subjective": "2-4 sentences of patient narrative in clinical language.",\n'
-        '  "objective": "Formatted text of objective findings — demographics, conditions, meds, vitals each on a new line.',
+        '  "objective": "Formatted text of objective findings -- demographics, conditions, meds, vitals each on a new line.',
         ' Use plain text, not nested JSON.",\n'
         '  "assessment": "2-4 sentences: clinical impression, key findings, risk level, differentials.",\n'
         '  "plan": "Numbered steps as a single string, each step on a new line:\\n1. Step one\\n2. Step two\\n3. Step three"\n'
@@ -210,7 +210,7 @@ def generate_soap_note(
         sections = {
             "subjective": f"Patient enquired about: {question}. Conversation context: {conversation_summary[:200]}",
             "objective": objective_section,
-            "assessment": "Unable to auto-generate assessment — please complete manually.",
+            "assessment": "Unable to auto-generate assessment -- please complete manually.",
             "plan": "Please complete this section manually based on clinical judgement.",
         }
 

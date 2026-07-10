@@ -82,7 +82,7 @@ def compute_current_age(date_of_birth: str) -> Optional[int]:
     """
     Compute the patient's current age from their stored date of birth (YYYY-MM-DD).
     Returns None if the DOB is absent or unparseable.
-    Age auto-updates every year — no manual refresh needed.
+    Age auto-updates every year -- no manual refresh needed.
     """
     dob_str = (date_of_birth or "").strip()[:10]
     if not dob_str:

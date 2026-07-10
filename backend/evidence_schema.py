@@ -26,7 +26,7 @@ class PatientAlignmentFact(BaseModel):
 class ArticleEvidence(BaseModel):
     """
     Structured evidence extracted from one source, filtered and mapped to this patient.
-    All LLM prompts receive this schema — never raw unprocessed snippets.
+    All LLM prompts receive this schema -- never raw unprocessed snippets.
     """
     source_id: str
     title: str
@@ -93,7 +93,7 @@ class ExtractedEvidenceDossier(BaseModel):
             f"PATIENT CONTEXT: {self.patient_profile_summary}",
             f"QUESTION: {self.question}",
             "",
-            "EVIDENCE DOSSIER — structured extraction matched to this patient.",
+            "EVIDENCE DOSSIER -- structured extraction matched to this patient.",
             "RULE: Only cite facts explicitly present below. Do not invent or extend.",
             "",
         ]
@@ -106,7 +106,7 @@ class ExtractedEvidenceDossier(BaseModel):
                 lines.append(f"     ANSWER FACTS: {' | '.join(art.question_facts[:5])}")
             for fact in art.patient_aligned_facts[:3]:
                 lines.append(
-                    f"     PATIENT MATCH [{fact.category} — {fact.patient_value}]: {fact.article_statement}"
+                    f"     PATIENT MATCH [{fact.category} -- {fact.patient_value}]: {fact.article_statement}"
                 )
             if art.contraindications:
                 lines.append(f"     CONTRAINDICATIONS: {'; '.join(art.contraindications[:3])}")

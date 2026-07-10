@@ -7,7 +7,7 @@ Produces patient-specific ArticleEvidence JSON objects instead of raw text chunk
 For each ranked source retrieved from PubMed or NHS/NICE guidance:
 1. Sends the article snippet + patient profile + question to gpt-4o-mini
 2. Extracts: question_facts, patient_aligned_facts, contraindications, drug_interactions
-3. Returns an ExtractedEvidenceDossier — a structured JSON list of ArticleEvidence objects
+3. Returns an ExtractedEvidenceDossier -- a structured JSON list of ArticleEvidence objects
 4. This dossier replaces raw snippets in the LLM answer prompt
 
 ## Why this prevents hallucination

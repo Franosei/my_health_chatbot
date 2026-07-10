@@ -1,5 +1,5 @@
 """
-Response feedback store — persists anonymised quality-signal rows to Neon PostgreSQL.
+Response feedback store -- persists anonymised quality-signal rows to Neon PostgreSQL.
 
 Privacy contract:
   - No question text, no answer text, no username, no PII stored.
@@ -39,7 +39,7 @@ def _connect():
         ) from exc
     database_url = os.getenv("DATABASE_URL", "")
     if not database_url:
-        raise RuntimeError("DATABASE_URL is not set — feedback cannot be saved.")
+        raise RuntimeError("DATABASE_URL is not set -- feedback cannot be saved.")
     return psycopg.connect(database_url)
 
 

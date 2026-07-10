@@ -126,7 +126,7 @@ export async function streamChat(
     }
     if (buffer.trim()) processLine(buffer);
   } catch (err) {
-    // The connection dropped mid-stream — surface a clean error event
+    // The connection dropped mid-stream -- surface a clean error event
     const message = err instanceof Error ? err.message : "The connection was interrupted.";
     onEvent({ type: "error", message: `Stream interrupted: ${message}` });
   }

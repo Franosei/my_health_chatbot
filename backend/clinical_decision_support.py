@@ -287,7 +287,7 @@ class ClinicalDecisionSupportEngine:
             triggered_rules=[
                 RuleTrigger(
                     rule_id="thunderclap_headache_red_flag",
-                    finding="Sudden severe headache — worst-ever description identified by clinical classifier",
+                    finding="Sudden severe headache -- worst-ever description identified by clinical classifier",
                     severity="urgent",
                     rationale="Red-flag headache pattern requires emergency exclusion of intracranial causes.",
                 )
@@ -326,7 +326,7 @@ class ClinicalDecisionSupportEngine:
             escalation_reason="Confusion, fever, and reduced urine output suggest possible sepsis.",
             rationale=(
                 "Confusion plus fever plus reduced urine output indicates possible sepsis or another "
-                "acute cause of organ dysfunction — needs immediate escalation rather than watchful waiting."
+                "acute cause of organ dysfunction -- needs immediate escalation rather than watchful waiting."
             ),
             immediate_actions=[
                 "Escalate immediately to the acute medical or senior review pathway and treat as possible sepsis until assessed.",
@@ -352,7 +352,7 @@ class ClinicalDecisionSupportEngine:
             triggered_rules=[
                 RuleTrigger(
                     rule_id="sepsis_red_flags",
-                    finding="Confusion with fever and reduced urine output — identified by clinical classifier",
+                    finding="Confusion with fever and reduced urine output -- identified by clinical classifier",
                     severity="urgent",
                     rationale="This combination suggests infection with possible organ dysfunction.",
                 )
@@ -422,7 +422,7 @@ class ClinicalDecisionSupportEngine:
             triggered_rules=[
                 RuleTrigger(
                     rule_id="recurrent_blackout_red_flag",
-                    finding="Recurrent transient blackout or near-collapse episodes — identified by clinical classifier",
+                    finding="Recurrent transient blackout or near-collapse episodes -- identified by clinical classifier",
                     severity="urgent",
                     rationale="Recurrent blackout presentations need structured syncope assessment and cardiac screening.",
                 )
@@ -454,7 +454,7 @@ class ClinicalDecisionSupportEngine:
             escalation_reason="Persistent cough with red-flag features requires urgent assessment.",
             rationale="Chronic cough plus red-flag features needs urgent assessment rather than routine follow-up.",
             immediate_actions=[
-                "Arrange same-day GP or appropriate clinician review — do not defer to routine appointment.",
+                "Arrange same-day GP or appropriate clinician review -- do not defer to routine appointment.",
                 "Take a focused history for haemoptysis, weight loss, night sweats, and systemic features.",
                 "Escalate faster if examination suggests respiratory compromise or new acute features.",
             ],
@@ -476,7 +476,7 @@ class ClinicalDecisionSupportEngine:
             triggered_rules=[
                 RuleTrigger(
                     rule_id="chronic_cough_red_flags",
-                    finding="Chronic cough with red-flag features — identified by clinical classifier",
+                    finding="Chronic cough with red-flag features -- identified by clinical classifier",
                     severity="urgent",
                     rationale="Red-flag features alongside chronic cough require urgent exclusion of serious pathology.",
                 )
@@ -484,7 +484,7 @@ class ClinicalDecisionSupportEngine:
             guideline_references=[
                 GuidelineReference(
                     authority="NHS",
-                    title="Cough — when to see a GP and when urgent review is needed",
+                    title="Cough -- when to see a GP and when urgent review is needed",
                     url="https://www.nhs.uk/symptoms/cough/",
                     note="NHS advises urgent escalation for haemoptysis, breathlessness, chest pain, and unexplained weight loss.",
                 ),
@@ -501,7 +501,7 @@ class ClinicalDecisionSupportEngine:
             decision_id="general-triage-chronic-cough-no-red-flags",
             pathway_id="chronic_cough_no_red_flags",
             pathway_label="Chronic cough assessment pathway",
-            summary="Arrange GP review for persistent cough — prompt but not emergency.",
+            summary="Arrange GP review for persistent cough -- prompt but not emergency.",
             urgency_level="Prompt",
             next_step="GP",
             minimum_risk_level="elevated",
@@ -511,7 +511,7 @@ class ClinicalDecisionSupportEngine:
                 "Without red-flag features, this warrants a prompt outpatient workup rather than emergency care."
             ),
             immediate_actions=[
-                "Arrange GP review for chronic cough assessment — do not continue self-care alone.",
+                "Arrange GP review for chronic cough assessment -- do not continue self-care alone.",
                 "Take a focused history for asthma, rhinitis, reflux, ACE inhibitor use, and infection exposure.",
                 "Escalate faster if new red flags appear or examination suggests respiratory compromise.",
             ],
@@ -533,7 +533,7 @@ class ClinicalDecisionSupportEngine:
             triggered_rules=[
                 RuleTrigger(
                     rule_id="chronic_cough_threshold",
-                    finding="Cough duration at or beyond 8 weeks — identified by clinical classifier",
+                    finding="Cough duration at or beyond 8 weeks -- identified by clinical classifier",
                     severity="elevated",
                     rationale="Persistent cough needs structured assessment rather than generic reassurance.",
                 )
@@ -541,7 +541,7 @@ class ClinicalDecisionSupportEngine:
             guideline_references=[
                 GuidelineReference(
                     authority="NHS",
-                    title="Cough — when to see a GP and when urgent review is needed",
+                    title="Cough -- when to see a GP and when urgent review is needed",
                     url="https://www.nhs.uk/symptoms/cough/",
                     note="NHS advises GP review for persistent cough.",
                 ),

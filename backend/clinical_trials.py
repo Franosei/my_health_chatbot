@@ -2,12 +2,12 @@
 Clinical trial search and matching.
 
 Three-phase pipeline:
-  1. Extract  — LLM reads the full patient context and returns individual
+  1. Extract  -- LLM reads the full patient context and returns individual
                 medical condition/symptom terms and drug names as lists.
-  2. Search   — One ClinicalTrials.gov API call per term (query.cond /
+  2. Search   -- One ClinicalTrials.gov API call per term (query.cond /
                 query.intr + query.locn).  Results merged by NCT ID; each
                 trial records which patient conditions found it.
-  3. Score    — Deterministic pre-scoring (coverage + location) narrows the
+  3. Score    -- Deterministic pre-scoring (coverage + location) narrows the
                 candidate set, then an LLM is used to assess condition
                 alignment and age/sex eligibility with clinical accuracy.
 
@@ -210,11 +210,11 @@ def _llm_extract_search_terms(raw_context: str) -> Dict[str, List[str]]:
         prompt = (
             "You are a clinical research coordinator preparing a multi-term ClinicalTrials.gov search.\n\n"
             "Read the patient data and extract every distinct medical condition, symptom, sign, or "
-            "diagnosis — as a JSON list of short individual terms. Also extract drug/medication names.\n\n"
+            "diagnosis -- as a JSON list of short individual terms. Also extract drug/medication names.\n\n"
             'Return ONLY: {"conditions": ["term1", ...], "medications": ["drug1", ...]}\n\n'
             "Rules:\n"
             "- Each condition entry: real medical condition/symptom/sign/diagnosis, 1-5 words.\n"
-            "- List individually — do NOT concatenate multiple conditions into one string.\n"
+            "- List individually -- do NOT concatenate multiple conditions into one string.\n"
             "- Include the most specific terms you can (e.g. 'right iliac fossa pain', not just 'pain').\n"
             "- Do NOT include: general triage, routine, self-care, GP, normal findings, names, demographics.\n"
             "- Max 8 condition terms, max 5 medication names.\n\n"
@@ -433,10 +433,10 @@ def _llm_batch_condition_match(
         '  "exclusion_risks": [<patient factors that may trigger exclusion criteria>],\n'
         '  "reasoning": "<1–2 sentence clinical assessment>"\n\n'
         "Scoring guide:\n"
-        "  40–50: Strong — patient's primary condition directly addressed by trial purpose.\n"
-        "  25–39: Moderate — related condition or meaningful partial overlap.\n"
-        "  10–24: Weak — tangential or indirect connection.\n"
-        "   0–9:  Not relevant — patient profile does not match trial purpose.\n\n"
+        "  40–50: Strong -- patient's primary condition directly addressed by trial purpose.\n"
+        "  25–39: Moderate -- related condition or meaningful partial overlap.\n"
+        "  10–24: Weak -- tangential or indirect connection.\n"
+        "   0–9:  Not relevant -- patient profile does not match trial purpose.\n\n"
         "Base the score on clinical relevance, not keyword overlap. "
         "Check both inclusion AND exclusion criteria carefully.\n\n"
         f'Return ONLY a JSON object: {{"results": [...]}}\n\n'
@@ -680,9 +680,9 @@ def find_matching_trials(
     max_results: int = 10,
 ) -> Dict:
     """
-    Phase 1 — Extract: LLM reads patient context → individual medical terms.
-    Phase 2 — Search:  one API call per term, results merged by NCT ID.
-    Phase 3 — Score:
+    Phase 1 -- Extract: LLM reads patient context → individual medical terms.
+    Phase 2 -- Search:  one API call per term, results merged by NCT ID.
+    Phase 3 -- Score:
         a) Fast pre-score all trials (coverage + location, no LLM).
         b) Take top _PRE_FILTER_N candidates.
         c) LLM scores condition alignment (batched) + deterministic age/sex eligibility.
@@ -700,7 +700,7 @@ def find_matching_trials(
             "location": location_query,
             "error": (
                 "No specific medical conditions or medications could be found in your saved data. "
-                "Chat with FlynnMed about your health concerns — the assistant builds a "
+                "Chat with FlynnMed about your health concerns -- the assistant builds a "
                 "condition record the trial finder uses."
             ),
         }

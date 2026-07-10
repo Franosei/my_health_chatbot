@@ -1,7 +1,7 @@
 """
 Clinical policy engine: rule-based gate that applies hard safety constraints,
 escalation requirements, and vulnerable-population logic.
-Pure Python — no LLM calls.
+Pure Python -- no LLM calls.
 """
 from __future__ import annotations
 import re
@@ -120,7 +120,7 @@ class PolicyEngine:
         gate = PolicyGateRecord(
             gate_name="crisis",
             applied=True,
-            reason="Crisis-level risk detected — returning emergency guidance without LLM generation.",
+            reason="Crisis-level risk detected -- returning emergency guidance without LLM generation.",
         )
         decision.add_gate(gate)
         decision.action = "escalate_only"
@@ -135,7 +135,7 @@ class PolicyEngine:
         if intent.risk_level not in ("urgent", "crisis"):
             return
         if role_config.escalation_threshold == "high":
-            # Clinical roles — add context note but don't force banner
+            # Clinical roles -- add context note but don't force banner
             gate = PolicyGateRecord(
                 gate_name="urgent_clinical",
                 applied=True,
@@ -147,7 +147,7 @@ class PolicyEngine:
                 "Prioritise red flag information, disposition, and immediate action guidance in your response."
             )
         else:
-            # Non-clinical roles — force escalation banner
+            # Non-clinical roles -- force escalation banner
             reason = intent.escalation_reason or "Urgent clinical concern detected."
             gate = PolicyGateRecord(
                 gate_name="urgent_escalation",
@@ -177,7 +177,7 @@ class PolicyEngine:
         gate = PolicyGateRecord(
             gate_name="pregnancy_safety",
             applied=True,
-            reason="Pregnancy context detected — applying heightened medication and escalation safety.",
+            reason="Pregnancy context detected -- applying heightened medication and escalation safety.",
         )
         decision.add_gate(gate)
         decision.context_notes.append(
@@ -189,7 +189,7 @@ class PolicyEngine:
         )
         if role_config.role_key not in ("midwife", "doctor"):
             decision.escalation_banner = build_escalation_banner(
-                "Pregnancy-related question — always verify medication safety with your midwife or GP.",
+                "Pregnancy-related question -- always verify medication safety with your midwife or GP.",
                 role_config.role_key,
             )
 
@@ -205,7 +205,7 @@ class PolicyEngine:
         gate = PolicyGateRecord(
             gate_name="paediatric_safety",
             applied=True,
-            reason="Paediatric population flag — applying child-specific safety thresholds.",
+            reason="Paediatric population flag -- applying child-specific safety thresholds.",
         )
         decision.add_gate(gate)
         decision.context_notes.append(
@@ -235,13 +235,13 @@ class PolicyEngine:
         )
         decision.add_gate(gate)
         decision.context_notes.append(
-            f"SAFETY FLAG — PATIENT ALLERGIES / CONTRAINDICATIONS: {allergy_list}\n"
+            f"SAFETY FLAG -- PATIENT ALLERGIES / CONTRAINDICATIONS: {allergy_list}\n"
             "Before recommending, mentioning, or discussing any medication, treatment, or substance:\n"
             "1. Check whether it or any cross-reactive agent appears in the allergy list above.\n"
             "2. If there is any match or plausible cross-reaction, flag it prominently at the top of your answer.\n"
             "3. Recommend verification with the prescribing clinician or pharmacist before use.\n"
             "4. If no conflict is identified, state explicitly that the recommendations do not appear to conflict "
-            "with the recorded allergies — but remind the patient that the list reflects only what has been entered."
+            "with the recorded allergies -- but remind the patient that the list reflects only what has been entered."
         )
 
     def _gate_medication_dosage(
@@ -260,7 +260,7 @@ class PolicyEngine:
             gate = PolicyGateRecord(
                 gate_name="medication_clinical",
                 applied=True,
-                reason="Medication query for clinical user — BNF/NICE reference context added.",
+                reason="Medication query for clinical user -- BNF/NICE reference context added.",
             )
             decision.add_gate(gate)
             decision.context_notes.append(
@@ -274,7 +274,7 @@ class PolicyEngine:
             gate = PolicyGateRecord(
                 gate_name="medication_lay",
                 applied=True,
-                reason="Medication dosage question for lay user — pharmacist/GP referral required.",
+                reason="Medication dosage question for lay user -- pharmacist/GP referral required.",
             )
             decision.add_gate(gate)
             decision.context_notes.append(
@@ -299,7 +299,7 @@ class PolicyEngine:
             gate = PolicyGateRecord(
                 gate_name="diagnosis_clinical",
                 applied=True,
-                reason="Diagnostic question for clinician — differential discussion permitted with uncertainty labelling.",
+                reason="Diagnostic question for clinician -- differential discussion permitted with uncertainty labelling.",
             )
             decision.add_gate(gate)
             decision.context_notes.append(
@@ -311,7 +311,7 @@ class PolicyEngine:
             gate = PolicyGateRecord(
                 gate_name="no_diagnosis",
                 applied=True,
-                reason="Diagnosis-seeking language from non-clinician — no-diagnosis policy enforced.",
+                reason="Diagnosis-seeking language from non-clinician -- no-diagnosis policy enforced.",
             )
             decision.add_gate(gate)
             decision.context_notes.append(
@@ -335,7 +335,7 @@ class PolicyEngine:
         gate = PolicyGateRecord(
             gate_name="elderly_polypharmacy",
             applied=True,
-            reason="Elderly patient + medication query — polypharmacy and renal function considerations added.",
+            reason="Elderly patient + medication query -- polypharmacy and renal function considerations added.",
         )
         decision.add_gate(gate)
         decision.context_notes.append(
@@ -356,7 +356,7 @@ class PolicyEngine:
         gate = PolicyGateRecord(
             gate_name="mental_health",
             applied=True,
-            reason="Mental health topic detected — crisis resources and empathetic framing required.",
+            reason="Mental health topic detected -- crisis resources and empathetic framing required.",
         )
         decision.add_gate(gate)
         decision.context_notes.append(
@@ -383,19 +383,19 @@ class PolicyEngine:
         and produced intent.risk_level / intent.intent_category / intent.escalation_required
         accordingly. This gate trusts that output and applies three types of action:
 
-        REINFORCE   — when the LLM already flagged elevated/urgent risk and the patient
+        REINFORCE   -- when the LLM already flagged elevated/urgent risk and the patient
                       has a known condition that makes those symptoms more dangerous,
                       confirm escalation_required and add condition-specific context.
 
-        ELEVATE     — for high-risk condition + intent category combinations where ANY
+        ELEVATE     -- for high-risk condition + intent category combinations where ANY
                       relevant clinical question carries a higher baseline risk (e.g.
                       immunocompromised + any symptom question), bump routine → elevated
                       even if the LLM did not.
 
-        CONTEXT     — inject condition-specific clinical guidance into the LLM prompt
+        CONTEXT     -- inject condition-specific clinical guidance into the LLM prompt
                       for every relevant combination regardless of risk level, so the
                       response covers the right red flags, recommends BP checks, lists
-                      monitoring advice, etc. — without us hardcoding what those flags are.
+                      monitoring advice, etc. -- without us hardcoding what those flags are.
         """
         is_clinical = role_config.role_key in ("doctor", "nurse", "midwife", "physiotherapist")
 
@@ -415,7 +415,7 @@ class PolicyEngine:
             if llm_risk in ("urgent", "crisis"):
                 intent.escalation_required = True
                 escalate_notes.append(
-                    "Known cardiac history: LLM classified this as urgent — escalation confirmed."
+                    "Known cardiac history: LLM classified this as urgent -- escalation confirmed."
                 )
             elif llm_risk == "elevated":
                 if is_clinical:
@@ -431,7 +431,7 @@ class PolicyEngine:
                         "Instruct the patient on when to seek emergency care."
                     )
             else:
-                # routine — add a general awareness note; do not escalate
+                # routine -- add a general awareness note; do not escalate
                 context_notes.append(
                     "CLINICAL CONTEXT (cardiac history): Patient has a known cardiac condition. "
                     "Ensure the response covers relevant red flags for this patient group and "
@@ -509,7 +509,7 @@ class PolicyEngine:
             if llm_risk in ("elevated", "urgent", "crisis"):
                 intent.escalation_required = True
                 escalate_notes.append(
-                    "On anticoagulants: elevated-risk question — over-anticoagulation and bleeding "
+                    "On anticoagulants: elevated-risk question -- over-anticoagulation and bleeding "
                     "risk must be considered and addressed in the response."
                 )
             context_notes.append(
@@ -527,7 +527,7 @@ class PolicyEngine:
             if llm_risk in ("urgent", "crisis"):
                 intent.escalation_required = True
                 escalate_notes.append(
-                    "Immunocompromised + urgent classification: infections deteriorate rapidly — "
+                    "Immunocompromised + urgent classification: infections deteriorate rapidly -- "
                     "escalation confirmed."
                 )
             else:
@@ -548,7 +548,7 @@ class PolicyEngine:
                     )
 
         # ── RENAL DISEASE ────────────────────────────────────────────────────────
-        # Context only. No risk escalation — medication safety and monitoring guidance.
+        # Context only. No risk escalation -- medication safety and monitoring guidance.
         if patient_history.has_renal_disease and (is_symptom or is_med_query):
             context_notes.append(
                 "CLINICAL CONTEXT (renal disease): Patient has known CKD/renal impairment. "
@@ -565,7 +565,7 @@ class PolicyEngine:
             if llm_risk in ("urgent", "crisis"):
                 intent.escalation_required = True
                 escalate_notes.append(
-                    "Known respiratory disease + urgent classification: possible acute exacerbation — "
+                    "Known respiratory disease + urgent classification: possible acute exacerbation -- "
                     "escalation confirmed."
                 )
             elif llm_risk == "elevated":
@@ -589,7 +589,7 @@ class PolicyEngine:
             if llm_risk in ("elevated", "urgent", "crisis"):
                 intent.escalation_required = True
                 escalate_notes.append(
-                    "Previous stroke/TIA + elevated-risk symptom: stroke recurrence must be excluded — "
+                    "Previous stroke/TIA + elevated-risk symptom: stroke recurrence must be excluded -- "
                     "FAST assessment required."
                 )
             context_notes.append(
@@ -605,7 +605,7 @@ class PolicyEngine:
             if llm_risk in ("urgent", "crisis"):
                 intent.escalation_required = True
                 escalate_notes.append(
-                    "Known liver disease + urgent classification: possible decompensation — "
+                    "Known liver disease + urgent classification: possible decompensation -- "
                     "escalation confirmed."
                 )
             context_notes.append(
@@ -639,7 +639,7 @@ class PolicyEngine:
                 intent.risk_level = "elevated"
                 context_notes.append(
                     f"CLINICAL CONTEXT: Patient has {patient_history.previous_escalation_count} previous "
-                    "urgent clinical escalations. Applying cautious baseline — the response should "
+                    "urgent clinical escalations. Applying cautious baseline -- the response should "
                     "include clear guidance on when to seek review and not underplay symptoms."
                 )
 

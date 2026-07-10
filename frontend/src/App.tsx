@@ -1595,7 +1595,7 @@ function SoapSection({ label, text }: { label: string; text: string }) {
     <div className="soap-section">
       <span className="soap-label">{label}</span>
       <div className="soap-content markdown">
-        <ReactMarkdown>{text || "—"}</ReactMarkdown>
+        <ReactMarkdown>{text || "-"}</ReactMarkdown>
       </div>
     </div>
   );
@@ -1625,13 +1625,13 @@ function PatientNoteView({ note }: { note: ClinicalNote }) {
       <div className="patient-note-section">
         <span className="soap-label">What was discussed</span>
         <div className="soap-content markdown">
-          <ReactMarkdown>{note.subjective || "—"}</ReactMarkdown>
+          <ReactMarkdown>{note.subjective || "-"}</ReactMarkdown>
         </div>
       </div>
       <div className="patient-note-section">
         <span className="soap-label">What happens next</span>
         <div className="soap-content markdown">
-          <ReactMarkdown>{note.plan || "—"}</ReactMarkdown>
+          <ReactMarkdown>{note.plan || "-"}</ReactMarkdown>
         </div>
       </div>
     </div>

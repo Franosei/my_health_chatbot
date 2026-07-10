@@ -146,10 +146,10 @@ def main():
         return
 
     # 2) Top reactions
-    print(f"\n[Top Reactions] (MedDRA PT, count) — top {args.top}")
+    print(f"\n[Top Reactions] (MedDRA PT, count) -- top {args.top}")
     reactions = query_top_reactions(args.drug, args.start, args.end, top_n=args.top)
     for r in reactions:
-        term = r.get("term", "—")
+        term = r.get("term", "-")
         count = r.get("count", 0)
         print(f" - {term}: {count}")
 
@@ -171,13 +171,13 @@ def main():
     print(f"\n[Recent Events] latest {args.limit}")
     events = query_recent_events(args.drug, args.start, args.end, limit=args.limit)
     for i, ev in enumerate(events, 1):
-        recv = ev.get("receivedate", "—")
-        sid = ev.get("safetyreportid", "—")
+        recv = ev.get("receivedate", "-")
+        sid = ev.get("safetyreportid", "-")
         rx = [rx.get("reactionmeddrapt") for rx in ev.get("patient", {}).get("reaction", []) if rx.get("reactionmeddrapt")]
         prods = [d.get("medicinalproduct") for d in ev.get("patient", {}).get("drug", []) if d.get("medicinalproduct")]
         print(f"\n  #{i} receivedate={recv}  safetyreportid={sid}")
-        print(f"     reactions: {', '.join(rx[:10]) if rx else '—'}")
-        print(f"     products : {', '.join(prods[:6]) if prods else '—'}")
+        print(f"     reactions: {', '.join(rx[:10]) if rx else '-'}")
+        print(f"     products : {', '.join(prods[:6]) if prods else '-'}")
 
     print("\nDone.\n")
 

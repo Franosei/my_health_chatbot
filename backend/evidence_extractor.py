@@ -3,7 +3,7 @@ Evidence extractor: structured extraction layer between retrieved sources and th
 
 For each ranked source, uses gpt-4o-mini to extract patient-specific facts
 into an ArticleEvidence JSON object. Only these objects are forwarded to the
-answer model — never raw unprocessed chunks.
+answer model -- never raw unprocessed chunks.
 
 Why this matters:
 - Prevents the LLM from hallucinating facts not present in the source
@@ -33,7 +33,7 @@ def _build_patient_summary(user_profile: dict, patient_history_ctx=None) -> str:
 
     if patient_history_ctx and not patient_history_ctx.is_empty():
         block = patient_history_ctx.as_prompt_block()
-        # Take first 400 chars — enough for alignment, keeps token cost low
+        # Take first 400 chars -- enough for alignment, keeps token cost low
         parts.append(block[:400])
 
     return "; ".join(parts) if parts else "Patient profile not recorded"
@@ -100,7 +100,7 @@ def _extract_one_article(
         '  "alignment_confidence": 0.0-1.0\n'
         "}\n\n"
         "RULES:\n"
-        "- Only include facts explicitly in the article text — never infer\n"
+        "- Only include facts explicitly in the article text -- never infer\n"
         "- patient_aligned_facts must reference actual values from the patient profile\n"
         "- If article does not match patient's conditions/meds, set patient_aligned_facts: []\n"
         "- alignment_confidence: 1.0 = directly addresses patient's conditions; 0.0 = irrelevant\n"
@@ -199,7 +199,7 @@ def build_evidence_dossier(
 
     low_conf = [a for a in articles if a.alignment_confidence < 0.3]
     extraction_notes = (
-        f"{len(low_conf)} source(s) had low patient alignment confidence (<0.3) — used for general context only."
+        f"{len(low_conf)} source(s) had low patient alignment confidence (<0.3) -- used for general context only."
         if low_conf
         else ""
     )

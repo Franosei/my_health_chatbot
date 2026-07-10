@@ -34,7 +34,7 @@ def get_pathway_context(
             "Always screen for non-mechanical red flags before recommending exercise or movement: "
             "unexplained night pain, rest pain, fever, unexplained weight loss, history of cancer, "
             "morning stiffness >45 minutes, bilateral symptoms, bowel/bladder dysfunction.",
-            "Cauda equina syndrome: always escalate immediately — bilateral leg weakness, "
+            "Cauda equina syndrome: always escalate immediately -- bilateral leg weakness, "
             "saddle anaesthesia, bladder/bowel dysfunction with back pain = 999 emergency.",
             "Neurovascular compromise: check pulses, capillary refill, sensation, and power "
             "for acute limb injuries before movement recommendations.",

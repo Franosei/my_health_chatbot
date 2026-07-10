@@ -149,7 +149,7 @@ class VideoGenerator:
                 duration_seconds=VIDEO_MAX_DURATION_SECONDS,
             )
         except Exception as exc:
-            print(f"VideoGenerator: Sora-2 generation failed — {exc}")
+            print(f"VideoGenerator: Sora-2 generation failed -- {exc}")
             return None
 
     # ── Prompt building ────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ PatientHistoryContext: extracts and structures a patient's known medical history
 for use in clinical decision-making (intent classification + policy gating).
 
 This allows the system to raise risk level and apply safety gates when the current
-question — even if it seems routine in isolation — is clinically significant given
+question -- even if it seems routine in isolation -- is clinically significant given
 the patient's known conditions. E.g. a headache in a hypertensive patient, bleeding
 in a patient on warfarin, or a cough in an immunocompromised patient.
 """
@@ -114,7 +114,7 @@ class PatientHistoryContext:
         if self.is_empty():
             return ""
         parts: List[str] = []
-        # Demographics first — most clinically impactful for classification
+        # Demographics first -- most clinically impactful for classification
         if self.age is not None:
             parts.append(f"Patient age: {self.age} years")
         if self.biological_sex:

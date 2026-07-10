@@ -1175,7 +1175,7 @@ def send_urgent_alert(
     return {"ok": True, "sent_to": email_address}
 
 
-# ── MCP server (streamable HTTP — works locally and on Railway) ───────────────
+# ── MCP server (streamable HTTP -- works locally and on Railway) ───────────────
 # Mounted at /mcp so Claude Desktop / remote agents can connect to:
 #   https://<your-railway-app>.railway.app/mcp
 # Set MCP_API_KEY in Railway environment variables to restrict access.

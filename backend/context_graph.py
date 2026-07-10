@@ -8,7 +8,7 @@ On each query:
   3. Return a ranked set of nodes, a focused prompt block for the LLM, and
      patient-specific search hints to sharpen PubMed retrieval.
 
-No external API calls — this runs in < 50 ms.
+No external API calls -- this runs in < 50 ms.
 """
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ def build_context_graph(
         score = _score(q_words, f"{name} {reaction}")
         detail = (
             f"Allergy to {name}"
-            + (f" — {reaction}" if reaction else "")
+            + (f" -- {reaction}" if reaction else "")
             + (f" ({severity})" if severity else "")
         )
         graph.nodes.append(ContextNode(

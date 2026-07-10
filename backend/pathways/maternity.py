@@ -42,7 +42,7 @@ def get_pathway_context(
             "signs of postpartum psychosis (rapid behaviour change, confusion, hallucinations).",
             "For newborn questions: include neonatal red flags (poor feeding, jaundice, temperature instability, "
             "respiratory distress, hypotonia).",
-            "Apply highest safety threshold — when in doubt, escalate.",
+            "Apply highest safety threshold -- when in doubt, escalate.",
         ],
         preferred_sources=["RCOG", "NICE", "NHS", "NICE CKS"],
         escalation_signals=[

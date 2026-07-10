@@ -70,11 +70,11 @@ cholesterol_hdl, triglycerides, tsh, free_t4, free_t3, cortisol,
 psa, peak_flow, inr, aptt, d_dimer, fibrinogen, troponin, bnp, nt_probnp
 
 Rules:
-- Extract ONLY values explicitly stated in the document — do not estimate or infer.
+- Extract ONLY values explicitly stated in the document -- do not estimate or infer.
 - Do NOT include patient names, addresses, ID numbers, or any identifiers.
-- Do NOT include normal reference ranges as values — only the actual measured result.
+- Do NOT include normal reference ranges as values -- only the actual measured result.
 - If a section is absent, use an empty array.
-- Keep the JSON compact — no extra commentary outside the JSON object.
+- Keep the JSON compact -- no extra commentary outside the JSON object.
 
 Document text:
 {text}
