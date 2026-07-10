@@ -1,5 +1,5 @@
 """
-Dr. Charlotte MCP Server.
+FlynnMed MCP Server.
 
 Exposes clinical tools via the Model Context Protocol.
 
@@ -9,7 +9,7 @@ Deployed (Railway):
   Claude Desktop config:
     {
       "mcpServers": {
-        "dr-charlotte": {
+        "flynnmed": {
           "url": "https://<your-app>.railway.app/mcp",
           "headers": { "Authorization": "Bearer <MCP_API_KEY>" }
         }
@@ -47,10 +47,11 @@ except ImportError:
 
 from backend.clinical_notes import generate_soap_note
 from backend.email_service import send_clinical_note_email, send_urgent_care_alert
+from backend.product_config import PRODUCT_NAME
 from backend.summarizer import LLMHelper
 from backend.user_store import UserStore
 
-mcp = FastMCP("Dr. Charlotte Clinical Tools")
+mcp = FastMCP(f"{PRODUCT_NAME} Clinical Tools")
 _llm = LLMHelper()
 
 
@@ -157,7 +158,7 @@ def generate_clinical_note(
     next_step: str = "",
 ) -> str:
     """
-    Generate a standard SOAP clinical note from a Dr. Charlotte consultation.
+    Generate a standard SOAP clinical note from a FlynnMed consultation.
 
     Parameters:
     - username: the patient's account username

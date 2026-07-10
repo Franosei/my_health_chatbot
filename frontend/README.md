@@ -1,4 +1,4 @@
-# Dr. Charlotte React Frontend
+# FlynnMed React Frontend
 
 Mobile-first React client for the production branch.
 

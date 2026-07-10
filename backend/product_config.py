@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 
-PRODUCT_NAME = "Dr. Charlotte"
+PRODUCT_NAME = "FlynnMed"
 PRODUCT_TAGLINE = "Private, structured health support for individuals, caregivers, and care teams."
 PRODUCT_SUBTITLE = "Secure account access, role-aware terms, and continuity across visits."
 FOUNDER_NAME = "Francis Osei"
@@ -61,7 +61,7 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
     },
     "Doctor / Physician": {
         "title": "Doctor and Physician Terms",
-        "summary": "This account type is intended for licensed physicians using Dr. Charlotte as a professional support tool.",
+        "summary": f"This account type is intended for licensed physicians using {PRODUCT_NAME} as a professional support tool.",
         "bullets": [
             "Outputs are supportive and must not be used as the sole basis for diagnosis, treatment, prescribing, referral, or discharge decisions.",
             "You remain responsible for clinical judgement, patient-specific assessment, and compliance with local policy, supervision, and documentation requirements.",
@@ -71,7 +71,7 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
     },
     "Nurse": {
         "title": "Nursing Terms",
-        "summary": "This account type is intended for registered nurses using Dr. Charlotte for evidence review and practice support.",
+        "summary": f"This account type is intended for registered nurses using {PRODUCT_NAME} for evidence review and practice support.",
         "bullets": [
             "Outputs support nursing interpretation, communication, and escalation planning, but do not replace clinical assessment or local nursing policy.",
             "You remain responsible for confirming medicines, escalation pathways, and patient-specific actions with the relevant clinical team and approved workflows.",
@@ -81,7 +81,7 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
     },
     "Midwife": {
         "title": "Midwifery Terms",
-        "summary": "This account type is intended for maternity professionals using Dr. Charlotte for educational and decision-support purposes.",
+        "summary": f"This account type is intended for maternity professionals using {PRODUCT_NAME} for educational and decision-support purposes.",
         "bullets": [
             "Outputs do not replace maternity assessment, safeguarding duties, escalation to obstetric teams, or emergency referral pathways.",
             "Pregnancy, postpartum, and newborn care require heightened caution, and all recommendations must be reviewed within the full clinical context.",
@@ -91,7 +91,7 @@ ROLE_TERMS: Dict[str, Dict[str, List[str] | str]] = {
     },
     "Physiotherapist": {
         "title": "Physiotherapy Terms",
-        "summary": "This account type is intended for physiotherapists and rehabilitation professionals using Dr. Charlotte in practice support.",
+        "summary": f"This account type is intended for physiotherapists and rehabilitation professionals using {PRODUCT_NAME} in practice support.",
         "bullets": [
             "Outputs support rehabilitation planning and MSK education, but do not replace full assessment, contraindication screening, or referral judgement.",
             "You remain responsible for checking red flags, neurovascular issues, exercise tolerance, and suitability for any intervention before acting.",

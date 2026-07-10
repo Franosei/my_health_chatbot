@@ -1,7 +1,7 @@
 # Generate Clinical Note
 
 Generate a SOAP (Subjective / Objective / Assessment / Plan) clinical note from the
-current Dr. Charlotte conversation and the patient's stored health record.
+current FlynnMed conversation and the patient's stored health record.
 
 ## What it does
 1. Reads the last 4 messages from the active chat conversation

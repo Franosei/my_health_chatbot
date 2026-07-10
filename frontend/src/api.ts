@@ -1,7 +1,7 @@
 import type { AuthResponse, CarePlan, ChatStreamEvent, ClinicalNote, FeedbackRating, FeedbackResponse, ProductConfig, Snapshot } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-const TOKEN_KEY = "dr_charlotte_token";
+const TOKEN_KEY = "flynnmed_token";
 
 export function getStoredToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? "";

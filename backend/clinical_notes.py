@@ -2,7 +2,7 @@
 Clinical note generation and management.
 
 Produces standard SOAP notes (Subjective / Objective / Assessment / Plan)
-from a Dr. Charlotte conversation and the patient's stored profile.
+from a FlynnMed conversation and the patient's stored profile.
 Notes are stored per-user and can be edited by clinicians before sharing.
 """
 from __future__ import annotations
@@ -176,7 +176,7 @@ def generate_soap_note(
     ))
 
     prompt = (
-        "You are a clinical note writer for Dr. Charlotte. "
+        "You are a clinical note writer for FlynnMed. "
         f"Generate a SOAP note for a {role_key} in UK clinical format.\n"
         f"Role guidance: {role_guidance}\n\n"
         f"CONSULTATION SUMMARY:\n{conversation_summary}\n\n"
@@ -234,7 +234,7 @@ def generate_soap_note(
         "urgency_level": urgency,
         "requires_gp_visit": requires_gp,
         "gp_visit_reason": gp_reason,
-        "generated_by": "dr_charlotte_ai",
+        "generated_by": "flynnmed_ai",
         "edited_by": None,
         "email_sent": False,
         "email_sent_at": None,

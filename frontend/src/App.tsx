@@ -207,7 +207,7 @@ function App() {
     return (
       <main className="boot-screen">
         <img src="/assistant.png" alt="" />
-        <span>Opening Dr. Charlotte</span>
+        <span>Opening FlynnMed</span>
       </main>
     );
   }
@@ -548,7 +548,7 @@ function Shell({
               </button>
             )}
             <div>
-              <span className="eyebrow">Dr. Charlotte</span>
+              <span className="eyebrow">FlynnMed</span>
               <h1>{name}</h1>
             </div>
           </div>
@@ -806,7 +806,7 @@ function ChatView({
           <div className="chat-head-title">
             <img src="/assistant.png" alt="" className="chat-head-avatar" />
             <div>
-              <strong>Dr. Charlotte</strong>
+              <strong>FlynnMed</strong>
               {!patientView && <span className="chat-head-role">{role}</span>}
             </div>
           </div>
@@ -987,7 +987,7 @@ function MessageBubble({
       <div className="message-body">
         {!isUser && (
           <div className="message-meta">
-            <strong>Dr. Charlotte</strong>
+            <strong>FlynnMed</strong>
             {message.timestamp && <span>{formatTimestamp(message.timestamp)}</span>}
             {!patientView && message.trace_id && <span className="trace-id">{message.trace_id}</span>}
           </div>

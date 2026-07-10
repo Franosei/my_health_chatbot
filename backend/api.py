@@ -75,7 +75,7 @@ def _utc_now() -> str:
 
 
 def _token_secret() -> bytes:
-    secret = os.getenv("APP_SECRET") or os.getenv("SECRET_KEY") or "dr-charlotte-local-dev-secret"
+    secret = os.getenv("APP_SECRET") or os.getenv("SECRET_KEY") or "flynnmed-local-dev-secret"
     return secret.encode("utf-8")
 
 

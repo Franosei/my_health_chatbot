@@ -1,6 +1,6 @@
 # MCP Server
 
-Dr. Charlotte exposes clinical tools via MCP — works both locally and on Railway.
+FlynnMed exposes clinical tools via MCP — works both locally and on Railway.
 
 ## Tools exposed
 
@@ -34,7 +34,7 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "dr-charlotte": {
+    "flynnmed": {
       "url": "https://<your-app>.railway.app/mcp",
       "headers": {
         "Authorization": "Bearer <MCP_API_KEY>"
@@ -54,7 +54,7 @@ python -m backend.mcp_server
 ```json
 {
   "mcpServers": {
-    "dr-charlotte": {
+    "flynnmed": {
       "command": "python",
       "args": ["-m", "backend.mcp_server"],
       "cwd": "/path/to/my_health_chatbot"
@@ -70,5 +70,5 @@ SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=your@email.com
 SMTP_PASSWORD=your-app-password
-EMAIL_FROM=Dr. Charlotte <your@email.com>
+EMAIL_FROM=FlynnMed <your@email.com>
 ```

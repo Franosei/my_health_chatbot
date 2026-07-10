@@ -246,7 +246,7 @@ class AgenticRetrievalLoop:
             )
 
         system_prompt = (
-            "You are a clinical evidence retrieval agent for Dr. Charlotte, a UK health AI assistant.\n"
+            "You are a clinical evidence retrieval agent for FlynnMed, a UK health AI assistant.\n"
             "Your task: decide which tools to call to gather the right evidence BEFORE the answer is written.\n"
             "Do NOT answer the question yourself.\n\n"
             f"Clinical role: {role_key}\n"

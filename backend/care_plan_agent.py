@@ -1,5 +1,5 @@
 """
-Agentic care-plan generator for Dr. Charlotte.
+Agentic care-plan generator for FlynnMed.
 
 Uses an OpenAI tool-calling loop to gather NHS/NICE guidelines and PubMed
 evidence before synthesising a structured, evidence-based care plan.
@@ -249,7 +249,7 @@ class CarePlanAgent:
         sex = profile.get("biological_sex") or "not recorded"
         role = profile.get("role") or "Patient"
 
-        system_prompt = f"""You are a specialist evidence-based care-plan assistant embedded in Dr. Charlotte, a UK-focused clinical AI platform (NHS-aligned).
+        system_prompt = f"""You are a specialist evidence-based care-plan assistant embedded in FlynnMed, a UK-focused clinical AI platform (NHS-aligned).
 
 Build a comprehensive, personalised care plan for: **{condition}**
 
@@ -404,7 +404,7 @@ AGENT RULES:
         name = (profile.get("display_name") or "the patient").split()[0]
 
         prompt = (
-            f"You are Dr. Charlotte helping {name} prepare for their GP appointment about "
+            f"You are FlynnMed helping {name} prepare for their GP appointment about "
             f"{plan.get('condition', 'their condition')}.\n\n"
             f"Care plan summary:\n"
             f"Goals: {json.dumps(plan.get('goals', []))}\n"

@@ -700,7 +700,7 @@ def find_matching_trials(
             "location": location_query,
             "error": (
                 "No specific medical conditions or medications could be found in your saved data. "
-                "Chat with Dr. Charlotte about your health concerns — the assistant builds a "
+                "Chat with FlynnMed about your health concerns — the assistant builds a "
                 "condition record the trial finder uses."
             ),
         }
