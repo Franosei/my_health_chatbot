@@ -157,19 +157,43 @@ label {
   color: #cde0df;
 }
 
-.auth-preview {
-  width: 100%;
-  max-height: 320px;
-  object-fit: cover;
-  object-position: top;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+.auth-highlights {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: 1.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.auth-highlights li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 8px;
-  margin-top: 1rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf7f5;
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+
+.auth-highlights svg {
+  flex-shrink: 0;
+  color: #9bded5;
 }
 
 .auth-panel {
   padding: 1rem;
   align-self: start;
+}
+
+.auth-panel-logo {
+  display: block;
+  width: 150px;
+  max-width: 60%;
+  margin: 0 auto 1rem;
 }
 
 .eyebrow {
@@ -417,7 +441,7 @@ label {
 
 .app-shell {
   min-height: 100vh;
-  padding-bottom: 74px;
+  padding-bottom: calc(74px + env(safe-area-inset-bottom));
 }
 
 .main-area {
@@ -437,6 +461,10 @@ label {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  min-width: 0;
+}
+
+.topbar-title {
   min-width: 0;
 }
 
@@ -465,6 +493,10 @@ label {
 
 .topbar h1 {
   font-size: clamp(1.3rem, 5vw, 2.1rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 .icon-button {
@@ -489,10 +521,11 @@ label {
   left: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   border-top: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(12px);
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 .mobile-nav button {
@@ -500,13 +533,24 @@ label {
   min-height: 64px;
   place-items: center;
   gap: 0.12rem;
+  padding: 0.3rem 0.15rem;
   background: transparent;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   font-weight: 800;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.mobile-nav button svg {
+  flex-shrink: 0;
 }
 
 .mobile-nav button.active {
+  color: var(--primary);
+}
+
+.mobile-nav button.active svg {
   color: var(--primary);
 }
 

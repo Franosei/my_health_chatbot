@@ -314,10 +314,16 @@ function AuthScreen({ config, onSuccess }: { config: ProductConfig; onSuccess: (
         <div className="eyebrow">Secure health workspace</div>
         <h1>{config.product_name}</h1>
         <p>{config.product_tagline}</p>
-        <img src="/workspace-preview.png" alt="" className="auth-preview" />
+        <ul className="auth-highlights">
+          <li><ShieldCheck size={18} /> Secure, role-aware sign-in</li>
+          <li><ClipboardList size={18} /> Terms tailored to your account role</li>
+          <li><HeartPulse size={18} /> Conversation history saved across visits</li>
+          <li><Sparkles size={18} /> Evidence-based support, every time</li>
+        </ul>
       </section>
 
       <section className="auth-panel" aria-label="Account access">
+        <img src="/logo.png" alt={config.product_name} className="auth-panel-logo" />
         <div className="segmented">
           {(["Sign in", "Create account"] as const).map((item) => (
             <button key={item} className={mode === item ? "active" : ""} onClick={() => { setMode(item); setError(""); }} type="button">
@@ -498,11 +504,11 @@ function Shell({
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const nav = [
-    { id: "workspace" as const, label: "Home", icon: Home },
-    { id: "chat" as const, label: "Chat", icon: MessageSquare },
-    { id: "care-plans" as const, label: "Care Plans", icon: ListChecks },
-    { id: "timeline" as const, label: "Timeline", icon: CalendarClock },
-    { id: "trials" as const, label: "Trials", icon: FlaskConical }
+    { id: "workspace" as const, label: "Home", short: "Home", icon: Home },
+    { id: "chat" as const, label: "Chat", short: "Chat", icon: MessageSquare },
+    { id: "care-plans" as const, label: "Care Plans", short: "Plans", icon: ListChecks },
+    { id: "timeline" as const, label: "Timeline", short: "Timeline", icon: CalendarClock },
+    { id: "trials" as const, label: "Trials", short: "Trials", icon: FlaskConical }
   ];
   const name = clean(snapshot.profile.display_name, snapshot.user);
 
@@ -547,7 +553,7 @@ function Shell({
                 <PanelLeft size={20} />
               </button>
             )}
-            <div>
+            <div className="topbar-title">
               <span className="eyebrow">FlynnMed</span>
               <h1>{name}</h1>
             </div>
@@ -564,9 +570,9 @@ function Shell({
         {nav.map((item) => {
           const Icon = item.icon;
           return (
-            <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
-              <Icon size={20} />
-              <span>{item.label}</span>
+            <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)} aria-current={view === item.id ? "page" : undefined}>
+              <Icon size={19} />
+              <span>{item.short}</span>
             </button>
           );
         })}
