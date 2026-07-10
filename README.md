@@ -10,6 +10,17 @@ The Python backend (`backend/`) runs the full clinical workflow: crisis pre-scre
 
 This README is written for developers working on the codebase: it documents the system architecture, every backend module, the full REST API surface, environment configuration and deployment. If you're looking for end-user documentation, see the [Features](#features) section below instead.
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12%2B-0f1f3d?style=for-the-badge&logo=python&logoColor=1f9c94" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/FastAPI-Uvicorn-0f1f3d?style=for-the-badge&logo=fastapi&logoColor=1f9c94" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/React-18-0f1f3d?style=for-the-badge&logo=react&logoColor=1f9c94" alt="React 18" />
+  <img src="https://img.shields.io/badge/OpenAI-gpt--4o--mini-0f1f3d?style=for-the-badge&logo=openai&logoColor=1f9c94" alt="OpenAI" />
+  <br />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-1f9c94?style=for-the-badge" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/Deploy-Railway%20%7C%20Docker-1f9c94?style=for-the-badge&logo=docker&logoColor=white" alt="Deploy on Railway or Docker" />
+  <a href="https://github.com/Franosei/my_health_chatbot/stargazers"><img src="https://img.shields.io/github/stars/Franosei/my_health_chatbot?style=for-the-badge&color=e5c158&label=Stars" alt="GitHub stars" /></a>
+</p>
+
 ---
 
 ## Table of Contents
