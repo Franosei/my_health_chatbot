@@ -1179,12 +1179,26 @@ def send_urgent_alert(
 # Mounted at /mcp so Claude Desktop / remote agents can connect to:
 #   https://<your-railway-app>.railway.app/mcp
 # Set MCP_API_KEY in Railway environment variables to restrict access.
+#
+# Two things are required for this to actually work, not just import cleanly:
+#   1. FastMCP's own internal route defaults to "/mcp", so mounting its ASGI
+#      app at "/mcp" would double up to "/mcp/mcp". We reset it to "/" first
+#      so the mount prefix alone defines the public path.
+#   2. The streamable HTTP session manager needs its `.run()` context manager
+#      entered before it will handle a single request -- it starts the anyio
+#      task group all sessions run in. Starlette does NOT propagate a mounted
+#      sub-app's own `lifespan=` to the parent app, so without wiring it into
+#      this app's startup/shutdown, every request 500s with "Task group is
+#      not initialized." Confirmed live: mounting alone is not sufficient.
 
 _MCP_KEY = os.getenv("MCP_API_KEY", "")
 
 try:
+    from contextlib import AsyncExitStack  # noqa: E402
+
     from backend.mcp_server import mcp as _mcp_server  # noqa: E402
 
+    _mcp_server.settings.streamable_http_path = "/"
     _mcp_asgi = _mcp_server.streamable_http_app()
 
     if _MCP_KEY:
@@ -1201,7 +1215,30 @@ try:
                     return
             await _unguarded(scope, receive, send)
 
+    # Starlette's Mount only matches "/mcp/..." (something after the prefix),
+    # not the bare "/mcp" that every client is told to connect to. Without
+    # this, the documented URL falls through to the frontend static-file
+    # catch-all and returns 404/405 instead of reaching the MCP app.
+    @app.api_route("/mcp", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+    async def _mcp_root_redirect() -> Response:
+        return Response(status_code=307, headers={"Location": "/mcp/"})
+
     app.mount("/mcp", _mcp_asgi)
+
+    _mcp_exit_stack: AsyncExitStack | None = None
+
+    @app.on_event("startup")
+    async def _start_mcp_session_manager() -> None:
+        global _mcp_exit_stack
+        _mcp_exit_stack = AsyncExitStack()
+        await _mcp_exit_stack.enter_async_context(_mcp_server.session_manager.run())
+        print("[API] MCP session manager started")
+
+    @app.on_event("shutdown")
+    async def _stop_mcp_session_manager() -> None:
+        if _mcp_exit_stack is not None:
+            await _mcp_exit_stack.aclose()
+
     print("[API] MCP server mounted at /mcp")
 except Exception as _mcp_err:
     print(f"[API] MCP server not mounted (non-fatal): {_mcp_err}")
