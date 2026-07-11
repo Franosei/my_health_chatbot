@@ -78,7 +78,10 @@ export function vitalLabel(type: unknown): string {
     b12: "Vitamin B12",
     free_t4: "Free T4",
     free_t3: "Free T3",
-    d_dimer: "D-Dimer"
+    d_dimer: "D-Dimer",
+    peak_expiratory_flow: "Peak Expiratory Flow",
+    peak_urinary_flow_rate: "Peak Urinary Flow Rate (Qmax)",
+    peak_flow: "Peak Flow (unspecified -- verify respiratory vs. urology)"
   };
   return overrides[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
 }

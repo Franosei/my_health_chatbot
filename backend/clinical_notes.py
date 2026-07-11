@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from uuid import uuid4
 
 from backend.user_store import UserStore, compute_current_age
+from backend.utils import render_vital_for_prompt
 
 
 def _utc_now() -> str:
@@ -98,11 +99,8 @@ def _build_objective_section(
             vtype = v.get("type", "")
             if vtype and vtype not in seen_types:
                 seen_types.add(vtype)
-                label = vtype.replace("_", " ").title()
-                recorded = v.get("recorded_on", "")[:10]
-                vital_lines.append(
-                    f"{label}: {v.get('value', '')} {v.get('unit', '')} (recorded {recorded})"
-                )
+                truncated = dict(v, recorded_on=v.get("recorded_on", "")[:10])
+                vital_lines.append(render_vital_for_prompt(truncated, date_prefix="recorded "))
         if vital_lines:
             lines.append("Recent vitals / labs:\n  " + "\n  ".join(vital_lines[:10]))
 

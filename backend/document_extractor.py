@@ -67,7 +67,8 @@ calcium, phosphate, magnesium, albumin, total_protein, bilirubin_total,
 bilirubin_direct, alt, ast, alp, ggt, ldh, crp, esr, ferritin, iron,
 transferrin_saturation, b12, folate, cholesterol_total, cholesterol_ldl,
 cholesterol_hdl, triglycerides, tsh, free_t4, free_t3, cortisol,
-psa, peak_flow, inr, aptt, d_dimer, fibrinogen, troponin, bnp, nt_probnp
+psa, peak_expiratory_flow, peak_urinary_flow_rate, inr, aptt, d_dimer,
+fibrinogen, troponin, bnp, nt_probnp
 
 Rules:
 - Extract ONLY values explicitly stated in the document -- do not estimate or infer.
@@ -75,6 +76,12 @@ Rules:
 - Do NOT include normal reference ranges as values -- only the actual measured result.
 - If a section is absent, use an empty array.
 - Keep the JSON compact -- no extra commentary outside the JSON object.
+- Some measurement names are ambiguous across specialties -- use unit and surrounding document
+  context (referring clinic, mentioned conditions, letter header) to pick the specific correct
+  key, never a generic one when a specific one is available. Example: "peak flow" alone is
+  ambiguous -- if it relates to breathing/lungs/asthma/spirometry (unit typically L/min), use
+  peak_expiratory_flow; if it relates to urology/bladder/prostate/voiding/uroflowmetry (unit
+  typically mL/s), use peak_urinary_flow_rate.
 
 Document text:
 {text}

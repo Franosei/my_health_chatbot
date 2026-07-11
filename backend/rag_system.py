@@ -28,7 +28,7 @@ from backend.pubmed_search import PubMedCentralSearcher
 from backend.query_expander import QueryExpander
 from backend.summarizer import LLMHelper
 from backend.user_store import UserStore
-from backend.utils import build_excerpt, extract_text_from_pdf
+from backend.utils import build_excerpt, extract_text_from_pdf, render_vital_for_prompt
 
 
 class RAGEngine:
@@ -1460,17 +1460,9 @@ class RAGEngine:
         lines = []
         for vtype in sorted(latest):
             entry = latest[vtype]
-            value = (entry.get("value") or "").strip()
-            unit = (entry.get("unit") or "").strip()
-            date = (entry.get("recorded_on") or "").strip()
-            if not value:
+            if not (entry.get("value") or "").strip():
                 continue
-            line = f"{vtype}: {value}"
-            if unit:
-                line += f" {unit}"
-            if date:
-                line += f" ({date})"
-            lines.append(line)
+            lines.append(render_vital_for_prompt(entry))
 
         if not lines:
             return ""
@@ -1532,17 +1524,11 @@ class RAGEngine:
         vital_lines: List[str] = []
         for vtype, entry in sorted(latest_vitals.items()):
             recorded_str = (entry.get("recorded_on") or "").strip()
-            value = (entry.get("value") or "").strip()
-            unit = (entry.get("unit") or "").strip()
-            if not value:
+            if not (entry.get("value") or "").strip():
                 continue
             try:
                 if date.fromisoformat(recorded_str) >= cutoff:
-                    line = f"{vtype}: {value}"
-                    if unit:
-                        line += f" {unit}"
-                    line += f" (recorded {recorded_str})"
-                    vital_lines.append(line)
+                    vital_lines.append(render_vital_for_prompt(entry, date_prefix="recorded "))
             except (ValueError, TypeError):
                 pass
 

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from backend.user_store import compute_current_age
+from backend.utils import render_vital_for_prompt
 
 # Urgency ranking for comparing previous visit severity
 URGENCY_RANK: Dict[str, int] = {"routine": 0, "elevated": 1, "urgent": 2, "crisis": 3}
@@ -178,15 +179,8 @@ def build_patient_history_context(
 
     # ── Recent vitals ────────────────────────────────────────────────────────────
     for entry in (vitals or [])[:8]:
-        vtype = (entry.get("type") or "").strip()
-        value = (entry.get("value") or "").strip()
-        unit = (entry.get("unit") or "").strip()
-        recorded_on = (entry.get("recorded_on") or "").strip()
-        if vtype and value:
-            label = f"{vtype}: {value}{' ' + unit if unit else ''}"
-            if recorded_on:
-                label += f" ({recorded_on})"
-            ctx.recent_vitals.append(label)
+        if (entry.get("type") or "").strip() and (entry.get("value") or "").strip():
+            ctx.recent_vitals.append(render_vital_for_prompt(entry))
 
     # ── Conditions from longitudinal memory ─────────────────────────────────────
     condition_names = []

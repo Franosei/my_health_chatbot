@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from backend.utils import render_vital_for_prompt
+
 
 _SKIP_WORDS: frozenset = frozenset({
     "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
@@ -207,11 +209,10 @@ def build_context_graph(
         vval = str(vital.get("value") or "").strip()
         if not vtype or not vval:
             continue
-        unit = str(vital.get("unit") or "").strip()
         score = _score(q_words, vtype)
         recency = _recency_weight(vital.get("recorded_on"), now)
         if score > 0 or recency >= 0.7:
-            detail = f"{vtype}: {vval}{unit}"
+            detail = render_vital_for_prompt(vital, include_date=False)
             graph.nodes.append(ContextNode(
                 node_id=f"vital:{vtype.lower()}",
                 node_type="vital",
