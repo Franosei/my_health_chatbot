@@ -1247,7 +1247,12 @@ class UserStore:
         return False
 
     @staticmethod
-    def add_upload(username: str, upload_name: str, stored_path: Optional[str] = None) -> None:
+    def add_upload(
+        username: str,
+        upload_name: str,
+        stored_path: Optional[str] = None,
+        content_hash: Optional[str] = None,
+    ) -> None:
         user = _get_user_record(username)
         if not user:
             return
@@ -1258,12 +1263,15 @@ class UserStore:
             existing["uploaded_at"] = _utc_now()
             if stored_path is not None:
                 existing["stored_path"] = stored_path
+            if content_hash is not None:
+                existing["content_hash"] = content_hash
         else:
             uploads.append(
                 {
                     "file": upload_name,
                     "uploaded_at": _utc_now(),
                     "stored_path": stored_path or "",
+                    "content_hash": content_hash or "",
                     "summary_available": False,
                 }
             )

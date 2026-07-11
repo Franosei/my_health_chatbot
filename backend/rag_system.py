@@ -9,6 +9,9 @@ import re
 import numpy as np
 
 from backend.anonymizer import DocumentAnonymizer
+from backend.anonymization_agent import AnonymizationAgent
+from backend.duplicate_detection_agent import DuplicateDetectionAgent
+from backend.document_relevance_agent import DocumentRelevanceAgent
 from backend.document_extractor import extract_health_data_from_document
 from backend.clinical_orchestrator import ClinicalOrchestrator
 from backend.image_analysis_agent import ImageAnalysisAgent, ImageAnalysisError
@@ -53,6 +56,9 @@ class RAGEngine:
             moderation=self.moderation,
         )
         self._image_analysis_agent = ImageAnalysisAgent(self.llm)
+        self._anonymization_agent = AnonymizationAgent(self.llm)
+        self._duplicate_agent = DuplicateDetectionAgent(self.llm)
+        self._relevance_agent = DocumentRelevanceAgent(self.llm)
         self._image_generator = ImageGenerator()
         self._video_generator = VideoGenerator()
         self._medication_checker = MedicationInteractionChecker()
@@ -200,6 +206,7 @@ class RAGEngine:
         self,
         user: Optional[str] = None,
         file_paths: Optional[List[Path]] = None,
+        content_hashes: Optional[Dict[str, str]] = None,
     ) -> List[Dict]:
         """
         Loads uploaded documents, anonymizes them, summarizes them, and persists
@@ -225,13 +232,55 @@ class RAGEngine:
             except Exception as exc:
                 raw_text = ""
                 text_error = f"PDF text could not be read: {exc}"
+
+            # Two agentic gates before any processing happens, both of which
+            # reject outright (delete the file, skip summarization/extraction/
+            # indexing entirely) rather than partially process. Only run for
+            # genuinely new uploads with readable text -- a re-index pass over
+            # already-known files shouldn't re-run either check.
+            if not text_error and is_new_upload:
+                relevance = self._relevance_agent.check(raw_text, path.name)
+                if not relevance.get("is_relevant", True):
+                    path.unlink(missing_ok=True)
+                    indexed_documents.append(
+                        {
+                            "file": path.name,
+                            "rejected": True,
+                            "rejection_type": "unrelated",
+                            "rejection_reason": relevance.get("reason")
+                            or "This does not appear to be a personal health or clinical document.",
+                        }
+                    )
+                    continue
+
+                if normalized_user:
+                    existing_summaries = UserStore.get_document_summaries(normalized_user)
+                    duplicate_match = (
+                        self._duplicate_agent.check(raw_text, path.name, existing_summaries)
+                        if existing_summaries
+                        else None
+                    )
+                    if duplicate_match:
+                        path.unlink(missing_ok=True)
+                        indexed_documents.append(
+                            {
+                                "file": path.name,
+                                "rejected": True,
+                                "rejection_type": "duplicate",
+                                "rejection_reason": "This document has already been uploaded.",
+                                "duplicate_of": duplicate_match["matches_file"],
+                            }
+                        )
+                        continue
+
             summary_error = ""
             if text_error:
                 summary = "Uploaded document could not be read as text."
                 summary_error = text_error
             else:
                 try:
-                    anonymized = self.anonymizer.anonymize(raw_text)
+                    regex_redacted = self.anonymizer.anonymize(raw_text)
+                    anonymized = self._anonymization_agent.anonymize(regex_redacted)
                     summary = self.llm.summarize_user_health_record(anonymized)
                 except Exception as exc:
                     summary_error = f"Document summary failed: {exc}"
@@ -259,7 +308,12 @@ class RAGEngine:
             extracted: Dict = {}
             if normalized_user:
                 if is_new_upload:
-                    UserStore.add_upload(normalized_user, path.name, stored_path=str(path))
+                    UserStore.add_upload(
+                        normalized_user,
+                        path.name,
+                        stored_path=str(path),
+                        content_hash=(content_hashes or {}).get(path.name),
+                    )
                     known_uploads.add(path.name)
 
                     # Auto-populate health data from the document (new uploads only)

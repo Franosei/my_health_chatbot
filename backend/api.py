@@ -866,7 +866,19 @@ async def upload_documents(
     expected_name = profile.get("display_name", username)
     save_dir = UserStore.get_upload_dir(username)
     ready_paths: List[Path] = []
+    content_hashes: Dict[str, str] = {}
     pending: List[Dict] = []
+    duplicates: List[Dict] = []
+
+    # Content-hash based dedup: catches the same document re-uploaded under a
+    # different filename (browsers often rename on re-pick), and avoids
+    # burning two LLM calls (summarize + structured extraction) reprocessing
+    # a file we already have.
+    existing_hashes = {
+        item.get("content_hash"): item
+        for item in UserStore.get_uploads(username)
+        if item.get("content_hash")
+    }
 
     for upload in files:
         filename = _safe_filename(upload.filename or "upload.pdf")
@@ -880,22 +892,64 @@ async def upload_documents(
                 }
             )
             continue
-        path = save_dir / filename
+
         content = await upload.read()
+        content_hash = hashlib.sha256(content).hexdigest()
+        prior = existing_hashes.get(content_hash)
+        if prior:
+            duplicates.append(
+                {
+                    "file": filename,
+                    "status": "duplicate",
+                    "message": "This document has already been uploaded.",
+                    "previous_file": prior.get("file"),
+                    "previous_uploaded_at": prior.get("uploaded_at", ""),
+                }
+            )
+            continue
+
+        path = save_dir / filename
         path.write_bytes(content)
         verification = verify_saved_pdf(path, expected_name)
         if verification.get("status") == "matched" or process_unverified:
             ready_paths.append(path)
+            content_hashes[path.name] = content_hash
         else:
             pending.append(verification)
 
-    indexed = []
+    processed: List[Dict] = []
+    rejected: List[Dict] = []
     if ready_paths:
-        indexed = _get_rag_engine().ingest_documents(user=username, file_paths=ready_paths)
+        indexed = _get_rag_engine().ingest_documents(
+            user=username, file_paths=ready_paths, content_hashes=content_hashes
+        )
+        for item in indexed:
+            if not item.get("rejected"):
+                processed.append(item)
+            elif item.get("rejection_type") == "duplicate":
+                duplicates.append(
+                    {
+                        "file": item["file"],
+                        "status": "duplicate",
+                        "message": "This document has already been uploaded.",
+                        "previous_file": item.get("duplicate_of", ""),
+                    }
+                )
+            else:
+                rejected.append(
+                    {
+                        "file": item["file"],
+                        "status": "unrelated",
+                        "message": item.get("rejection_reason")
+                        or "This does not appear to be a personal health record.",
+                    }
+                )
 
     return {
-        "processed": indexed,
+        "processed": processed,
         "pending": pending,
+        "duplicates": duplicates,
+        "rejected": rejected,
         "snapshot": _snapshot(username),
     }
 

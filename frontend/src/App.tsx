@@ -948,7 +948,7 @@ function ChatView({
             setNotice={setNotice}
             role={role}
           />
-          <UploadPanel setSnapshot={setSnapshot} setNotice={setNotice} />
+          <UploadPanel snapshot={snapshot} setSnapshot={setSnapshot} setNotice={setNotice} />
           <ExportPanel snapshot={snapshot} setNotice={setNotice} />
           <RecordPanel snapshot={snapshot} setSnapshot={setSnapshot} compact={false} />
         </aside>
@@ -1645,26 +1645,45 @@ function PatientNoteView({ note }: { note: ClinicalNote }) {
 }
 
 function UploadPanel({
+  snapshot,
   setSnapshot,
   setNotice
 }: {
+  snapshot: Snapshot;
   setSnapshot: (snapshot: Snapshot) => void;
   setNotice: (notice: string) => void;
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [processUnverified, setProcessUnverified] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [lastResult, setLastResult] = useState<{ processed: number; pending: number; duplicates: string[]; rejected: string[] } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploads = [...snapshot.uploads].sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
 
   async function submit() {
     if (!files.length) {
       return;
     }
     setBusy(true);
+    setLastResult(null);
     try {
       const result = await uploadDocuments(files, processUnverified);
       setSnapshot(result.snapshot);
       setFiles([]);
-      if (result.pending.length) {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      setLastResult({
+        processed: result.processed.length,
+        pending: result.pending.length,
+        duplicates: result.duplicates.map((item) => `"${item.file}" -- ${item.message}`),
+        rejected: result.rejected.map((item) => `"${item.file}" -- ${item.message}`)
+      });
+      if (result.duplicates.length) {
+        setNotice(`${result.duplicates.length} document already uploaded -- skipped.`);
+      } else if (result.rejected.length) {
+        setNotice(`${result.rejected.length} document rejected -- not a health record.`);
+      } else if (result.pending.length) {
         setNotice(`${result.pending.length} document needs review before extraction.`);
       } else {
         setNotice(`${result.processed.length} document processed.`);
@@ -1682,15 +1701,54 @@ function UploadPanel({
         <Upload size={19} />
         <strong>Documents</strong>
       </div>
-      <input type="file" accept="application/pdf" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf"
+        multiple
+        onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+      />
       <label className="check-row">
         <input type="checkbox" checked={processUnverified} onChange={(event) => setProcessUnverified(event.target.checked)} />
         Process even when the patient name needs review
       </label>
       <button className="primary full" onClick={submit} disabled={busy || !files.length}>
         <Upload size={18} />
-        Upload PDFs
+        {busy ? "Uploading..." : "Upload PDFs"}
       </button>
+      {lastResult && (lastResult.processed > 0 || lastResult.pending > 0) && (
+        <p className="notice success upload-confirm">
+          <CheckCircle2 size={16} />
+          {lastResult.processed} processed{lastResult.pending ? `, ${lastResult.pending} need review` : ""}.
+        </p>
+      )}
+      {lastResult && lastResult.duplicates.map((message, index) => (
+        <p className="notice warn upload-confirm" key={`dup-${index}`}>
+          <AlertTriangle size={16} />
+          {message}
+        </p>
+      ))}
+      {lastResult && lastResult.rejected.map((message, index) => (
+        <p className="notice error upload-confirm" key={`rej-${index}`}>
+          <AlertTriangle size={16} />
+          {message}
+        </p>
+      ))}
+      {uploads.length > 0 ? (
+        <ul className="upload-list">
+          {uploads.map((upload) => (
+            <li key={`${upload.file}-${upload.uploaded_at}`}>
+              <FileText size={16} />
+              <div>
+                <strong>{clean(upload.file, "Document")}</strong>
+                <span>{formatTimestamp(upload.uploaded_at) || "Recently uploaded"}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted upload-empty">No documents uploaded yet.</p>
+      )}
     </section>
   );
 }

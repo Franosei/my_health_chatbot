@@ -185,8 +185,10 @@ export async function streamImageAnalysis(
 }
 
 export function uploadDocuments(files: File[], processUnverified: boolean): Promise<{
-  processed: unknown[];
+  processed: { file: string }[];
   pending: unknown[];
+  duplicates: { file: string; message: string }[];
+  rejected: { file: string; message: string }[];
   snapshot: Snapshot;
 }> {
   const form = new FormData();
