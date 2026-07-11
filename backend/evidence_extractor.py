@@ -97,12 +97,24 @@ def _extract_one_article(
         '  "contraindications": ["contraindication relevant to this patient"],\n'
         '  "drug_interactions": ["interaction involving this patient medications"],\n'
         '  "patient_relevant_summary": "2-3 sentences on what this article contributes for this patient",\n'
-        '  "alignment_confidence": 0.0-1.0\n'
+        '  "alignment_confidence": 0.0-1.0,\n'
+        '  "specialty_mismatch": true/false,\n'
+        '  "specialty_mismatch_reason": "one sentence, only if specialty_mismatch is true"\n'
         "}\n\n"
         "RULES:\n"
         "- Only include facts explicitly in the article text -- never infer\n"
         "- patient_aligned_facts must reference actual values from the patient profile\n"
         "- If article does not match patient's conditions/meds, set patient_aligned_facts: []\n"
+        "- SPECIALTY/MEANING MISMATCH: set specialty_mismatch to true if this article discusses a "
+        "different clinical meaning of an ambiguous term than what the patient's own profile "
+        "confirms (e.g. respiratory peak-flow guidance when the patient profile confirms a "
+        "urology peak urinary flow rate reading, or any other term whose meaning differs by body "
+        "system/specialty). This is a hard exclusion signal, independent of confidence scoring -- "
+        "set it true whenever the mismatch is real, even if the article otherwise reads as "
+        "well-written or superficially on-topic. When true, also set answers_question to false, "
+        "patient_aligned_facts to [], alignment_confidence to 0.0, and patient_relevant_summary "
+        "to state plainly that this source concerns a different measurement/condition and does "
+        "not apply to this patient's confirmed reading.\n"
         "- alignment_confidence: 1.0 = directly addresses patient's conditions; 0.0 = irrelevant\n"
         "- Return ONLY the JSON object"
     )
@@ -140,6 +152,8 @@ def _extract_one_article(
             drug_interactions=data.get("drug_interactions", [])[:4],
             patient_relevant_summary=str(data.get("patient_relevant_summary", ""))[:500],
             alignment_confidence=float(data.get("alignment_confidence", 0.5)),
+            specialty_mismatch=bool(data.get("specialty_mismatch", False)),
+            specialty_mismatch_reason=str(data.get("specialty_mismatch_reason", ""))[:300],
             source_snippet=snippet,
         )
 
@@ -197,16 +211,40 @@ def build_evidence_dossier(
     # Sort: highest alignment confidence first
     articles.sort(key=lambda a: a.alignment_confidence, reverse=True)
 
+    # Sources the extractor confirmed concern a different clinical meaning of an ambiguous term
+    # (or are otherwise irrelevant) are excluded entirely -- they must never reach the answer
+    # prompt, even as "general context", since that's exactly how wrong-specialty guidance leaks
+    # into an otherwise-correct answer. specialty_mismatch is a hard, explicit signal from the
+    # extractor and is checked independently of alignment_confidence -- a mismatched source must
+    # never survive just because it scored a middling confidence.
+    MISMATCH_THRESHOLD = 0.1
+    mismatched = [
+        a for a in articles
+        if a.specialty_mismatch or (a.alignment_confidence < MISMATCH_THRESHOLD and not a.answers_question)
+    ]
+    excluded_source_ids: List[str] = []
+    if mismatched:
+        mismatched_ids = {id(a) for a in mismatched}
+        excluded_source_ids = [a.source_id for a in mismatched]
+        articles = [a for a in articles if id(a) not in mismatched_ids]
+
     low_conf = [a for a in articles if a.alignment_confidence < 0.3]
-    extraction_notes = (
-        f"{len(low_conf)} source(s) had low patient alignment confidence (<0.3) -- used for general context only."
-        if low_conf
-        else ""
-    )
+    notes = []
+    if mismatched:
+        notes.append(
+            f"{len(mismatched)} source(s) excluded -- confirmed to concern a different "
+            "condition/measurement meaning than this patient's profile."
+        )
+    if low_conf:
+        notes.append(
+            f"{len(low_conf)} source(s) had low patient alignment confidence (<0.3) -- used for general context only."
+        )
+    extraction_notes = " ".join(notes)
 
     return ExtractedEvidenceDossier(
         question=question,
         patient_profile_summary=patient_summary,
         articles=articles,
         extraction_notes=extraction_notes,
+        excluded_source_ids=excluded_source_ids,
     )

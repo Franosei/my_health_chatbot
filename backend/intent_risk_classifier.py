@@ -7,7 +7,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -33,6 +33,11 @@ class IntentClassification:
     presentation_hint: str = "none"
     # none | thunderclap_headache | possible_sepsis | recurrent_blackout
     # | chronic_cough_red_flags | chronic_cough_no_red_flags
+    ambiguous_term_detected: bool = False
+    ambiguous_term: str = ""
+    ambiguity_clarifying_question: str = ""
+    ambiguity_reply_options: List[Dict[str, str]] = field(default_factory=list)
+    # [{"display": short chip label, "prompt": full self-contained disambiguated question}, ...]
 
 
 # ── Fast regex crisis patterns ─────────────────────────────────────────────────
@@ -110,6 +115,7 @@ class IntentRiskClassifier:
         user_profile: Optional[dict] = None,
         role_key: str = "patient",
         patient_history=None,
+        recent_turns: Optional[List[dict]] = None,
     ) -> IntentClassification:
         """
         Full classification pipeline. Run this concurrently with query expansion
@@ -129,7 +135,7 @@ class IntentRiskClassifier:
 
         # Stage 2: LLM classification
         try:
-            return self._llm_classify(question, user_profile or {}, role_key, patient_history)
+            return self._llm_classify(question, user_profile or {}, role_key, patient_history, recent_turns)
         except Exception as exc:
             print(f"IntentRiskClassifier LLM call failed, using safe defaults: {exc}")
             return self._safe_default()
@@ -140,7 +146,12 @@ class IntentRiskClassifier:
         return any(pattern.search(text) for pattern in _CRISIS_PATTERNS)
 
     def _llm_classify(
-        self, question: str, user_profile: dict, role_key: str, patient_history=None
+        self,
+        question: str,
+        user_profile: dict,
+        role_key: str,
+        patient_history=None,
+        recent_turns: Optional[List[dict]] = None,
     ) -> IntentClassification:
         role_hint = f"The user's clinical role is: {role_key}." if role_key else ""
         pregnancy_hint = ""
@@ -161,9 +172,27 @@ class IntentRiskClassifier:
                     "Always consider whether this history raises the risk level of the current question."
                 )
 
+        continuation_block = ""
+        if recent_turns:
+            turns = [
+                m for m in recent_turns
+                if m.get("role") in ("user", "assistant") and m.get("content", "").strip()
+            ][-4:]
+            if turns:
+                rendered = "\n".join(f"{m['role'].title()}: {m['content'].strip()}" for m in turns)
+                continuation_block = (
+                    "\n\nRecent conversation (most recent last):\n"
+                    + rendered
+                    + "\n\nIf the last assistant turn already asked a clarifying question about an "
+                    "ambiguous term, and the patient's current message answers it, resolve the "
+                    "ambiguity using that reply -- set ambiguous_term_detected to false (it is "
+                    "already resolved) and classify normally using both messages together as the "
+                    "intended question."
+                )
+
         prompt = (
             "You are a clinical intent classifier for a health information system.\n"
-            f"{role_hint}{pregnancy_hint}{history_block}\n\n"
+            f"{role_hint}{pregnancy_hint}{history_block}{continuation_block}\n\n"
             "Classify the following health question and return a JSON object with these exact keys:\n"
             "- intent_category: one of [symptom_triage, medication_query, chronic_condition, "
             "maternity, msk, mental_health, general_info, crisis, administrative]\n"
@@ -186,7 +215,31 @@ class IntentRiskClassifier:
             "  'chronic_cough_red_flags' -- cough lasting 8+ weeks WITH any of: coughing blood, "
             "unexplained weight loss, or drenching night sweats.\n"
             "  'chronic_cough_no_red_flags' -- cough lasting 8+ weeks WITHOUT those red flags.\n"
-            "  'none' -- none of the above clearly apply.\n\n"
+            "  'none' -- none of the above clearly apply.\n"
+            "- ambiguous_term_detected: boolean -- true ONLY if the question uses a specific "
+            "clinical term/measurement/lab/symptom name that has genuinely different meanings "
+            "across medical specialties, where the different meanings would lead to MATERIALLY "
+            "DIFFERENT clinical guidance, AND the patient's known history above does not already "
+            "make clear which meaning applies. Example: 'peak flow' alone could be peak "
+            "EXPIRATORY flow (respiratory/asthma, L/min) or peak URINARY flow rate / Qmax "
+            "(urology, mL/s) -- if the patient's history doesn't already show which one, and the "
+            "question doesn't say, flag this. Do NOT flag ordinary vague wording -- only genuine "
+            "cross-specialty ambiguity. Default to false; most questions are not ambiguous in "
+            "this sense. NEVER set this true if risk_level is urgent or crisis -- resolve as best "
+            "judgement and proceed instead of delaying care with a question.\n"
+            "- ambiguous_term: the specific ambiguous term from the question, or empty string.\n"
+            "- ambiguity_clarifying_question: if ambiguous_term_detected is true, ONE short, "
+            "natural, role-appropriate question asking the patient which meaning applies. Empty "
+            "string otherwise.\n"
+            "- ambiguity_reply_options: if ambiguous_term_detected is true, an array of 2-3 "
+            "objects {\"display\": short label, \"prompt\": a FULL, SELF-CONTAINED restatement of "
+            "the patient's original question with the ambiguity resolved} -- each prompt must "
+            "stand alone as a complete question. Example for 'What is my peak flow level and what "
+            "does it mean?': [{\"display\": \"It was a breathing test\", \"prompt\": \"My peak "
+            "flow was measured with a breathing/asthma peak flow meter -- what does my reading "
+            "mean?\"}, {\"display\": \"It was a urine flow test\", \"prompt\": \"My peak flow was "
+            "measured during a urology urine flow test (uroflowmetry) -- what does my reading "
+            "mean?\"}]. Empty array otherwise.\n\n"
             f"Question: {question}\n\n"
             "Return only valid JSON, no other text."
         )
@@ -207,9 +260,27 @@ class IntentRiskClassifier:
         raw_presentation = data.get("presentation_hint", "none")
         presentation_hint = raw_presentation if raw_presentation in valid_presentations else "none"
 
+        risk_level = data.get("risk_level", "routine")
+        ambiguity_clarifying_question = str(data.get("ambiguity_clarifying_question", "")).strip()
+        ambiguity_reply_options = [
+            {"display": str(o.get("display", "")).strip(), "prompt": str(o.get("prompt", "")).strip()}
+            for o in (data.get("ambiguity_reply_options", []) or [])
+            if isinstance(o, dict)
+            and str(o.get("display", "")).strip()
+            and str(o.get("prompt", "")).strip()
+        ][:3]
+        # A broken/empty clarification (missing question or options) must never surface as an
+        # interrupt -- only ask when we have something usable to show the patient.
+        ambiguous_term_detected = bool(
+            data.get("ambiguous_term_detected", False)
+            and ambiguity_clarifying_question
+            and ambiguity_reply_options
+            and risk_level not in ("urgent", "crisis")
+        )
+
         return IntentClassification(
             intent_category=data.get("intent_category", "general_info"),
-            risk_level=data.get("risk_level", "routine"),
+            risk_level=risk_level,
             vulnerable_flags=data.get("vulnerable_flags", []),
             escalation_required=bool(data.get("escalation_required", False)),
             escalation_reason=data.get("escalation_reason", ""),
@@ -219,6 +290,10 @@ class IntentRiskClassifier:
             ),
             confidence=float(data.get("confidence", 0.8)),
             presentation_hint=presentation_hint,
+            ambiguous_term_detected=ambiguous_term_detected,
+            ambiguous_term=str(data.get("ambiguous_term", "")).strip() if ambiguous_term_detected else "",
+            ambiguity_clarifying_question=ambiguity_clarifying_question if ambiguous_term_detected else "",
+            ambiguity_reply_options=ambiguity_reply_options if ambiguous_term_detected else [],
         )
 
     @staticmethod

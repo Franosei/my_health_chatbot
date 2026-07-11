@@ -85,6 +85,10 @@ class QueryExpander:
             "- The remaining queries should cover the current question from different evidence angles "
             "(e.g. mechanism, management, risk stratification).\n"
             "- Do not repeat the same concept across queries.\n"
+            "- If the patient's known history above gives a specific, confirmed meaning for an "
+            "otherwise ambiguous term in the question, use that confirmed meaning/terminology in "
+            "your queries -- never search using the raw ambiguous wording, since that risks "
+            "retrieving guidance for an entirely different meaning of the term.\n"
             "- Return only the bare queries, one per line, no numbering, no quotes.\n\n"
             "Search queries:"
         )

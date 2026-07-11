@@ -391,6 +391,12 @@ def _build_patient_summary(profile: "TrialSearchProfile") -> str:
         parts.append(f"Age: {profile.age} years")
     if profile.biological_sex:
         parts.append(f"Biological sex: {profile.biological_sex}")
+    if profile.raw_context:
+        # Bare condition/symptom labels above can be ambiguous across specialties (e.g.
+        # "clearance", "peak flow", "block") -- the full narrative is what actually
+        # confirms which specialty/meaning applies, and without it the scoring LLM only
+        # sees the bare ambiguous label and has no way to detect a mismatch.
+        parts.append("Full clinical context (use to resolve ambiguous terms above): " + profile.raw_context[:800])
     return "\n".join(parts) if parts else "No specific clinical data recorded."
 
 
@@ -405,7 +411,8 @@ def _llm_batch_condition_match(
     """
     api_key = os.getenv("OPENAI_API_KEY", "")
     empty = [{"alignment_score": 0, "match_level": "unknown",
-              "aligned_conditions": [], "exclusion_risks": [], "reasoning": ""}
+              "aligned_conditions": [], "exclusion_risks": [], "reasoning": "",
+              "specialty_mismatch": False}
              for _ in trial_stubs]
     if not api_key or not trial_stubs:
         return empty
@@ -439,6 +446,18 @@ def _llm_batch_condition_match(
         "   0–9:  Not relevant -- patient profile does not match trial purpose.\n\n"
         "Base the score on clinical relevance, not keyword overlap. "
         "Check both inclusion AND exclusion criteria carefully.\n\n"
+        '  "specialty_mismatch": true/false -- set true if this trial\'s relevance to the '
+        "patient rests on interpreting an ambiguous patient-profile term (a condition, "
+        "symptom, measurement, or medication reason with a different meaning in another "
+        "clinical specialty) in a specific way, and the patient profile does not confirm "
+        "that specific meaning. This is a hard signal: when true, this trial must not be "
+        "shown to the patient as a match regardless of the numeric score, because it may "
+        "reflect the wrong meaning of the term entirely rather than genuine relevance.\n"
+        "  IMPORTANT: if the patient profile does not explicitly state which specialty/meaning "
+        "an ambiguous term refers to, you MUST treat it as unresolved -- do not silently pick "
+        "whichever interpretation happens to make this trial relevant. In that situation set "
+        "specialty_mismatch to true and cap match_level at \"low\", even if the trial would "
+        "otherwise look like a strong match under the guessed interpretation.\n\n"
         f'Return ONLY a JSON object: {{"results": [...]}}\n\n'
         f"Patient profile:\n{patient_text}\n"
         f"\nTrials to assess:{trials_block}"
@@ -466,6 +485,7 @@ def _llm_batch_condition_match(
                     "aligned_conditions": list(r.get("aligned_conditions", []) or []),
                     "exclusion_risks": list(r.get("exclusion_risks", []) or []),
                     "reasoning": _clean(r.get("reasoning", "")),
+                    "specialty_mismatch": bool(r.get("specialty_mismatch", False)),
                 }
 
         return [
@@ -528,6 +548,7 @@ def _llm_score_candidates(
             "aligned_conditions": llm["aligned_conditions"],
             "exclusion_risks": llm["exclusion_risks"],
             "llm_reasoning": llm["reasoning"],
+            "specialty_mismatch": llm.get("specialty_mismatch", False),
             "age_status": age_sex["age_status"],
             "age_reason": age_sex["age_reason"],
             "sex_status": age_sex["sex_status"],
@@ -670,6 +691,23 @@ def build_trial_search_profile(
     )
 
 
+def _exclude_not_relevant(candidates: List[Dict]) -> List[Dict]:
+    """
+    Drops trials the LLM scoring pass (_llm_batch_condition_match) explicitly
+    judged not relevant, and trials flagged specialty_mismatch=True -- a hard,
+    explicit signal checked independently of the numeric score, so a trial whose
+    apparent relevance rests on the wrong meaning of an ambiguous term (e.g. a
+    measurement or condition name that reads differently in another specialty)
+    can't surface just because it was scored "low"/"medium" rather than
+    "not_relevant". Without this, a mismatched trial with a high coverage/
+    location score could still surface in the returned results.
+    """
+    return [
+        c for c in candidates
+        if c.get("match_level") != "not_relevant" and not c.get("specialty_mismatch")
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -750,6 +788,7 @@ def find_matching_trials(
     candidates = records[:_PRE_FILTER_N]
     if candidates:
         _llm_score_candidates(candidates, profile)
+        candidates = _exclude_not_relevant(candidates)
 
     # Remove internal _study reference before returning
     for r in candidates:

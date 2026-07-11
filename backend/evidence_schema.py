@@ -70,6 +70,14 @@ class ArticleEvidence(BaseModel):
     # Quality signal
     alignment_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
+    # True when this source discusses a different clinical meaning of an ambiguous
+    # term than the one confirmed by the patient's own profile (e.g. respiratory
+    # peak flow vs. urology peak flow) -- an explicit signal rather than something
+    # inferred from alignment_confidence, so a source can never leak through as
+    # "general context" just because it scored a middling confidence.
+    specialty_mismatch: bool = False
+    specialty_mismatch_reason: str = ""
+
     # Raw source passage used for extraction
     source_snippet: str = ""
 
@@ -83,6 +91,11 @@ class ExtractedEvidenceDossier(BaseModel):
     patient_profile_summary: str
     articles: List[ArticleEvidence] = Field(default_factory=list)
     extraction_notes: str = ""
+    # source_ids dropped from `articles` because they were confirmed to concern a
+    # different specialty/meaning of an ambiguous term. The orchestrator uses this
+    # to also strip them from combined_sources/evidence_quality_report so they
+    # can't reappear as citations or "general context" permission elsewhere.
+    excluded_source_ids: List[str] = Field(default_factory=list)
 
     def to_prompt_context(self) -> str:
         """Render the dossier as a structured LLM context block."""
@@ -97,9 +110,13 @@ class ExtractedEvidenceDossier(BaseModel):
             "RULE: Only cite facts explicitly present below. Do not invent or extend.",
             "",
         ]
-        for i, art in enumerate(self.articles, 1):
+        for art in self.articles:
             meta = " | ".join(filter(None, [art.journal, str(art.year or ""), f"Tier {art.evidence_tier}: {art.tier_label}"]))
-            lines.append(f"[S{i}] {art.title}")
+            # Label with the article's real source_id (matching combined_sources / the
+            # clickable Sources panel), not a positional index -- the dossier is sorted
+            # by alignment confidence, so a positional [S1..] label here would drift from
+            # the actual S-number the UI resolves citations against.
+            lines.append(f"[{art.source_id}] {art.title}")
             if meta:
                 lines.append(f"     {meta}")
             if art.question_facts:

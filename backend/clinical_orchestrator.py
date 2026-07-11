@@ -258,6 +258,10 @@ class AgenticRetrievalLoop:
             "- Call check_drug_interactions if the question involves medications or interactions.\n"
             "- Call search_patient_documents if the question relates to the patient's own records.\n"
             "- Call search_clinical_trials ONLY if the question explicitly asks about trials.\n"
+            "- If the patient context above already gives a specific, confirmed meaning for an "
+            "otherwise ambiguous term in the question, use that confirmed meaning/terminology in "
+            "every search query below -- never search using the raw ambiguous wording alone, "
+            "since that risks retrieving guidance for the wrong meaning entirely.\n"
             "- Make at most 4 tool calls total. Stop as soon as you have sufficient evidence.\n"
             "- When you have finished gathering evidence, respond with the word DONE."
         )
@@ -602,6 +606,7 @@ class ClinicalOrchestrator:
         conditions: Optional[List[Dict]] = None,
         vitals: Optional[List[Dict]] = None,
         context_graph: Optional["ContextGraph"] = None,
+        chat_history: Optional[List[Dict]] = None,
     ) -> Dict:
         """
         Full clinical orchestration pipeline.
@@ -644,7 +649,7 @@ class ClinicalOrchestrator:
 
         try:
             intent = self.intent_classifier.classify(
-                question, user_profile, role_config.role_key, patient_history
+                question, user_profile, role_config.role_key, patient_history, chat_history
             )
         except Exception as exc:
             print(f"[Orchestrator] Intent classification failed: {exc}")
@@ -657,6 +662,18 @@ class ClinicalOrchestrator:
         policy_decision = self.policy_engine.gate(intent, role_config, question, patient_history)
         if policy_decision.action == "escalate_only" and policy_decision.crisis_response:
             return self._build_crisis_bundle(question, normalized_user, role_config)
+
+        # -- Step 6b: Ambiguity gate -- ask before answering when a term has
+        # multiple clinically distinct meanings and patient context doesn't
+        # resolve which one applies. Only fires for routine/elevated risk and
+        # when no other policy escalation is already in play, so a real safety
+        # concern always wins over asking a question.
+        if (
+            intent.ambiguous_term_detected
+            and intent.risk_level not in ("urgent", "crisis")
+            and policy_decision.action == "allow"
+        ):
+            return self._build_clarification_bundle(question, normalized_user, role_config, intent)
 
         # -- Step 7: Pathway context ------------------------------------------
         pathway_context = self._get_pathway_context(intent, role_config)
@@ -776,6 +793,20 @@ class ClinicalOrchestrator:
             except Exception as exc:
                 print(f"[Orchestrator] Evidence dossier build failed (non-fatal): {exc}")
 
+        # -- Step 11b: Reconcile specialty-mismatch exclusions -----------------
+        # The dossier's per-article LLM extraction is the only stage that checks for
+        # cross-specialty term mismatch (e.g. respiratory vs. urology "peak flow").
+        # evidence_ranker's quality gate has no concept of this, so a source it
+        # accepted as question_aligned/background_only can still be a confirmed
+        # mismatch. Strip those source_ids out of combined_sources and the quality
+        # report now, before either reaches the answer prompt or the Sources panel --
+        # otherwise the "use ... for general context" permission in the quality gate
+        # text stays open for a source the dossier already rejected.
+        if evidence_dossier and evidence_dossier.excluded_source_ids:
+            combined_sources, evidence_quality_report = self._exclude_mismatched_sources(
+                combined_sources, evidence_quality_report, evidence_dossier.excluded_source_ids
+            )
+
         # -- Step 12: Build role-aware LLM context ----------------------------
         full_context = self._build_role_context(
             combined_sources=combined_sources,
@@ -874,6 +905,38 @@ class ClinicalOrchestrator:
             },
         }
 
+    def _build_clarification_bundle(
+        self,
+        question: str,
+        normalized_user: Optional[str],
+        role_config: RoleConfig,
+        intent: IntentClassification,
+    ) -> Dict:
+        answer = f"## Quick Question\n{intent.ambiguity_clarifying_question}"
+        return {
+            "kind": "final",
+            "payload": {
+                "answer_markdown": answer,
+                "answer_text": answer,
+                "sources": [],
+                "personal_context": [],
+                "follow_up_questions": intent.ambiguity_reply_options,
+                "trace": {
+                    "trace_id": "trace-clarify",
+                    "created_at": _utc_now(),
+                    "question": question,
+                    "answer_preview": answer[:280],
+                    "sources": [],
+                    "retrieval_mode": "clarification_requested",
+                    "role_key": role_config.role_key,
+                    "intent_category": intent.intent_category,
+                    "risk_level": intent.risk_level,
+                    "escalation_triggered": False,
+                    "ambiguous_term": intent.ambiguous_term,
+                },
+            },
+        }
+
     def _build_limited_bundle(
         self,
         question: str,
@@ -911,6 +974,65 @@ class ClinicalOrchestrator:
         }
 
     # -- Context builders -----------------------------------------------------
+
+    @staticmethod
+    def _exclude_mismatched_sources(
+        combined_sources: List[Dict],
+        evidence_quality_report: Dict,
+        excluded_source_ids: List[str],
+    ) -> Tuple[List[Dict], Dict]:
+        """
+        Removes sources the evidence dossier confirmed to concern a different
+        specialty/meaning of an ambiguous term from combined_sources (so they can't
+        appear in the Sources panel or be cited), and moves the matching entries in
+        evidence_quality_report from "accepted" into "excluded" so the quality-gate
+        text shown to the answer LLM stops describing them as usable general context.
+        """
+        excluded_ids = set(excluded_source_ids)
+        kept, dropped = [], []
+        for source in combined_sources:
+            (dropped if source.get("source_id") in excluded_ids else kept).append(source)
+        if not dropped:
+            return combined_sources, evidence_quality_report
+
+        report = dict(evidence_quality_report)
+        status_counts = dict(report.get("status_counts") or {})
+        newly_excluded = []
+        for source in dropped:
+            status = source.get("evidence_quality_status", "unknown")
+            if status_counts.get(status):
+                status_counts[status] -= 1
+                if status_counts[status] <= 0:
+                    del status_counts[status]
+            newly_excluded.append(
+                {
+                    "title": source.get("title", "Retrieved source"),
+                    "source_type": source.get("source_type", ""),
+                    "provider": source.get("provider", ""),
+                    "query": source.get("query", ""),
+                    "quality_score": source.get("evidence_quality_score", 0),
+                    "reasons": ["Confirmed by evidence extraction to concern a different "
+                                "specialty/measurement meaning than this patient's profile."],
+                    "mismatch_flags": ["specialty_mismatch"],
+                }
+            )
+
+        report["status_counts"] = status_counts
+        report["accepted_source_count"] = len(kept)
+        report["excluded_source_count"] = report.get("excluded_source_count", 0) + len(newly_excluded)
+        report["excluded_sources"] = (newly_excluded + list(report.get("excluded_sources") or []))[:5]
+
+        patient_aligned = status_counts.get("patient_aligned", 0)
+        if kept and patient_aligned:
+            report["overall_status"] = "patient_aligned_evidence_available"
+        elif kept:
+            report["overall_status"] = "question_aligned_only"
+        elif report["excluded_source_count"]:
+            report["overall_status"] = "no_sources_passed_quality_gate"
+        else:
+            report["overall_status"] = "no_live_evidence"
+
+        return kept, report
 
     def _build_role_context(
         self,

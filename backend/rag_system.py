@@ -440,7 +440,7 @@ class RAGEngine:
         clickable sources, personal context traceability, and audit metadata.
         """
         del stream
-        bundle = self._prepare_answer_bundle(question=question, user=user)
+        bundle = self._prepare_answer_bundle(question=question, user=user, chat_history=chat_history)
         if bundle["kind"] == "final":
             return self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user)
 
@@ -493,7 +493,7 @@ class RAGEngine:
         if needs_video:
             needs_illustration = False
 
-        bundle = self._prepare_answer_bundle(question=question, user=user)
+        bundle = self._prepare_answer_bundle(question=question, user=user, chat_history=chat_history)
         if bundle["kind"] == "final":
             payload = self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user)
             if extra_trace_metadata:
@@ -695,7 +695,12 @@ class RAGEngine:
             else:
                 yield event
 
-    def _prepare_answer_bundle(self, question: str, user: Optional[str] = None) -> Dict:
+    def _prepare_answer_bundle(
+        self,
+        question: str,
+        user: Optional[str] = None,
+        chat_history: Optional[List[dict]] = None,
+    ) -> Dict:
         normalized_user = user.strip().lower() if user else None
 
         # Parallelize all UserStore reads + context restoration concurrently.
@@ -747,6 +752,7 @@ class RAGEngine:
             conditions=conditions,
             vitals=vitals,
             context_graph=context_graph,
+            chat_history=chat_history,
         )
         if bundle.get("kind") == "answer":
             medication_check = self._build_medication_check(

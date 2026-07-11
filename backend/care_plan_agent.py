@@ -9,13 +9,21 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional
 
 import openai
 
+from backend.evidence_extractor import _extract_one_article
 from backend.official_guidance import OfficialGuidanceEngine
 from backend.pubmed_search import PubMedCentralSearcher
+
+# Sources the extractor confirms are near-zero relevance and don't answer the
+# question are excluded outright -- same threshold and rationale as
+# evidence_extractor.build_evidence_dossier's chat-pipeline fix.
+_MISMATCH_THRESHOLD = 0.1
 
 _TOOLS: List[Dict] = [
     {
@@ -249,6 +257,17 @@ class CarePlanAgent:
         sex = profile.get("biological_sex") or "not recorded"
         role = profile.get("role") or "Patient"
 
+        self._extraction_context = {
+            "question": f"Care plan for {condition}",
+            "patient_summary": (
+                f"Date of birth: {dob}; Biological sex: {sex}; "
+                f"Medications: {json.dumps(meds) if meds else 'none recorded'}; "
+                f"Conditions: {json.dumps(existing_conditions) if existing_conditions else 'none recorded'}"
+            ),
+            "medications": [m.get("name", "") for m in meds if isinstance(m, dict) and m.get("name")],
+            "conditions": [c.get("name", "") for c in existing_conditions if isinstance(c, dict) and c.get("name")],
+        }
+
         system_prompt = f"""You are a specialist evidence-based care-plan assistant embedded in FlynnMed, a UK-focused clinical AI platform (NHS-aligned).
 
 Build a comprehensive, personalised care plan for: **{condition}**
@@ -269,7 +288,8 @@ AGENT RULES:
 5. Lab reminders must use correct NHS/NICE frequencies in months.
 6. Escalation thresholds must state real clinical values (e.g. "BP > 180/120 mmHg" not "very high BP").
 7. Safety notes must flag medication interactions, red flags, and safeguarding concerns specific to this condition.
-8. After gathering evidence, generate the final plan JSON only -- no prose outside the JSON."""
+8. After gathering evidence, generate the final plan JSON only -- no prose outside the JSON.
+9. If any patient data used above (a condition name, medication reason, or other input) is ambiguous, has multiple clinically distinct meanings across specialties, or conflicts with what would be expected for {condition}, state that uncertainty explicitly in safety_notes instead of silently picking one interpretation and building the plan around it as fact."""
 
         messages: List[Dict] = [
             {"role": "system", "content": system_prompt},
@@ -419,6 +439,9 @@ AGENT RULES:
             "## Tests and results to request\n"
             "## Symptoms or concerns to mention\n"
             "## What you want to achieve from this appointment\n\n"
+            "If anything in the care plan data above is ambiguous or uncertain, add it as an "
+            "item under \"Symptoms or concerns to mention\" so the patient can clarify it with "
+            "their GP directly.\n\n"
             "Keep it concise, patient-friendly, and in plain language."
         )
 
@@ -433,13 +456,62 @@ AGENT RULES:
     # Tool implementations
     # ------------------------------------------------------------------
 
+    def _filter_relevant(
+        self, results: List[Dict], title_key: str, snippet_keys: List[str]
+    ) -> List[Dict]:
+        """
+        Filters raw NHS/PubMed search results through the same specialty-mismatch
+        extractor the chat pipeline uses (evidence_extractor._extract_one_article),
+        dropping sources confirmed to concern a different clinical meaning/system
+        than this patient's confirmed data before they can reach the synthesis LLM.
+        """
+        if not results:
+            return []
+
+        ctx = getattr(self, "_extraction_context", None) or {
+            "question": "",
+            "patient_summary": "Patient profile not recorded",
+            "medications": [],
+            "conditions": [],
+        }
+
+        sources = []
+        for i, r in enumerate(results):
+            snippet = ""
+            for key in snippet_keys:
+                snippet = (r.get(key) or "").strip()
+                if snippet:
+                    break
+            sources.append({"source_id": f"src-{i}", "title": r.get(title_key, "") or "Untitled", "snippet": snippet})
+
+        fake_llm = SimpleNamespace(client=self._client)
+        with ThreadPoolExecutor(max_workers=min(4, len(sources))) as executor:
+            futures = [
+                executor.submit(
+                    _extract_one_article,
+                    fake_llm, source, ctx["question"], ctx["patient_summary"],
+                    ctx["medications"], ctx["conditions"],
+                )
+                for source in sources
+            ]
+            extracted = [future.result() for future in futures]
+
+        return [
+            result
+            for result, art in zip(results, extracted)
+            if not (art.alignment_confidence < _MISMATCH_THRESHOLD and not art.answers_question)
+        ]
+
     def _nhs(self, query: str) -> str:
         try:
             results = self._guidance.search([query], per_source_limit=2)
             if not results:
                 return "No NHS/NICE results found."
+            relevant = self._filter_relevant(results[:4], title_key="title", snippet_keys=["snippet", "content"])
+            if not relevant:
+                return "No relevant NHS/NICE results found for this patient's confirmed data."
             parts = []
-            for r in results[:4]:
+            for r in relevant:
                 title = r.get("title", "")
                 snippet = (r.get("snippet") or r.get("content") or "")[:500]
                 url = r.get("url", "")
@@ -453,8 +525,11 @@ AGENT RULES:
             records = self._pubmed.search_article_records(query, 3)
             if not records:
                 return "No PubMed results found."
+            relevant = self._filter_relevant(records[:3], title_key="title", snippet_keys=["abstract"])
+            if not relevant:
+                return "No relevant PubMed results found for this patient's confirmed data."
             parts = []
-            for r in records[:3]:
+            for r in relevant:
                 title = r.get("title", "")
                 abstract = (r.get("abstract") or "")[:450]
                 year = r.get("year", "")
