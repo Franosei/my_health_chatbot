@@ -17,7 +17,16 @@ from typing import Callable, Dict, List, Optional
 import openai
 
 from backend.evidence_extractor import _extract_one_article
+from backend.clinical_context_guard import (
+    ClinicalContextDecision,
+    build_review_required_plan,
+    decision_from_dict,
+    source_matches_context,
+    validate_care_plan,
+    validate_generated_answer,
+)
 from backend.official_guidance import OfficialGuidanceEngine
+from backend.patient_history import build_patient_history_context
 from backend.pubmed_search import PubMedCentralSearcher
 
 # Sources the extractor confirms are near-zero relevance and don't answer the
@@ -252,18 +261,43 @@ class CarePlanAgent:
         profile = user_context.get("profile", {})
         meds = user_context.get("medications", [])
         existing_conditions = user_context.get("conditions", [])
-        chat_summary = (user_context.get("chat_summary") or "")[:800]
-        dob = profile.get("date_of_birth") or "not recorded"
-        sex = profile.get("biological_sex") or "not recorded"
+        # Tail, not head: a clarification the user answered (e.g. resolving an
+        # ambiguous term) is appended to the end by the caller and must survive
+        # truncation.
+        chat_summary = (user_context.get("chat_summary") or "")[-800:]
         role = profile.get("role") or "Patient"
+        clinical_context: Optional[ClinicalContextDecision] = user_context.get("clinical_context")
+        self._clinical_context = clinical_context
+
+        if clinical_context and clinical_context.requires_clarification:
+            emit("Clinical context needs clarification before a plan can be generated.")
+            return build_review_required_plan(clinical_context)
+        if (
+            clinical_context
+            and clinical_context.domain
+            and clinical_context.topic
+            and clinical_context.requested_topic
+            and clinical_context.requested_topic.strip().lower() != clinical_context.topic.strip().lower()
+        ):
+            # A clarification answer can resolve an initially wrong plan label
+            # (for example, the user selected asthma but confirmed the record is
+            # a urine-flow test). Generate against the confirmed topic.
+            condition = clinical_context.topic
+
+        patient_history = user_context.get("patient_history") or build_patient_history_context(
+            longitudinal_memory=user_context.get("longitudinal_memory") or "",
+            medications=meds,
+            triage_summaries=user_context.get("triage_summaries") or [],
+            user_profile=profile,
+            allergies=user_context.get("allergies") or [],
+            conditions=existing_conditions,
+            vitals=user_context.get("vitals") or [],
+        )
+        history_block = patient_history.as_prompt_block() or "No recorded patient history."
 
         self._extraction_context = {
             "question": f"Care plan for {condition}",
-            "patient_summary": (
-                f"Date of birth: {dob}; Biological sex: {sex}; "
-                f"Medications: {json.dumps(meds) if meds else 'none recorded'}; "
-                f"Conditions: {json.dumps(existing_conditions) if existing_conditions else 'none recorded'}"
-            ),
+            "patient_summary": history_block,
             "medications": [m.get("name", "") for m in meds if isinstance(m, dict) and m.get("name")],
             "conditions": [c.get("name", "") for c in existing_conditions if isinstance(c, dict) and c.get("name")],
         }
@@ -273,23 +307,23 @@ class CarePlanAgent:
 Build a comprehensive, personalised care plan for: **{condition}**
 
 Patient context:
-- Date of birth: {dob}
-- Biological sex: {sex}
 - Account role: {role}
-- Current medications: {json.dumps(meds) if meds else "none recorded"}
-- Other known conditions: {json.dumps(existing_conditions) if existing_conditions else "none recorded"}
+{history_block}
 - Recent health chat context: {chat_summary if chat_summary else "none"}
+
+{clinical_context.as_prompt_block() if clinical_context else "Clinical context adjudication: no specialty conflict detected; do not infer a diagnosis from a request alone."}
 
 AGENT RULES:
 1. Use tools to gather real evidence -- do not invent guidelines or statistics.
 2. Search at minimum: (a) NHS/NICE monitoring targets and treatment thresholds, (b) lifestyle evidence (diet, exercise, sleep), (c) escalation/red-flag criteria.
-3. For each lifestyle domain (diet, exercise, sleep, weight, mental health, smoking, alcohol) provide specific, actionable, evidence-grounded advice -- minimum 2-3 sentences per domain.
+3. Only include lifestyle advice that is relevant to the confirmed topic and supported by retrieved evidence. Leave irrelevant domains out; never fill a template with generic advice.
 4. Daily tasks must be concrete and achievable (e.g. "Take metformin 500mg with breakfast" -- not "manage diabetes").
 5. Lab reminders must use correct NHS/NICE frequencies in months.
-6. Escalation thresholds must state real clinical values (e.g. "BP > 180/120 mmHg" not "very high BP").
+6. Escalation thresholds must use values only when the retrieved guidance supports them. Do not invent targets or ranges.
 7. Safety notes must flag medication interactions, red flags, and safeguarding concerns specific to this condition.
 8. After gathering evidence, generate the final plan JSON only -- no prose outside the JSON.
-9. If any patient data used above (a condition name, medication reason, or other input) is ambiguous, has multiple clinically distinct meanings across specialties, or conflicts with what would be expected for {condition}, state that uncertainty explicitly in safety_notes instead of silently picking one interpretation and building the plan around it as fact."""
+9. Treat the clinical context adjudication above as binding. Do not reinterpret a measurement, unit, or test as another specialty. If the requested topic is not established as a diagnosis, describe it as a concern to review rather than a confirmed condition; record unresolved ambiguity in safety_notes.
+10. If evidence is insufficient for a task, target, medication, or screening interval, omit it and say that it needs clinician confirmation. When data is ambiguous, preserve that ambiguity instead of guessing."""
 
         messages: List[Dict] = [
             {"role": "system", "content": system_prompt},
@@ -334,17 +368,23 @@ AGENT RULES:
                 if fname == "search_nhs_guidelines":
                     cond = args.get("condition", condition)
                     aspect = args.get("aspect", "")
+                    if clinical_context and clinical_context.query_terms:
+                        cond = " ".join(clinical_context.query_terms)
                     emit(f"Searching NHS/NICE: {cond} -- {aspect or 'guidelines'}")
                     result = self._nhs(f"{cond} {aspect}".strip())
 
                 elif fname == "search_pubmed_evidence":
                     query = args.get("query", condition)
+                    if clinical_context and clinical_context.query_terms:
+                        query = " ".join(clinical_context.query_terms)
                     emit(f"Searching PubMed: {query}")
                     result = self._pubmed_search(query)
 
                 elif fname == "search_lifestyle_recommendations":
                     cond = args.get("condition", condition)
                     area = args.get("lifestyle_area", "lifestyle")
+                    if clinical_context and clinical_context.query_terms:
+                        cond = " ".join(clinical_context.query_terms)
                     emit(f"Searching lifestyle evidence: {area} for {cond}")
                     result = self._nhs(f"{cond} {area} recommendations")
 
@@ -370,9 +410,9 @@ AGENT RULES:
                 "- weekly_tasks: 3-5 actions\n"
                 "- lab_reminders: ALL NHS/NICE recommended tests with correct frequency_months and target_value\n"
                 "- escalation_thresholds: 4-6 items with real clinical values in threshold field\n"
-                "- lifestyle: populate ALL 7 fields (diet, exercise, sleep, weight, mental_health, smoking, alcohol) with at least 2-3 sentences each\n"
-                "- missed_care_checklist: include annual review, vaccinations, and condition-specific screenings\n"
-                "- evidence_summary: cite NICE guideline number (e.g. NG28) and year if known\n"
+                "- lifestyle: include only relevant evidence-backed domains; do not fill irrelevant domains\n"
+                "- missed_care_checklist: include only reviews or screenings supported by the retrieved evidence\n"
+                "- evidence_summary: name the retrieved sources or guideline identifiers only when present\n"
                 "Return ONLY the JSON object."
             ),
         })
@@ -401,8 +441,18 @@ AGENT RULES:
         plan.setdefault("escalation_thresholds", [])
         plan.setdefault("lifestyle", {})
         plan.setdefault("missed_care_checklist", [])
-        plan.setdefault("evidence_summary", "Generated from NHS/NICE guidelines and PubMed evidence.")
-        plan.setdefault("safety_notes", "Always consult your GP or healthcare professional before making changes to your care.")
+        plan.setdefault("evidence_summary", "Evidence references returned by the retrieval agent.")
+        plan.setdefault("safety_notes", "Confirm patient-specific actions with the relevant healthcare professional.")
+        if clinical_context:
+            validation = validate_care_plan(plan, clinical_context)
+            plan["clinical_context"] = clinical_context.as_dict()
+            plan["validation"] = {
+                "status": "passed" if validation["valid"] else "review_required",
+                "violations": validation["violations"],
+            }
+            if not validation["valid"]:
+                emit("The generated plan did not pass the specialty safety check; generation was stopped.")
+                return build_review_required_plan(clinical_context)
         plan.update({
             "id": uuid.uuid4().hex,
             "status": "active",
@@ -422,10 +472,27 @@ AGENT RULES:
     def generate_gp_prep(self, plan: Dict, user_context: Dict) -> str:
         profile = user_context.get("profile", {})
         name = (profile.get("display_name") or "the patient").split()[0]
+        clinical_context: Optional[ClinicalContextDecision] = (
+            user_context.get("clinical_context")
+            or decision_from_dict(plan.get("clinical_context"))
+        )
+
+        patient_history = user_context.get("patient_history") or build_patient_history_context(
+            longitudinal_memory=user_context.get("longitudinal_memory") or "",
+            medications=user_context.get("medications") or [],
+            triage_summaries=user_context.get("triage_summaries") or [],
+            user_profile=profile,
+            allergies=user_context.get("allergies") or [],
+            conditions=user_context.get("conditions") or [],
+            vitals=user_context.get("vitals") or [],
+        )
+        history_block = patient_history.as_prompt_block() or "No recorded patient history."
 
         prompt = (
             f"You are FlynnMed helping {name} prepare for their GP appointment about "
             f"{plan.get('condition', 'their condition')}.\n\n"
+            f"Patient history:\n{history_block}\n\n"
+            f"{clinical_context.as_prompt_block() if clinical_context else 'Clinical context adjudication: do not infer a diagnosis from the plan title alone.'}\n\n"
             f"Care plan summary:\n"
             f"Goals: {json.dumps(plan.get('goals', []))}\n"
             f"Medications: {json.dumps(plan.get('medication_reminders', []))}\n"
@@ -450,7 +517,10 @@ AGENT RULES:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
-        return response.choices[0].message.content or ""
+        result = response.choices[0].message.content or ""
+        if clinical_context and not validate_generated_answer(result, clinical_context)["valid"]:
+            return clinical_context.correction_message()
+        return result
 
     # ------------------------------------------------------------------
     # Tool implementations
@@ -484,6 +554,20 @@ AGENT RULES:
                     break
             sources.append({"source_id": f"src-{i}", "title": r.get(title_key, "") or "Untitled", "snippet": snippet})
 
+        decision = getattr(self, "_clinical_context", None)
+        if decision and decision.domain:
+            compatible = [
+                result for result, source in zip(results, sources)
+                if source_matches_context(source["title"], source["snippet"], decision)
+            ]
+            results = compatible
+            if not results:
+                return []
+            sources = [
+                source for source in sources
+                if source_matches_context(source["title"], source["snippet"], decision)
+            ]
+
         fake_llm = SimpleNamespace(client=self._client)
         with ThreadPoolExecutor(max_workers=min(4, len(sources))) as executor:
             futures = [
@@ -499,7 +583,8 @@ AGENT RULES:
         return [
             result
             for result, art in zip(results, extracted)
-            if not (art.alignment_confidence < _MISMATCH_THRESHOLD and not art.answers_question)
+            if not art.specialty_mismatch
+            and not (art.alignment_confidence < _MISMATCH_THRESHOLD and not art.answers_question)
         ]
 
     def _nhs(self, query: str) -> str:

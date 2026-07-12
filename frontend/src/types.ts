@@ -124,6 +124,8 @@ export type TrialSearchResult = {
   medication_terms: string[];
   location: string;
   error?: string;
+  context_status?: string;
+  clinical_context?: Dict<any>;
 };
 
 export type ChatStreamEvent =
@@ -218,6 +220,8 @@ export type CarePlan = {
   missed_care_checklist: MissedCareItem[];
   evidence_summary: string;
   safety_notes?: string;
+  clinical_context?: Dict<any>;
+  validation?: { status?: string; violations?: string[] };
   gp_prep_summary?: string | null;
   after_visit_notes?: { text: string; date: string }[];
 };

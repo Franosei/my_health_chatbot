@@ -21,6 +21,12 @@ from pydantic import BaseModel
 from backend.clinical_notes import generate_soap_note
 from backend.care_plan_agent import CarePlanAgent
 from backend.care_plan_store import CarePlanStore
+from backend.clinical_context_guard import (
+    adjudicate_patient_context,
+    build_review_required_plan,
+    validate_care_plan,
+    validate_generated_answer,
+)
 from backend.clinical_trials import build_trial_search_profile, find_matching_trials
 from backend.email_service import send_clinical_note_email, send_urgent_care_alert
 from backend.feedback_store import save_feedback
@@ -30,6 +36,9 @@ from backend.image_analysis_agent import (
     SUPPORTED_IMAGE_MIME_TYPES,
     normalize_image_mime_type,
 )
+from backend.intent_risk_classifier import IntentRiskClassifier
+from backend.patient_history import build_patient_history_context
+from backend.role_router import RoleRouter
 from backend.product_config import (
     FOUNDER_NAME,
     PRIVACY_NOTICE_POINTS,
@@ -152,6 +161,55 @@ def _public_profile(username: str) -> Dict:
     }
 
 
+def _reconcile_chat_history(username: str, chat_history: List[Dict]) -> List[Dict]:
+    """Replace persisted answers that are contradicted by a confirmed test type.
+
+    This keeps a previously generated wrong-specialty answer from continuing to
+    appear as if it were trusted clinical guidance after the guard is deployed.
+    The original interaction remains in the audit/trace records; the patient
+    conversation shows the safe correction instead.
+    """
+    if not chat_history:
+        return chat_history
+    conditions = UserStore.get_conditions(username)
+    medications = UserStore.get_medications(username)
+    vitals = UserStore.get_vitals(username, limit=None)
+    allergies = UserStore.get_allergies(username)
+    triage = UserStore.get_triage_summaries(username, limit=None)
+    documents = UserStore.get_document_summaries(username)
+    memory = UserStore.get_longitudinal_memory(username) or {}
+    changed = False
+
+    for message in chat_history:
+        content = str(message.get("content", ""))
+        if message.get("role") != "assistant" or not re.search(
+            r"\b(?:peak\s+flow|qmax|uroflow(?:metry)?)\b", content, re.I
+        ):
+            continue
+        decision = adjudicate_patient_context(
+            question=content,
+            conditions=conditions,
+            medications=medications,
+            vitals=vitals,
+            allergies=allergies,
+            triage_summaries=triage,
+            document_summaries=documents,
+            longitudinal_memory=memory.get("summary", ""),
+        )
+        validation = validate_generated_answer(content, decision)
+        if decision.domain and not validation["valid"]:
+            message["content"] = decision.correction_message()
+            metadata = dict(message.get("metadata") or {})
+            metadata["context_guard_replaced"] = True
+            metadata["context_guard_violations"] = validation["violations"]
+            message["metadata"] = metadata
+            changed = True
+
+    if changed:
+        UserStore.set_chat_history(username, chat_history)
+    return chat_history
+
+
 def _snapshot(username: str) -> Dict:
     uploads = UserStore.get_uploads(username)
     symptom_logs = UserStore.get_symptom_logs(username, limit=None)
@@ -161,7 +219,7 @@ def _snapshot(username: str) -> Dict:
     vitals = UserStore.get_vitals(username, limit=None)
     triage_summaries = UserStore.get_triage_summaries(username, limit=None)
     latest_triage = triage_summaries[0] if triage_summaries else {}
-    chat_history = UserStore.get_chat_history(username)
+    chat_history = _reconcile_chat_history(username, UserStore.get_chat_history(username))
 
     return {
         "product": {
@@ -414,6 +472,11 @@ def signup(payload: SignupPayload) -> Dict:
 class GeneratePlanPayload(BaseModel):
     condition: str
     chat_summary: str = ""
+    # Set when resubmitting after the user answered a "clarify" event -- lets the
+    # ambiguity gate resolve via the classifier's continuation-turn logic instead
+    # of re-flagging the same ambiguous term forever.
+    clarification_question: str = ""
+    clarification_answer: str = ""
 
 
 class TaskTogglePayload(BaseModel):
@@ -426,7 +489,38 @@ class AfterVisitPayload(BaseModel):
 
 @app.get("/api/care-plans")
 def list_care_plans(username: str = Depends(current_user)) -> List[Dict]:
-    return CarePlanStore.list_plans(username)
+    return _reconcile_care_plans(username)
+
+
+def _reconcile_care_plans(username: str) -> List[Dict]:
+    """Fail closed for plans saved before the context gate existed."""
+    plans = CarePlanStore.list_plans(username)
+    if not plans:
+        return []
+    snap = _snapshot(username)
+    reconciled: List[Dict] = []
+    for plan in plans:
+        plan_text = json.dumps(plan, ensure_ascii=False)
+        decision = adjudicate_patient_context(
+            question=plan_text,
+            requested_topic=str(plan.get("condition", "")),
+            conditions=snap.get("conditions", []),
+            medications=snap.get("medications", []),
+            vitals=snap.get("vitals", []),
+            allergies=snap.get("allergies", []),
+            triage_summaries=snap.get("triage_summaries", []),
+            document_summaries=snap.get("document_summaries", []),
+            longitudinal_memory=snap.get("memory", {}).get("summary", ""),
+        )
+        validation = validate_care_plan(plan, decision)
+        if not validation["valid"]:
+            replacement = build_review_required_plan(decision)
+            replacement["id"] = plan.get("id", replacement["id"])
+            replacement["created_at"] = plan.get("created_at", replacement["created_at"])
+            replacement["validation"]["violations"] = validation["violations"]
+            plan = CarePlanStore.save_plan(username, replacement)
+        reconciled.append(plan)
+    return reconciled
 
 
 @app.post("/api/care-plans/generate")
@@ -434,24 +528,101 @@ def generate_care_plan(
     payload: GeneratePlanPayload,
     username: str = Depends(current_user),
 ) -> StreamingResponse:
-    """Streams NDJSON progress events, then emits a final 'done' event with the plan."""
+    """Streams NDJSON progress events, then emits either a 'clarify' event (ambiguous
+    patient history -- generation withheld pending clarification) or a final 'done'
+    event with the plan."""
     profile = UserStore.get_user_profile(username) or {}
     snap = _snapshot(username)
+    longitudinal_memory = _get_rag_engine().get_combined_longitudinal_memory(username)
+
+    patient_history = build_patient_history_context(
+        longitudinal_memory=longitudinal_memory,
+        medications=snap.get("medications", []),
+        triage_summaries=snap.get("triage_summaries", []),
+        user_profile=profile,
+        allergies=snap.get("allergies", []),
+        conditions=snap.get("conditions", []),
+        vitals=snap.get("vitals", []),
+    )
+    clinical_context = adjudicate_patient_context(
+        question=f"Create a care plan for: {payload.condition}",
+        requested_topic=payload.condition,
+        conditions=snap.get("conditions", []),
+        medications=snap.get("medications", []),
+        vitals=snap.get("vitals", []),
+        allergies=snap.get("allergies", []),
+        triage_summaries=snap.get("triage_summaries", []),
+        document_summaries=snap.get("document_summaries", []),
+        longitudinal_memory=longitudinal_memory,
+        chat_summary=payload.chat_summary,
+    )
 
     user_context = {
         "profile": profile,
         "medications": snap.get("medications", []),
         "conditions": snap.get("conditions", []),
+        "allergies": snap.get("allergies", []),
+        "vitals": snap.get("vitals", []),
+        "triage_summaries": snap.get("triage_summaries", []),
+        "longitudinal_memory": longitudinal_memory,
         "chat_summary": payload.chat_summary,
+        "patient_history": patient_history,
+        "clinical_context": clinical_context,
     }
 
     def stream() -> Generator[str, None, None]:
+        if clinical_context.requires_clarification and not (
+            payload.clarification_question and payload.clarification_answer
+        ):
+            yield json.dumps({
+                "type": "clarify",
+                "question": clinical_context.clarifying_question,
+                "options": clinical_context.clarification_options,
+            }) + "\n"
+            return
+
+        # Ambiguity gate: stop and ask before generating a plan around a guessed
+        # meaning of a cross-specialty term (e.g. "peak flow") the patient's own
+        # history doesn't already resolve.
+        recent_turns = None
+        if payload.clarification_question and payload.clarification_answer:
+            # Matches the exact shape IntentRiskClassifier._llm_classify's
+            # continuation_block looks for: the last assistant turn asking the
+            # clarifying question, the last user turn answering it. Without this,
+            # the classifier has no signal the ambiguity was already resolved and
+            # just re-detects the same ambiguous term every time.
+            recent_turns = [
+                {"role": "assistant", "content": payload.clarification_question},
+                {"role": "user", "content": payload.clarification_answer},
+            ]
+
+        try:
+            role_config = RoleRouter().resolve(profile.get("clinical_role") or profile.get("role", ""))
+            intent = IntentRiskClassifier().classify(
+                question=(
+                    f"Create a care plan for: {payload.condition}\n\n"
+                    f"Recent context:\n{payload.chat_summary[-600:]}"
+                ),
+                user_profile=profile,
+                role_key=role_config.role_key,
+                patient_history=patient_history,
+                recent_turns=recent_turns,
+            )
+        except Exception as exc:
+            print(f"[CarePlan] Ambiguity check failed (non-fatal): {exc}")
+            intent = None
+
+        if intent and intent.ambiguous_term_detected:
+            yield json.dumps({
+                "type": "clarify",
+                "question": intent.ambiguity_clarifying_question,
+                "options": intent.ambiguity_reply_options,
+            }) + "\n"
+            return
+
         agent = CarePlanAgent()
         plan: Dict = {}
         error_msg = ""
-
-        def on_progress(msg: str) -> None:
-            yield_event({"type": "progress", "message": msg})
 
         # We can't yield from a nested callback directly in a generator, so
         # we collect events via a list and flush them in the loop.
@@ -477,15 +648,12 @@ def generate_care_plan(
         saved = CarePlanStore.save_plan(username, plan)
         yield json.dumps({"type": "done", "plan": saved}) + "\n"
 
-    def yield_event(event: Dict) -> str:
-        return json.dumps(event) + "\n"
-
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 @app.get("/api/care-plans/{plan_id}")
 def get_care_plan(plan_id: str, username: str = Depends(current_user)) -> Dict:
-    plan = CarePlanStore.get_plan(username, plan_id)
+    plan = next((item for item in _reconcile_care_plans(username) if item.get("id") == plan_id), None)
     if not plan:
         raise HTTPException(status_code=404, detail="Care plan not found.")
     return plan
@@ -525,12 +693,22 @@ def after_visit_note(
 
 @app.post("/api/care-plans/{plan_id}/gp-prep")
 def gp_prep(plan_id: str, username: str = Depends(current_user)) -> Dict:
-    plan = CarePlanStore.get_plan(username, plan_id)
+    plan = next((item for item in _reconcile_care_plans(username) if item.get("id") == plan_id), None)
     if not plan:
         raise HTTPException(status_code=404, detail="Care plan not found.")
     profile = UserStore.get_user_profile(username) or {}
+    snap = _snapshot(username)
     agent = CarePlanAgent()
-    summary = agent.generate_gp_prep(plan, {"profile": profile})
+    user_context = {
+        "profile": profile,
+        "medications": snap.get("medications", []),
+        "conditions": snap.get("conditions", []),
+        "allergies": snap.get("allergies", []),
+        "vitals": snap.get("vitals", []),
+        "triage_summaries": snap.get("triage_summaries", []),
+        "longitudinal_memory": _get_rag_engine().get_combined_longitudinal_memory(username),
+    }
+    summary = agent.generate_gp_prep(plan, user_context)
     updated = CarePlanStore.set_gp_prep(username, plan_id, summary)
     return {"gp_prep_summary": summary, "plan": updated}
 
@@ -569,7 +747,7 @@ def stream_chat(payload: ChatPayload, username: str = Depends(current_user)) -> 
     def generate() -> Generator[bytes, None, None]:
         try:
             rag_engine = _get_rag_engine()
-            chat_history = UserStore.get_chat_history(username)
+            chat_history = _reconcile_chat_history(username, UserStore.get_chat_history(username))
         except Exception as exc:
             yield _json_line({"type": "error", "message": f"Failed to start the answer pipeline: {exc}"})
             yield _json_line({"type": "done"})
@@ -1085,6 +1263,7 @@ def search_trials(payload: TrialSearchPayload, username: str = Depends(current_u
         conditions=UserStore.get_conditions(username),
         vitals=UserStore.get_vitals(username, limit=None),
         triage_summaries=UserStore.get_triage_summaries(username, limit=None),
+        document_summaries=UserStore.get_document_summaries(username),
     )
     result = find_matching_trials(
         profile=trial_profile,

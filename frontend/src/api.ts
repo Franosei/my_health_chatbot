@@ -184,8 +184,17 @@ export async function streamImageAnalysis(
   }
 }
 
+export interface UploadExtracted {
+  vitals: unknown[];
+  medications: unknown[];
+  allergies: unknown[];
+  conditions: unknown[];
+  extraction_errors?: string[];
+  extraction_method?: string;
+}
+
 export function uploadDocuments(files: File[], processUnverified: boolean): Promise<{
-  processed: { file: string }[];
+  processed: { file: string; extracted?: UploadExtracted }[];
   pending: unknown[];
   duplicates: { file: string; message: string }[];
   rejected: { file: string; message: string }[];
@@ -305,11 +314,18 @@ export function generateGpPrep(planId: string): Promise<{ gp_prep_summary: strin
   return apiRequest(`/api/care-plans/${planId}/gp-prep`, { method: "POST" });
 }
 
+export interface ClarifyOption {
+  display: string;
+  prompt: string;
+}
+
 export async function generateCarePlan(
   condition: string,
   chatSummary: string,
-  onProgress: (msg: string) => void
-): Promise<CarePlan> {
+  onProgress: (msg: string) => void,
+  onClarify?: (question: string, options: ClarifyOption[]) => void,
+  clarification?: { question: string; answer: string }
+): Promise<CarePlan | null> {
   const token = getStoredToken();
   const response = await fetch(`${API_BASE}/api/care-plans/generate`, {
     method: "POST",
@@ -317,7 +333,12 @@ export async function generateCarePlan(
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`
     },
-    body: JSON.stringify({ condition, chat_summary: chatSummary })
+    body: JSON.stringify({
+      condition,
+      chat_summary: chatSummary,
+      clarification_question: clarification?.question ?? "",
+      clarification_answer: clarification?.answer ?? ""
+    })
   });
 
   if (!response.ok || !response.body) {
@@ -328,6 +349,7 @@ export async function generateCarePlan(
   const decoder = new TextDecoder();
   let buffer = "";
   let finalPlan: CarePlan | null = null;
+  let clarified = false;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -338,17 +360,21 @@ export async function generateCarePlan(
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
+      let event: { type?: string; message?: string; plan?: CarePlan; question?: string; options?: ClarifyOption[] };
       try {
-        const event = JSON.parse(trimmed);
-        if (event.type === "progress") onProgress(event.message as string);
-        else if (event.type === "done") finalPlan = event.plan as CarePlan;
-        else if (event.type === "error") throw new Error(event.message as string);
+        event = JSON.parse(trimmed);
       } catch {
-        /* partial flush */
+        continue; // malformed/incomplete line -- skip, don't let it mask real events
       }
+      if (event.type === "progress") onProgress(event.message as string);
+      else if (event.type === "done") finalPlan = event.plan as CarePlan;
+      else if (event.type === "clarify") {
+        clarified = true;
+        onClarify?.(event.question as string, (event.options ?? []) as ClarifyOption[]);
+      } else if (event.type === "error") throw new Error(event.message as string);
     }
   }
 
-  if (!finalPlan) throw new Error("Care plan generation did not complete.");
+  if (!finalPlan && !clarified) throw new Error("Care plan generation did not complete.");
   return finalPlan;
 }

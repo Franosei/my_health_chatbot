@@ -35,6 +35,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from backend.clinical_decision_support import ClinicalDecision, ClinicalDecisionSupportEngine
+from backend.clinical_context_guard import (
+    ClinicalContextDecision,
+    adjudicate_patient_context,
+    source_matches_context,
+)
 from backend.evidence_ranker import EvidenceRanker
 from backend.intent_risk_classifier import IntentClassification, IntentRiskClassifier
 from backend.patient_history import PatientHistoryContext, build_patient_history_context
@@ -290,7 +295,7 @@ class AgenticRetrievalLoop:
                     tools=self._TOOLS,
                     tool_choice="auto",
                     temperature=0,
-                    max_tokens=400,
+                    max_completion_tokens=400,
                 )
             except Exception as exc:
                 print(f"[AgenticLoop] LLM call failed on iteration {iteration}: {exc}")
@@ -551,12 +556,33 @@ class AgenticRetrievalLoop:
         if not condition:
             return {"summary": "No condition provided.", "trials": []}
         try:
-            from backend.clinical_trials import find_matching_trials
-            minimal_profile = {"conditions": [{"name": condition}]}
-            results = find_matching_trials(minimal_profile, location=location, max_results=5)
+            from backend.clinical_trials import TrialSearchProfile, find_matching_trials
+            from backend.user_store import UserStore
+            if self.user:
+                profile = UserStore.get_user_profile(self.user)
+                from backend.clinical_trials import build_trial_search_profile
+                search_profile = build_trial_search_profile(
+                    profile=profile,
+                    memory=UserStore.get_longitudinal_memory(self.user),
+                    symptom_logs=UserStore.get_symptom_logs(self.user, limit=None),
+                    medications=UserStore.get_medications(self.user),
+                    allergies=UserStore.get_allergies(self.user),
+                    conditions=UserStore.get_conditions(self.user),
+                    vitals=UserStore.get_vitals(self.user, limit=None),
+                    triage_summaries=UserStore.get_triage_summaries(self.user, limit=None),
+                    document_summaries=UserStore.get_document_summaries(self.user),
+                )
+                search_profile.conditions = list(dict.fromkeys(search_profile.conditions + [condition]))
+                search_profile.raw_context += f"\nExplicit trial topic requested by patient: {condition}"
+            else:
+                search_profile = TrialSearchProfile(
+                    conditions=[condition], symptoms=[], medications=[], age=None,
+                    biological_sex="", raw_context=f"Requested condition: {condition}",
+                )
+            results = find_matching_trials(search_profile, location_query=location, max_results=5)
             return {
-                "trials": results or [],
-                "summary": f"Found {len(results or [])} trials for '{condition}' in {location}.",
+                "trials": results.get("trials", []) if isinstance(results, dict) else [],
+                "summary": f"Found {len(results.get('trials', []) if isinstance(results, dict) else [])} trials for '{condition}' in {location}.",
             }
         except Exception as exc:
             return {"summary": f"Trial search failed: {exc}", "trials": []}
@@ -605,6 +631,7 @@ class ClinicalOrchestrator:
         allergies: Optional[List[Dict]] = None,
         conditions: Optional[List[Dict]] = None,
         vitals: Optional[List[Dict]] = None,
+        document_summaries: Optional[List[Dict]] = None,
         context_graph: Optional["ContextGraph"] = None,
         chat_history: Optional[List[Dict]] = None,
     ) -> Dict:
@@ -628,6 +655,25 @@ class ClinicalOrchestrator:
             allergies=allergies or [],
             conditions=conditions or [],
             vitals=vitals or [],
+        )
+
+        # This is intentionally before intent classification and retrieval.  A
+        # model must not be allowed to decide that a reused measurement name
+        # means the most common specialty when the structured record already
+        # establishes another meaning.
+        clinical_context: ClinicalContextDecision = adjudicate_patient_context(
+            question=question,
+            conditions=conditions or [],
+            medications=medications or [],
+            vitals=vitals or [],
+            allergies=allergies or [],
+            triage_summaries=triage_summaries or [],
+            document_summaries=document_summaries or [],
+            longitudinal_memory=longitudinal_memory_summary,
+            chat_summary="\n".join(
+                f"{item.get('role', 'user')}: {item.get('content', '')}"
+                for item in (chat_history or [])[-4:]
+            ),
         )
 
         # -- Step 3: Crisis pre-screen (regex, instant, before any LLM call) --
@@ -675,14 +721,30 @@ class ClinicalOrchestrator:
         ):
             return self._build_clarification_bundle(question, normalized_user, role_config, intent)
 
+        if (
+            clinical_context.requires_clarification
+            and intent.risk_level not in ("urgent", "crisis")
+            and policy_decision.action == "allow"
+        ):
+            return self._build_context_clarification_bundle(
+                question, normalized_user, role_config, clinical_context
+            )
+
         # -- Step 7: Pathway context ------------------------------------------
         pathway_context = self._get_pathway_context(intent, role_config)
 
         # -- Step 8: Agentic retrieval loop -----------------------------------
         # Build a compact patient summary for the agent system prompt
         patient_summary = history_context or f"Role: {role_config.role_key}"
+        patient_summary += "\n\n" + clinical_context.as_prompt_block()
         if graph_hints:
             patient_summary += "\nRelevant health terms: " + ", ".join(graph_hints[:6])
+        retrieval_question = question
+        if clinical_context.query_terms:
+            retrieval_question = (
+                f"{question}\n\nConfirmed clinical search topic: "
+                + "; ".join(clinical_context.query_terms)
+            )
 
         med_names: List[str] = [
             m.get("name", "") for m in (medications or []) if m.get("name")
@@ -698,7 +760,7 @@ class ClinicalOrchestrator:
 
         try:
             agent_result = agent_loop.run(
-                question=question,
+                question=retrieval_question,
                 patient_summary=patient_summary,
                 role_key=role_config.role_key,
                 pathway_hint=intent.pathway_hint or "general_triage",
@@ -728,7 +790,7 @@ class ClinicalOrchestrator:
         # -- Step 9: Fallback retrieval if agent returned nothing -------------
         if not collected_sources:
             print("[Orchestrator] Agent found no sources -- falling back to direct retrieval.")
-            fallback_queries = self._build_search_queries(question, history_context, graph_hints)
+            fallback_queries = self._build_search_queries(retrieval_question, history_context, graph_hints)
             search_queries = self._augment_queries_with_pathway(
                 fallback_queries, pathway_context, clinical_decision
             )
@@ -750,13 +812,16 @@ class ClinicalOrchestrator:
                     print(f"[Orchestrator] Fallback PubMed search failed: {exc}")
 
             # Semantic search for personal context in fallback path
-            matches = self.memory.search(query=question, user=normalized_user)
+            matches = self.memory.search(query=retrieval_question, user=normalized_user)
             personal_context, pubmed_matches = self._split_matches(matches)
             collected_sources.extend(self._build_source_briefings(pubmed_matches))
             expanded_queries = fallback_queries
 
         # -- Step 10: Deduplicate and rank evidence ---------------------------
         raw_sources = self._deduplicate_sources(collected_sources)
+        raw_sources, _context_filtered = self._exclude_context_incompatible_sources(
+            raw_sources, clinical_context
+        )
 
         combined_sources, evidence_quality_report = self.evidence_ranker.rank_and_tier_with_report(
             sources=raw_sources,
@@ -784,7 +849,7 @@ class ClinicalOrchestrator:
                 evidence_dossier = build_evidence_dossier(
                     llm=self.llm,
                     sources=combined_sources,
-                    question=question,
+                    question=retrieval_question,
                     user_profile=user_profile,
                     patient_history_ctx=patient_history,
                     medications=medications or [],
@@ -817,6 +882,7 @@ class ClinicalOrchestrator:
             evidence_quality_report=evidence_quality_report,
             no_sources=not combined_sources,
             evidence_dossier=evidence_dossier,
+            clinical_context=clinical_context,
         )
 
         return {
@@ -838,6 +904,7 @@ class ClinicalOrchestrator:
             "policy_decision": policy_decision,
             "pathway_context": pathway_context,
             "clinical_decision": clinical_decision,
+            "clinical_context": clinical_context,
             # Structured evidence (anti-hallucination layer)
             "evidence_dossier": evidence_dossier,
             # Agentic metadata (new)
@@ -933,6 +1000,36 @@ class ClinicalOrchestrator:
                     "risk_level": intent.risk_level,
                     "escalation_triggered": False,
                     "ambiguous_term": intent.ambiguous_term,
+                },
+            },
+        }
+
+    def _build_context_clarification_bundle(
+        self,
+        question: str,
+        normalized_user: Optional[str],
+        role_config: RoleConfig,
+        decision: ClinicalContextDecision,
+    ) -> Dict:
+        answer = f"## Quick check before I answer\n{decision.clarifying_question}"
+        return {
+            "kind": "final",
+            "payload": {
+                "answer_markdown": answer,
+                "answer_text": answer,
+                "sources": [],
+                "personal_context": [],
+                "follow_up_questions": decision.clarification_options,
+                "trace": {
+                    "trace_id": "trace-context-clarify",
+                    "created_at": _utc_now(),
+                    "question": question,
+                    "answer_preview": answer[:280],
+                    "sources": [],
+                    "retrieval_mode": "clinical_context_clarification",
+                    "role_key": role_config.role_key,
+                    "clinical_context": decision.as_dict(),
+                    "escalation_triggered": False,
                 },
             },
         }
@@ -1044,8 +1141,12 @@ class ClinicalOrchestrator:
         evidence_quality_report: Optional[Dict] = None,
         no_sources: bool = False,
         evidence_dossier=None,
+        clinical_context: Optional[ClinicalContextDecision] = None,
     ) -> str:
         parts = []
+
+        if clinical_context:
+            parts.append(clinical_context.as_prompt_block())
 
         if personal_context:
             personal_lines = "\n".join(
@@ -1161,6 +1262,24 @@ class ClinicalOrchestrator:
                 )
 
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _exclude_context_incompatible_sources(
+        sources: List[Dict], decision: ClinicalContextDecision
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """Hard-filter evidence that belongs to a different specialty."""
+        if not decision.domain:
+            return sources, []
+        kept: List[Dict] = []
+        dropped: List[Dict] = []
+        for source in sources:
+            title = str(source.get("title", ""))
+            content = str(source.get("detail_snippet") or source.get("snippet") or "")
+            if source_matches_context(title, content, decision):
+                kept.append(source)
+            else:
+                dropped.append(source)
+        return kept, dropped
 
     # -- Pathway routing ------------------------------------------------------
 

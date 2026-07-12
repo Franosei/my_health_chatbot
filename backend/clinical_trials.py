@@ -29,15 +29,21 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional
 
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from backend.user_store import compute_current_age
+from backend.clinical_context_guard import (
+    adjudicate_patient_context,
+    decision_from_dict,
+    source_matches_context,
+)
+from backend.utils import render_vital_for_prompt
 
 load_dotenv()
 
@@ -65,6 +71,7 @@ class TrialSearchProfile:
     age: Optional[int]
     biological_sex: str
     raw_context: str          # full patient narrative → LLM extracts search terms
+    clinical_context: Dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -218,13 +225,16 @@ def _llm_extract_search_terms(raw_context: str) -> Dict[str, List[str]]:
             "- Include the most specific terms you can (e.g. 'right iliac fossa pain', not just 'pain').\n"
             "- Do NOT include: general triage, routine, self-care, GP, normal findings, names, demographics.\n"
             "- Max 8 condition terms, max 5 medication names.\n\n"
+            "- Do not extract a term from a different specialty than the confirmed clinical context. "
+            "If the context says a peak urinary flow/Qmax result, never emit asthma, lung, respiratory, "
+            "or peak-expiratory-flow terms.\n\n"
             f"Patient data:\n{raw_context[:3000]}"
         )
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0, max_tokens=250,
+            temperature=0, max_completion_tokens=250,
         )
         parsed = json.loads(resp.choices[0].message.content or "{}")
         conditions = [_clean(t) for t in (parsed.get("conditions") or [])
@@ -469,7 +479,7 @@ def _llm_batch_condition_match(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0, max_tokens=800,
+            temperature=0, max_completion_tokens=800,
         )
         parsed = json.loads(resp.choices[0].message.content or "{}")
         results_raw = parsed.get("results", []) or []
@@ -577,7 +587,7 @@ def _build_trial_record(study: Dict, found_for: List[str], total_terms: int,
 
     # Best location for display
     q_tokens = _tokens(location_query)
-    best_loc = max(locations, key=lambda l: len(q_tokens & _tokens(location_label(l).lower()))) \
+    best_loc = max(locations, key=lambda location: len(q_tokens & _tokens(location_label(location).lower()))) \
         if locations and q_tokens else (locations[0] if locations else {})
 
     cov_score = _coverage_score(found_for, total_terms)
@@ -641,12 +651,20 @@ def build_trial_search_profile(
     conditions: List[Dict],
     vitals: List[Dict],
     triage_summaries: List[Dict],
+    document_summaries: Optional[List[Dict]] = None,
 ) -> "TrialSearchProfile":
+    clinical_context = adjudicate_patient_context(
+        conditions=conditions,
+        medications=medications,
+        vitals=vitals,
+        allergies=allergies,
+        triage_summaries=triage_summaries,
+        document_summaries=document_summaries or [],
+        longitudinal_memory=_clean(memory.get("summary", "")),
+    )
     condition_terms = _unique(
         [c.get("name", "") for c in conditions if c.get("name")]
         + [m.get("reason", "") for m in medications if m.get("reason")]
-        + [s.get("pathway_label", "") for s in triage_summaries]
-        + [s.get("decision_summary", "") for s in triage_summaries[:3]]
     )
     symptoms = _unique(e.get("symptom", "") for e in symptom_logs)
     medication_names = _unique(m.get("name", "") for m in medications)
@@ -654,21 +672,15 @@ def build_trial_search_profile(
     parts: List[str] = []
     memory_summary = _clean(memory.get("summary", ""))
     if memory_summary:
-        parts.append(f"Patient longitudinal history:\n{memory_summary[:1800]}")
+        parts.append(f"Patient longitudinal background (not a diagnosis source):\n{memory_summary[:1200]}")
 
     if condition_terms:
         parts.append("Recorded conditions/history: " + "; ".join(condition_terms[:10]))
 
     for s in triage_summaries[:5]:
-        decision = _clean(s.get("decision_summary", ""))
         escalation = s.get("escalation_triggers") or []
-        pathway = _clean(s.get("pathway_label", ""))
-        if decision:
-            parts.append(f"Triage note: {decision}")
         if escalation:
             parts.append("Escalation triggers: " + "; ".join(str(e) for e in escalation[:5]))
-        if pathway and pathway.lower() not in ("general triage", "general"):
-            parts.append(f"Clinical pathway: {pathway}")
 
     for e in symptom_logs[:15]:
         sym = _clean(e.get("symptom", ""))
@@ -681,6 +693,20 @@ def build_trial_search_profile(
         if name:
             parts.append(f"Medication: {name}" + (f" (for {reason})" if reason else ""))
 
+    vital_lines = [render_vital_for_prompt(v) for v in (vitals or []) if isinstance(v, dict)]
+    if vital_lines:
+        parts.append("Structured measurements: " + "; ".join(vital_lines[:20]))
+    if clinical_context.query_terms:
+        parts.append("Confirmed clinical context: " + "; ".join(clinical_context.query_terms))
+
+    decision_dict = clinical_context.as_dict()
+    decision_obj = decision_from_dict(decision_dict)
+    if decision_obj and decision_obj.domain:
+        condition_terms = [
+            term for term in condition_terms
+            if source_matches_context("", term, decision_obj)
+        ]
+
     return TrialSearchProfile(
         conditions=condition_terms,
         symptoms=symptoms,
@@ -688,6 +714,7 @@ def build_trial_search_profile(
         age=compute_current_age(profile.get("date_of_birth", "")),
         biological_sex=_clean(profile.get("biological_sex")),
         raw_context="\n".join(parts),
+        clinical_context=decision_dict,
     )
 
 
@@ -726,10 +753,30 @@ def find_matching_trials(
         c) LLM scores condition alignment (batched) + deterministic age/sex eligibility.
         d) Final ranking: alignment + coverage + location (contact NOT in total).
     """
+    context_decision = decision_from_dict(profile.clinical_context)
+    if context_decision and context_decision.requires_clarification:
+        return {
+            "searched_at": datetime.now(timezone.utc).isoformat(),
+            "trials": [], "condition_terms": [], "medication_terms": [],
+            "location": location_query,
+            "error": (
+                "Trial search paused because the patient context is ambiguous or conflicting. "
+                + (context_decision.clarifying_question or "Confirm the exact test or condition first.")
+            ),
+            "context_status": context_decision.status,
+            "clinical_context": context_decision.as_dict(),
+        }
+
     # Phase 1
     extracted = _llm_extract_search_terms(profile.raw_context)
     condition_terms = extracted.get("conditions", [])
     medication_terms = extracted.get("medications", [])
+
+    if context_decision and context_decision.domain:
+        condition_terms = [
+            term for term in condition_terms
+            if source_matches_context("", term, context_decision)
+        ]
 
     if not condition_terms and not medication_terms:
         return {
@@ -741,6 +788,8 @@ def find_matching_trials(
                 "Chat with FlynnMed about your health concerns -- the assistant builds a "
                 "condition record the trial finder uses."
             ),
+            "context_status": context_decision.status if context_decision else "insufficient",
+            "clinical_context": context_decision.as_dict() if context_decision else {},
         }
 
     total_terms = len(condition_terms) + len(medication_terms)
@@ -807,4 +856,6 @@ def find_matching_trials(
         "medication_terms": medication_terms,
         "location": location_query,
         "error": "",
+        "context_status": context_decision.status if context_decision else "insufficient",
+        "clinical_context": context_decision.as_dict() if context_decision else {},
     }

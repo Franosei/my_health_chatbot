@@ -235,7 +235,8 @@ Evidence is retrieved and ranked across three tiers:
 - Tier 3: Primary research papers from Europe PMC and PubMed Central
 
 ### Care Plans
-- Agentic, tool-calling care-plan generation (`backend/care_plan_agent.py`) that pulls NHS/NICE guidance and PubMed evidence for a named condition before synthesising a structured plan
+- Agentic, tool-calling care-plan generation (`backend/care_plan_agent.py`) that pulls NHS/NICE guidance and PubMed evidence for a named concern before synthesising a structured plan
+- Shared clinical-context adjudication (`backend/clinical_context_guard.py`) resolves cross-specialty measurements from structured type/unit/document evidence, pauses on ambiguity, filters incompatible sources, validates generated plans, and safely migrates older plans that fail the gate
 - Plans include goals, medication reminders, lab reminders, escalation thresholds and a missed-care checklist
 - Task-level tracking: mark individual care-plan tasks complete via `PATCH /api/care-plans/{plan_id}/tasks/{task_id}`
 - After-visit summary generation and GP-appointment prep notes generated from the saved plan
@@ -433,11 +434,14 @@ All endpoints are served from `backend/api.py` and prefixed `/api` unless noted.
 
 ## Model Context Protocol (MCP) Server
 
-`backend/mcp_server.py` mounts at `/mcp` on the same server process -- no separate service needed. It works in Railway deployments (streamable HTTP) and locally (stdio), and is guarded by the optional `MCP_API_KEY` environment variable. It exposes five tools to AI agents and Claude Desktop:
+`backend/mcp_server.py` mounts at `/mcp` on the same server process -- no separate service needed. It works in Railway deployments (streamable HTTP) and locally (stdio), and is guarded by the optional `MCP_API_KEY` environment variable. It exposes context-scrutiny, validation, evidence, notes, email, and trial tools to AI agents and Claude Desktop:
 
 | Tool | Description |
 |---|---|
-| `get_patient_context` | Full patient profile, conditions, medications, vitals and memory |
+| `get_patient_context` | Full patient profile, structured measurements, adjudicated context and memory |
+| `scrutinize_patient_context` | Resolve the clinical meaning/domain of a topic before retrieval or generation |
+| `validate_clinical_output` | Post-generation specialty check for an answer, with a safe replacement if it fails |
+| `validate_care_plan_output` | Post-generation specialty check for a care-plan JSON payload |
 | `extract_article_evidence` | Structured evidence extraction from a medical article matched to a patient |
 | `generate_clinical_note` | Generate and save a SOAP note from a consultation summary |
 | `send_health_email` | Send a clinical note or urgent alert by email |

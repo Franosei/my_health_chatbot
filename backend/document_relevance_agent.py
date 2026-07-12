@@ -69,7 +69,7 @@ class DocumentRelevanceAgent:
                 ],
                 temperature=0,
                 response_format={"type": "json_object"},
-                max_tokens=250,
+                max_completion_tokens=250,
             )
             raw = response.choices[0].message.content or "{}"
             parsed = json.loads(raw)

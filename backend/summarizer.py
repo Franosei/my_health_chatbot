@@ -43,6 +43,7 @@ class LLMHelper:
         role_config: Optional["RoleConfig"] = None,
         escalation_banner: str = "",
         policy_context_note: str = "",
+        clinical_context: str = "",
     ) -> str | Generator[str, None, None]:
         """
         Creates a role-aware, evidence-grounded response using the supplied evidence dossier.
@@ -80,25 +81,25 @@ class LLMHelper:
                     "Never imply that background-only evidence has been validated against the patient profile.\n"
                     "10. If a patient-profile fact is missing, say it is not recorded. Do not infer age, sex, "
                     "medications, diagnoses, allergies, pregnancy status, or test results.\n"
-                    "11. Do NOT add a disclaimer footer -- one is appended automatically.\n\n"
+                    "11. Do NOT add a disclaimer footer -- one is appended automatically.\n"
+                    "12. If a clinical-context adjudication is supplied, it is binding. Do not reinterpret "
+                    "a measurement or test as another specialty, even if the user's wording is commonly "
+                    "used elsewhere.\n\n"
                     "SPECIFICITY REQUIREMENTS -- these are mandatory:\n"
                     "- Quote the patient's actual recorded values where relevant. "
                     "Never write 'your blood pressure appears elevated' when you have the number; "
                     "write 'your last recorded BP of X/Y mmHg on [date] is Stage 2 hypertension'.\n"
                     "- Name every medication, condition, lab result, and vital sign by its actual name "
                     "from the patient record -- never say 'your medication' or 'your condition'.\n"
-                    "- Give concrete timeframes: not 'see a doctor soon' but 'book a GP appointment "
-                    "within 2 working days' or 'seek same-day urgent review'.\n"
-                    "- Give threshold values: not 'if it gets worse' but 'return if systolic BP exceeds "
-                    "180 mmHg, O2 drops below 94%, or new chest pain develops'.\n"
-                    "- Every monitoring point must have a measurable threshold, not just a description.\n"
+                    "- Give concrete timeframes and thresholds only when the supplied evidence or "
+                    "deterministic safety route supports them. Never invent a target, range, or deadline.\n"
+                    "- Make monitoring points measurable when the record and evidence provide a measure; "
+                    "otherwise say exactly what is still unknown.\n"
                     "- For clinical users: include specific investigation targets, drug doses where the "
                     "evidence explicitly supports them, and escalation criteria.\n\n"
-                    "FORBIDDEN -- never write these vague phrases:\n"
-                    "'consult a healthcare professional', 'seek medical advice if concerned', "
-                    "'this varies from person to person', 'it is always best to speak to your doctor', "
-                    "'you should discuss this with your GP', 'everyone is different'. "
-                    "Replace every instance with a specific, actionable instruction."
+                    "Write naturally and directly. Avoid filler, repeated warnings, and generic lists. "
+                    "If the next step depends on a clinician confirming the test or diagnosis, say that "
+                    "plainly and explain exactly what information the patient should bring."
                 ),
             }
         ]
@@ -108,11 +109,11 @@ class LLMHelper:
             headings_text = get_section_headings_text(role_config.role_key)
         else:
             headings_text = (
-                "## Working Impression\n"
-                "## What To Do Now\n"
-                "## What To Monitor\n"
-                "## Evidence Snapshot\n"
-                "## Recommended Next Step"
+                "## In plain terms\n"
+                "## What I would do next\n"
+                "## What to keep track of\n"
+                "## Evidence behind this\n"
+                "## When to get help"
             )
 
         policy_block = ""
@@ -141,6 +142,7 @@ class LLMHelper:
                     f"Longitudinal patient memory (use these specific values in your answer):\n{memory_text}\n\n"
                     f"Recent conversation:\n{self._render_chat_history(chat_history)}\n\n"
                     f"Evidence dossier:\n{self._render_evidence_dossier(source_briefings, context)}\n\n"
+                    f"Clinical context gate:\n{clinical_context or 'No cross-specialty context decision was needed.'}\n\n"
                     f"{policy_block}"
                     f"Current question:\n{question}\n\n"
                     f"{banner_instruction}"

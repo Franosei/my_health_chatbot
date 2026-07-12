@@ -198,13 +198,13 @@ def build_patient_history_context(
     )
 
     # ── Scan combined text for condition-group flags ─────────────────────────────
-    combined = (
-        (longitudinal_memory or "")
-        + " "
-        + " ".join(ctx.known_conditions)
-        + " "
-        + " ".join(ctx.known_medications)
-    )
+    # Longitudinal memory can contain prior generated assistant prose. It is
+    # useful narrative context, but it is not strong enough to establish a
+    # disease-domain flag (otherwise one mistaken respiratory answer can make
+    # every later turn look respiratory). Structured conditions and medication
+    # records are the trusted inputs for these policy flags.
+    trusted_combined = " ".join(condition_names + ctx.known_medications)
+    combined = trusted_combined
     ctx.has_cardiac_history    = bool(_CARDIAC.search(combined))
     ctx.has_hypertension       = bool(_HYPERTENSION.search(combined))
     ctx.has_diabetes           = bool(_DIABETES.search(combined))

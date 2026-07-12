@@ -125,7 +125,7 @@ def _extract_one_article(
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=700,
+            max_completion_tokens=700,
         )
         raw = response.choices[0].message.content or "{}"
         data = json.loads(raw)

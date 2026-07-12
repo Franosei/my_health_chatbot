@@ -64,6 +64,7 @@ import {
   uploadDocuments
 } from "./api";
 import type { AuthResponse, CarePlan, CarePlanTask, ChatStreamEvent, ClinicalNote, Dict, EscalationThreshold, FeedbackRating, LabReminder, MedReminder, Message, MissedCareItem, ProductConfig, Snapshot, TrialSearchResult } from "./types";
+import type { ClarifyOption, UploadExtracted } from "./api";
 import {
   buildSeries,
   buildSymptomSeries,
@@ -1656,7 +1657,7 @@ function UploadPanel({
   const [files, setFiles] = useState<File[]>([]);
   const [processUnverified, setProcessUnverified] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [lastResult, setLastResult] = useState<{ processed: number; pending: number; duplicates: string[]; rejected: string[] } | null>(null);
+  const [lastResult, setLastResult] = useState<{ processed: number; pending: number; duplicates: string[]; rejected: string[]; noDataExtracted: string[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploads = [...snapshot.uploads].sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
 
@@ -1673,11 +1674,27 @@ function UploadPanel({
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      const noDataExtracted = result.processed
+        .filter((item) => {
+          const extracted = item.extracted;
+          if (!extracted) return false;
+          const hasData = ["vitals", "medications", "allergies", "conditions"].some(
+            (key) => (extracted[key as keyof UploadExtracted] as unknown[] | undefined ?? []).length > 0
+          );
+          return !hasData;
+        })
+        .map((item) => {
+          const reasons = item.extracted?.extraction_errors;
+          const reasonText = reasons && reasons.length ? reasons.join("; ") : "no structured health data could be extracted from this document.";
+          return `"${item.file}" -- ${reasonText}`;
+        });
+
       setLastResult({
         processed: result.processed.length,
         pending: result.pending.length,
         duplicates: result.duplicates.map((item) => `"${item.file}" -- ${item.message}`),
-        rejected: result.rejected.map((item) => `"${item.file}" -- ${item.message}`)
+        rejected: result.rejected.map((item) => `"${item.file}" -- ${item.message}`),
+        noDataExtracted
       });
       if (result.duplicates.length) {
         setNotice(`${result.duplicates.length} document already uploaded -- skipped.`);
@@ -1685,6 +1702,8 @@ function UploadPanel({
         setNotice(`${result.rejected.length} document rejected -- not a health record.`);
       } else if (result.pending.length) {
         setNotice(`${result.pending.length} document needs review before extraction.`);
+      } else if (noDataExtracted.length) {
+        setNotice(`${result.processed.length} document processed, but no health data could be read from ${noDataExtracted.length} of them.`);
       } else {
         setNotice(`${result.processed.length} document processed.`);
       }
@@ -1730,6 +1749,12 @@ function UploadPanel({
       ))}
       {lastResult && lastResult.rejected.map((message, index) => (
         <p className="notice error upload-confirm" key={`rej-${index}`}>
+          <AlertTriangle size={16} />
+          {message}
+        </p>
+      ))}
+      {lastResult && lastResult.noDataExtracted.map((message, index) => (
+        <p className="notice warn upload-confirm" key={`no-data-${index}`}>
           <AlertTriangle size={16} />
           {message}
         </p>
@@ -2348,6 +2373,11 @@ function TrialsView({
       {result?.error && <div className="notice warn">{result.error}</div>}
       {result && !result.error && (
         <section className="trial-results">
+          {result.clinical_context?.topic && (
+            <div className="notice info">
+              Search basis: {String(result.clinical_context.topic)} ({String(result.context_status ?? "reviewed")}).
+            </div>
+          )}
           <div className="toolbar-card">
             <span>Recruiting only</span>
             <span>Top {result.trials.length} ranked matches</span>
@@ -2422,23 +2452,6 @@ function TrialCard({ trial, index }: { trial: Dict<any>; index: number }) {
 }
 
 // ── Care Plans ───────────────────────────────────────────────────────────────
-
-const CONDITION_SUGGESTIONS = [
-  "Type 2 Diabetes",
-  "Hypertension",
-  "Asthma",
-  "Chronic Kidney Disease",
-  "Mental Health & Wellbeing",
-  "Weight Management",
-  "MSK Rehabilitation",
-  "Menopause",
-  "Pregnancy & Maternity",
-  "Heart Disease",
-  "COPD",
-  "Anxiety & Depression",
-  "Osteoporosis",
-  "Atrial Fibrillation",
-];
 
 const URGENCY_META: Record<string, { label: string; color: string; bg: string }> = {
   call_999:   { label: "Call 999 now",    color: "#fff", bg: "#c0392b" },
@@ -2544,33 +2557,65 @@ function NewPlanPanel({
   onCreated: (plan: CarePlan) => void;
 }) {
   const knownConditions = (snapshot.conditions ?? []).map((c: Dict) => c.name as string).filter(Boolean);
-  const suggestFirst = knownConditions.length > 0 ? knownConditions[0] : CONDITION_SUGGESTIONS[0];
+  const suggestFirst = knownConditions.length > 0 ? knownConditions[0] : "";
 
   const [condition, setCondition] = useState(suggestFirst);
-  const [custom, setCustom] = useState("");
   const [progress, setProgress] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [clarify, setClarify] = useState<{ question: string; options: ClarifyOption[] } | null>(null);
+  const [pendingChatSummary, setPendingChatSummary] = useState("");
+  const [clarifyOther, setClarifyOther] = useState("");
 
-  const effectiveCondition = custom.trim() || condition;
+  const effectiveCondition = condition.trim();
 
-  async function handleGenerate() {
-    if (!effectiveCondition) return;
+  async function runGenerate(chatSummary: string, clarification?: { question: string; answer: string }) {
     setBusy(true);
     setError("");
+    setClarify(null);
+    setClarifyOther("");
     setProgress(["Starting evidence search..."]);
     try {
-      const recentMessages = (snapshot.chat_history ?? []).slice(-6);
-      const chatSummary = recentMessages.map((m: Message) => `${m.role}: ${m.content}`).join("\n");
-      const plan = await generateCarePlan(effectiveCondition, chatSummary, (msg) =>
-        setProgress((prev) => [...prev, msg])
+      const plan = await generateCarePlan(
+        effectiveCondition,
+        chatSummary,
+        (msg) => setProgress((prev) => [...prev, msg]),
+        (question, options) => {
+          setPendingChatSummary(chatSummary);
+          setClarify({ question, options });
+        },
+        clarification
       );
-      onCreated(plan);
+      if (plan) onCreated(plan);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed.");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleGenerate() {
+    if (!effectiveCondition) return;
+    const recentMessages = (snapshot.chat_history ?? []).slice(-6);
+    const chatSummary = recentMessages.map((m: Message) => `${m.role}: ${m.content}`).join("\n");
+    await runGenerate(chatSummary);
+  }
+
+  async function handleClarifyChoice(option: ClarifyOption) {
+    if (!clarify) return;
+    await runGenerate(
+      `${pendingChatSummary}\n\nuser: ${option.prompt}`,
+      { question: clarify.question, answer: option.display }
+    );
+  }
+
+  async function handleClarifyOther() {
+    const answer = clarifyOther.trim();
+    if (!answer || !clarify) return;
+    await runGenerate(
+      `${pendingChatSummary}\n\nuser: ${answer}`,
+      { question: clarify.question, answer }
+    );
   }
 
   return (
@@ -2583,13 +2628,13 @@ function NewPlanPanel({
         </div>
       </div>
 
-      {knownConditions.length > 0 && (
+      {!clarify && knownConditions.length > 0 && (
         <div className="cp-condition-chips">
           {knownConditions.map((c) => (
             <button
               key={c}
-              className={`cp-chip${effectiveCondition === c && !custom ? " active" : ""}`}
-              onClick={() => { setCondition(c); setCustom(""); }}
+              className={`cp-chip${effectiveCondition === c ? " active" : ""}`}
+              onClick={() => setCondition(c)}
               type="button"
             >
               {c}
@@ -2598,27 +2643,56 @@ function NewPlanPanel({
         </div>
       )}
 
-      <div className="cp-condition-row">
-        <select
-          value={custom ? "__custom__" : condition}
-          onChange={(e) => {
-            setCustom("");
-            setCondition(e.target.value);
-          }}
-        >
-          {CONDITION_SUGGESTIONS.map((s) => <option key={s}>{s}</option>)}
-          {custom && <option value="__custom__">{custom}</option>}
-        </select>
-        <span className="cp-or">or type:</span>
-        <input
-          value={custom}
-          onChange={(e) => setCustom(e.target.value)}
-          placeholder="e.g. Migraine, Psoriasis…"
-          className="cp-custom-input"
-        />
-      </div>
+      {!clarify && (
+        <div className="cp-condition-row">
+          <input
+            value={condition}
+            onChange={(e) => setCondition(e.target.value)}
+            placeholder="e.g. Migraine, Psoriasis…"
+            className="cp-custom-input"
+          />
+        </div>
+      )}
 
       {error && <div className="notice error">{error}</div>}
+
+      {clarify && (
+        <div className="notice cp-clarify">
+          <p>{clarify.question}</p>
+          <div className="follow-ups">
+            {clarify.options.map((option, i) => (
+              <button
+                key={i}
+                className="follow-up-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => handleClarifyChoice(option)}
+              >
+                {option.display}
+              </button>
+            ))}
+          </div>
+          <div className="cp-condition-row cp-clarify-other">
+            <span className="cp-or">Or describe it yourself:</span>
+            <input
+              value={clarifyOther}
+              onChange={(e) => setClarifyOther(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleClarifyOther(); }}
+              placeholder="Type your own answer…"
+              className="cp-custom-input"
+              disabled={busy}
+            />
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy || !clarifyOther.trim()}
+              onClick={handleClarifyOther}
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      )}
 
       {busy && (
         <div className="cp-progress-log">
@@ -2631,10 +2705,12 @@ function NewPlanPanel({
         </div>
       )}
 
-      <button className="primary" disabled={busy || !effectiveCondition} onClick={handleGenerate} type="button">
-        <Sparkles size={16} />
-        {busy ? "Building plan…" : "Generate evidence-based plan"}
-      </button>
+      {!clarify && (
+        <button className="primary" disabled={busy || !effectiveCondition} onClick={handleGenerate} type="button">
+          <Sparkles size={16} />
+          {busy ? "Building plan…" : "Generate evidence-based plan"}
+        </button>
+      )}
     </div>
   );
 }
@@ -2720,6 +2796,11 @@ function CarePlanDetail({
       {plan.safety_notes && (
         <div className="notice warn cp-safety">
           <AlertTriangle size={15} /> {plan.safety_notes}
+        </div>
+      )}
+      {plan.validation?.status === "review_required" && (
+        <div className="notice info cp-safety">
+          <ShieldCheck size={15} /> This plan was paused by the clinical-context safety check. No condition-specific tasks were issued.
         </div>
       )}
 

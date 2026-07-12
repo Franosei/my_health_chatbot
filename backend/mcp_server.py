@@ -21,6 +21,9 @@ Local (stdio -- Claude Desktop direct):
 
 Tools:
   get_patient_context           -- full patient profile, vitals, meds, conditions
+  scrutinize_patient_context    -- resolve specialty/meaning before an agent acts
+  validate_clinical_output      -- post-generation answer safety gate
+  validate_care_plan_output     -- post-generation care-plan safety gate
   extract_article_evidence      -- structured evidence extraction from a medical article
   generate_clinical_note        -- generate a SOAP note from a consultation
   send_health_email             -- send clinical note or urgent alert by email
@@ -45,11 +48,17 @@ except ImportError:
     )
     sys.exit(1)
 
-from backend.clinical_notes import generate_soap_note
-from backend.email_service import send_clinical_note_email, send_urgent_care_alert
-from backend.product_config import PRODUCT_NAME
-from backend.summarizer import LLMHelper
-from backend.user_store import UserStore
+from backend.clinical_notes import generate_soap_note  # noqa: E402
+from backend.clinical_context_guard import (  # noqa: E402
+    adjudicate_patient_context,
+    decision_from_dict,
+    validate_care_plan,
+    validate_generated_answer,
+)  # noqa: E402
+from backend.email_service import send_clinical_note_email, send_urgent_care_alert  # noqa: E402
+from backend.product_config import PRODUCT_NAME  # noqa: E402
+from backend.summarizer import LLMHelper  # noqa: E402
+from backend.user_store import UserStore  # noqa: E402
 
 mcp = FastMCP(f"{PRODUCT_NAME} Clinical Tools")
 _llm = LLMHelper()
@@ -77,20 +86,95 @@ def get_patient_context(username: str) -> str:
         return json.dumps({"error": f"User '{username}' not found"})
 
     triage_list = UserStore.get_triage_summaries(username, limit=1)
+    conditions = UserStore.get_conditions(username)
+    medications = UserStore.get_medications(username)
+    vitals = UserStore.get_vitals(username, limit=20)
+    allergies = UserStore.get_allergies(username)
+    triage_all = UserStore.get_triage_summaries(username, limit=None)
+    context_decision = adjudicate_patient_context(
+        conditions=conditions,
+        medications=medications,
+        vitals=vitals,
+        allergies=allergies,
+        triage_summaries=triage_all,
+        document_summaries=UserStore.get_document_summaries(username),
+        longitudinal_memory=(UserStore.get_longitudinal_memory(username) or {}).get("summary", ""),
+    )
     return json.dumps(
         {
             "username": username,
             "profile": profile,
-            "conditions": UserStore.get_conditions(username),
-            "medications": UserStore.get_medications(username),
-            "allergies": UserStore.get_allergies(username),
-            "vitals": UserStore.get_vitals(username, limit=20),
+            "conditions": conditions,
+            "medications": medications,
+            "allergies": allergies,
+            "vitals": vitals,
             "symptom_logs": UserStore.get_symptom_logs(username, limit=10),
             "latest_triage": triage_list[0] if triage_list else {},
             "longitudinal_memory": UserStore.get_longitudinal_memory(username),
+            "clinical_context": context_decision.as_dict(),
         },
         default=str,
     )
+
+
+@mcp.tool()
+def scrutinize_patient_context(username: str, question: str = "", requested_topic: str = "") -> str:
+    """Adjudicate a patient's structured record before another agent acts on it.
+
+    This is the MCP equivalent of the in-process context gate. It returns the
+    confirmed specialty/meaning, direct facts used, blocked interpretations,
+    and whether a clarification is required. It never makes a diagnosis.
+    """
+    profile = UserStore.get_user_profile(username)
+    if not profile:
+        return json.dumps({"error": f"User '{username}' not found"})
+    decision = adjudicate_patient_context(
+        question=question,
+        requested_topic=requested_topic,
+        conditions=UserStore.get_conditions(username),
+        medications=UserStore.get_medications(username),
+        vitals=UserStore.get_vitals(username, limit=None),
+        allergies=UserStore.get_allergies(username),
+        triage_summaries=UserStore.get_triage_summaries(username, limit=None),
+        document_summaries=UserStore.get_document_summaries(username),
+        longitudinal_memory=(UserStore.get_longitudinal_memory(username) or {}).get("summary", ""),
+    )
+    return json.dumps({"clinical_context": decision.as_dict(), "prompt_block": decision.as_prompt_block()})
+
+
+@mcp.tool()
+def validate_clinical_output(
+    username: str,
+    question: str,
+    answer: str,
+    requested_topic: str = "",
+) -> str:
+    """Run the post-generation specialty check on an answer before delivery."""
+    context_json = scrutinize_patient_context(username, question, requested_topic)
+    context = json.loads(context_json)
+    if context.get("error"):
+        return context_json
+    decision = decision_from_dict(context.get("clinical_context"))
+    result = validate_generated_answer(answer, decision)
+    if not result["valid"] and decision:
+        result["safe_replacement"] = decision.correction_message()
+    return json.dumps({"clinical_context": context.get("clinical_context", {}), "validation": result})
+
+
+@mcp.tool()
+def validate_care_plan_output(username: str, plan_json: str, requested_topic: str = "") -> str:
+    """Run the post-generation specialty check on a care-plan JSON payload."""
+    context_json = scrutinize_patient_context(username, requested_topic, requested_topic)
+    context = json.loads(context_json)
+    if context.get("error"):
+        return context_json
+    decision = decision_from_dict(context.get("clinical_context"))
+    try:
+        plan = json.loads(plan_json)
+    except json.JSONDecodeError:
+        return json.dumps({"error": "plan_json must be valid JSON"})
+    result = validate_care_plan(plan, decision)
+    return json.dumps({"clinical_context": context.get("clinical_context", {}), "validation": result})
 
 
 # ─── Tool: extract_article_evidence ──────────────────────────────────────────
@@ -266,12 +350,17 @@ def search_trials_for_patient(
     try:
         search_profile = build_trial_search_profile(
             profile=profile,
+            memory=UserStore.get_longitudinal_memory(username),
+            symptom_logs=symptom_logs,
             conditions=conditions,
             medications=medications,
-            symptom_logs=symptom_logs,
+            allergies=UserStore.get_allergies(username),
+            vitals=UserStore.get_vitals(username, limit=None),
+            triage_summaries=UserStore.get_triage_summaries(username, limit=None),
+            document_summaries=UserStore.get_document_summaries(username),
         )
         results = find_matching_trials(
-            search_profile, location=location, max_results=max_results
+            search_profile, location_query=location, max_results=max_results
         )
         return json.dumps(results, default=str, indent=2)
     except Exception as exc:

@@ -155,3 +155,65 @@ def test_pubmed_search_excludes_specialty_mismatched_sources(monkeypatch):
 
     assert "Relevant nephrology study" in result
     assert "Unrelated respiratory study" not in result
+
+
+def test_filter_relevant_excludes_specialty_mismatch_regardless_of_confidence(monkeypatch):
+    """A source the extractor confirms is a specialty mismatch must be dropped even
+    if it otherwise scored as high-confidence and answering the question -- the
+    hard specialty_mismatch signal must not be silently ignored (this was the bug:
+    a urology 'peak flow' reading pulled in respiratory/asthma evidence)."""
+    agent = _build_agent(monkeypatch)
+    agent._extraction_context = {
+        "question": "Care plan for Asthma",
+        "patient_summary": "Recent vitals: Peak urinary flow rate / Qmax (urology, NOT a respiratory measurement): 18 mL/s",
+        "medications": [],
+        "conditions": [],
+    }
+    agent._guidance = SimpleNamespace(
+        search=lambda queries, per_source_limit=2: [
+            {"title": "Respiratory peak flow guidance", "snippet": "about breathing", "url": "http://a"},
+        ]
+    )
+
+    def fake_extract(llm, source, question, patient_summary, medications, conditions):
+        return ArticleEvidence(
+            source_id=source["source_id"], title=source["title"],
+            answers_question=True, alignment_confidence=0.9,
+            specialty_mismatch=True,
+            specialty_mismatch_reason="Discusses respiratory PEFR, patient's reading is urology Qmax.",
+        )
+
+    monkeypatch.setattr(care_plan_agent, "_extract_one_article", fake_extract)
+
+    result = agent._nhs("peak flow guidance")
+
+    assert "No relevant NHS/NICE results" in result
+
+
+def test_generate_includes_disambiguated_vitals_in_prompt(monkeypatch):
+    """CarePlanAgent.generate() must thread the patient's real vitals through
+    build_patient_history_context so the synthesis LLM sees the disambiguated
+    label (e.g. urology Qmax, not a bare 'peak_flow' key it would default to
+    reading as respiratory)."""
+    agent = _build_agent(monkeypatch)
+
+    agent.generate(
+        condition="Asthma",
+        user_context={
+            "profile": {},
+            "medications": [],
+            "conditions": [],
+            "vitals": [
+                {"type": "peak_urinary_flow_rate", "value": "18", "unit": "mL/s", "recorded_on": "2026-06-01"}
+            ],
+        },
+    )
+
+    calls = agent._client.chat.completions.calls
+    system_prompt = calls[0]["messages"][0]["content"]
+    assert "qmax" in system_prompt.lower()
+    assert "urology" in system_prompt.lower()
+
+    # The same disambiguated context must also reach the evidence-mismatch filter,
+    # not just the synthesis prompt.
+    assert "qmax" in agent._extraction_context["patient_summary"].lower()

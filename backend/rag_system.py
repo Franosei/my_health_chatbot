@@ -12,7 +12,7 @@ from backend.anonymizer import DocumentAnonymizer
 from backend.anonymization_agent import AnonymizationAgent
 from backend.duplicate_detection_agent import DuplicateDetectionAgent
 from backend.document_relevance_agent import DocumentRelevanceAgent
-from backend.document_extractor import extract_health_data_from_document
+from backend.document_extractor import extract_health_data_from_document, extract_health_data_from_images
 from backend.clinical_orchestrator import ClinicalOrchestrator
 from backend.image_analysis_agent import ImageAnalysisAgent, ImageAnalysisError
 from backend.image_generator import ImageGenerator
@@ -28,7 +28,8 @@ from backend.pubmed_search import PubMedCentralSearcher
 from backend.query_expander import QueryExpander
 from backend.summarizer import LLMHelper
 from backend.user_store import UserStore
-from backend.utils import build_excerpt, extract_text_from_pdf, render_vital_for_prompt
+from backend.clinical_context_guard import ClinicalContextDecision, validate_generated_answer
+from backend.utils import build_excerpt, extract_text_from_pdf, render_pdf_pages_to_images, render_vital_for_prompt
 
 
 class RAGEngine:
@@ -320,6 +321,32 @@ class RAGEngine:
                     extracted = extract_health_data_from_document(raw_text, path.name)
                     source_note = f"Auto-extracted from {path.name}"
 
+                    # Some exports (portal printouts, scans) render lab values inside a
+                    # gauge/badge/chart widget rather than as real text -- the text layer
+                    # then has the surrounding labels but none of the actual numbers, so
+                    # text-based extraction comes back empty even though the page clearly
+                    # has data. Fall back to reading the rendered page images directly.
+                    has_any_data = any(
+                        extracted.get(key) for key in ("vitals", "medications", "allergies", "conditions")
+                    )
+                    if not has_any_data:
+                        try:
+                            page_images = render_pdf_pages_to_images(path)
+                            vision_extracted = extract_health_data_from_images(page_images, path.name)
+                        except Exception as exc:
+                            vision_extracted = {"extraction_errors": [f"Vision fallback failed: {exc}"]}
+                        vision_has_data = any(
+                            vision_extracted.get(key) for key in ("vitals", "medications", "allergies", "conditions")
+                        )
+                        if vision_has_data:
+                            vision_extracted["extraction_method"] = "vision_fallback"
+                            extracted = vision_extracted
+                        else:
+                            extracted.setdefault("extraction_errors", []).extend(
+                                vision_extracted.get("extraction_errors")
+                                or ["Vision-based fallback extraction also found no structured health data."]
+                            )
+
                     # Vitals / lab results -- content-based dedup (type + value + date)
                     existing_vitals = UserStore.get_vitals(normalized_user, limit=None)
                     existing_keys = {
@@ -461,6 +488,10 @@ class RAGEngine:
                 role_config=bundle.get("role_config"),
                 escalation_banner=_pd.escalation_banner if _pd else "",
                 policy_context_note="\n".join(_pd.context_notes) if _pd else "",
+                clinical_context=(
+                    bundle.get("clinical_context").as_prompt_block()
+                    if bundle.get("clinical_context") else ""
+                ),
             )
         return self._finalize_answer_payload(question=question, raw_answer=raw_answer, bundle=bundle)
 
@@ -531,7 +562,6 @@ class RAGEngine:
             role_key = bundle.get("role_config").role_key if bundle.get("role_config") else "patient"
             deterministic_answer = clinical_decision.render_markdown(role_key, bundle["combined_sources"])
             streamed_chunks.append(deterministic_answer)
-            yield {"type": "token", "delta": deterministic_answer}
         else:
             for chunk in self.llm.answer_question(
                 question=question,
@@ -544,9 +574,12 @@ class RAGEngine:
                 role_config=bundle.get("role_config"),
                 escalation_banner=policy_decision.escalation_banner if policy_decision else "",
                 policy_context_note="\n".join(policy_decision.context_notes) if policy_decision else "",
+                clinical_context=(
+                    bundle.get("clinical_context").as_prompt_block()
+                    if bundle.get("clinical_context") else ""
+                ),
             ):
                 streamed_chunks.append(chunk)
-                yield {"type": "token", "delta": chunk}
 
         raw_answer = "".join(streamed_chunks).strip()
 
@@ -598,6 +631,11 @@ class RAGEngine:
             payload["video_caption"] = video_result.caption
         if video_rate_limit_msg:
             payload["video_rate_limit_msg"] = video_rate_limit_msg
+
+        # Buffer model output until the post-generation context gate has
+        # inspected it. A wrong-specialty answer must never flash in the UI
+        # before the persisted response is corrected.
+        yield {"type": "token", "delta": payload.get("answer_markdown", raw_answer)}
 
         # Generate patient-specific follow-up questions (fast aux call, non-blocking)
         try:
@@ -717,6 +755,7 @@ class RAGEngine:
             _allergy_f = _pre_exec.submit(UserStore.get_allergies, normalized_user) if normalized_user else None
             _condition_f = _pre_exec.submit(UserStore.get_conditions, normalized_user) if normalized_user else None
             _vitals_f = _pre_exec.submit(UserStore.get_vitals, normalized_user) if normalized_user else None
+            _docs_f = _pre_exec.submit(UserStore.get_document_summaries, normalized_user) if normalized_user else None
 
             _restore_f.result()
             longitudinal_memory_summary = _memory_f.result() if _memory_f else ""
@@ -727,6 +766,7 @@ class RAGEngine:
             allergies = _allergy_f.result() if _allergy_f else []
             conditions = _condition_f.result() if _condition_f else []
             vitals = _vitals_f.result() if _vitals_f else []
+            document_summaries = _docs_f.result() if _docs_f else []
 
         # Build a fast relevance graph from prior records (< 50 ms, no LLM).
         from backend.context_graph import build_context_graph
@@ -751,6 +791,7 @@ class RAGEngine:
             allergies=allergies,
             conditions=conditions,
             vitals=vitals,
+            document_summaries=document_summaries,
             context_graph=context_graph,
             chat_history=chat_history,
         )
@@ -882,6 +923,11 @@ class RAGEngine:
         bundle: Dict,
         run_claim_check: bool = True,
     ) -> Dict:
+        clinical_context: Optional[ClinicalContextDecision] = bundle.get("clinical_context")
+        context_validation = validate_generated_answer(raw_answer, clinical_context)
+        if not context_validation["valid"] and clinical_context:
+            raw_answer = clinical_context.correction_message()
+
         answer_markdown = self._link_citations(raw_answer, bundle["combined_sources"])
 
         # Prepend escalation banner to answer if policy triggered one
@@ -974,6 +1020,8 @@ class RAGEngine:
             ] if clinical_decision else [],
             "evidence_quality": evidence_quality_report,
             "claim_alignment": claim_alignment,
+            "clinical_context": clinical_context.as_dict() if clinical_context else {},
+            "clinical_context_validation": context_validation,
         }
         extra_trace_metadata = bundle.get("extra_trace_metadata")
         if isinstance(extra_trace_metadata, dict):
@@ -1000,6 +1048,7 @@ class RAGEngine:
                 medication_check.get("resolved_medications", [])
             ),
             "evidence_quality": evidence_quality_report,
+            "clinical_context": clinical_context.as_dict() if clinical_context else {},
             "trace": trace,
         }
 

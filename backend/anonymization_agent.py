@@ -82,7 +82,7 @@ class AnonymizationAgent:
                 ],
                 temperature=0,
                 response_format={"type": "json_object"},
-                max_tokens=700,
+                max_completion_tokens=700,
             )
             raw = response.choices[0].message.content or "{}"
             parsed = json.loads(raw)

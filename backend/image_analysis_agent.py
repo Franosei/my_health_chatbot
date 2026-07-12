@@ -126,7 +126,7 @@ class ImageAnalysisAgent:
             ],
             temperature=0,
             response_format={"type": "json_object"},
-            max_tokens=900,
+            max_completion_tokens=900,
         )
 
         raw = response.choices[0].message.content or "{}"

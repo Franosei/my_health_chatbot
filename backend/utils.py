@@ -1,7 +1,7 @@
 # backend/utils.py
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import fitz  # PyMuPDF
 
@@ -24,6 +24,26 @@ def extract_text_from_pdf(file_path: Path) -> str:
         for page in doc:
             text += page.get_text()
     return text
+
+
+def render_pdf_pages_to_images(file_path: Path, max_pages: int = 6, dpi: int = 150) -> List[bytes]:
+    """
+    Renders each page of a PDF to a PNG image.
+
+    Used as a fallback when the text layer is missing or incomplete -- e.g. a
+    portal export where lab values are drawn as canvas/SVG gauge widgets
+    rather than real text, so `extract_text_from_pdf` captures the surrounding
+    labels but not the actual numbers.
+    """
+    if not file_path.exists() or file_path.suffix.lower() != ".pdf":
+        raise ValueError(f"Invalid PDF file: {file_path}")
+
+    images: List[bytes] = []
+    with fitz.open(file_path) as doc:
+        for page in doc[:max_pages]:
+            pixmap = page.get_pixmap(dpi=dpi)
+            images.append(pixmap.tobytes("png"))
+    return images
 
 
 def build_excerpt(text: str, max_chars: int = 320) -> str:
