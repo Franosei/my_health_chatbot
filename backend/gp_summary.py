@@ -7,7 +7,6 @@ from typing import Dict, Iterable, List, Optional
 
 import fitz
 
-from backend.symptom_tracker import build_recent_symptom_lines
 
 
 PAGE_WIDTH = 595

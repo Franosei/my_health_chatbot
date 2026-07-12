@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from itertools import combinations
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable
 
 import requests
 

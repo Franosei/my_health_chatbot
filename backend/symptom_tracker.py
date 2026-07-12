@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date
 from statistics import mean
 from typing import Dict, Iterable, List
 

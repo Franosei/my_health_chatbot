@@ -1,7 +1,6 @@
 import json
 from types import SimpleNamespace
 
-import pytest
 
 from backend.intent_risk_classifier import IntentRiskClassifier
 

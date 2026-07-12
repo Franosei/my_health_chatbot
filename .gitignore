@@ -422,3 +422,4 @@ FodyWeavers.xsd
 *.msm
 *.msp
 chat_history.json
+.env.tmp_hidden

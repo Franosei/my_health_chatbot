@@ -16,6 +16,7 @@ This README is written for developers working on the codebase: it documents the 
   <img src="https://img.shields.io/badge/React-18-0f1f3d?style=for-the-badge&logo=react&logoColor=1f9c94" alt="React 18" />
   <img src="https://img.shields.io/badge/OpenAI-gpt--4o--mini-0f1f3d?style=for-the-badge&logo=openai&logoColor=1f9c94" alt="OpenAI" />
   <br />
+  <a href="https://github.com/Franosei/my_health_chatbot/actions/workflows/ci.yml"><img src="https://github.com/Franosei/my_health_chatbot/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-1f9c94?style=for-the-badge" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/Deploy-Railway%20%7C%20Docker-1f9c94?style=for-the-badge&logo=docker&logoColor=white" alt="Deploy on Railway or Docker" />
   <a href="https://github.com/Franosei/my_health_chatbot/stargazers"><img src="https://img.shields.io/github/stars/Franosei/my_health_chatbot?style=for-the-badge&color=e5c158&label=Stars" alt="GitHub stars" /></a>
@@ -38,6 +39,7 @@ This README is written for developers working on the codebase: it documents the 
 - [Deployment](#deployment)
 - [PostgreSQL](#postgresql)
 - [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
 - [License](#license)
 - [Important Note](#important-note)
 
@@ -529,14 +531,32 @@ Install the `mcp` package first: `pip install mcp`.
 
 ## Testing
 
-Backend unit tests live alongside the modules they cover (`backend/test_*.py`) and run with `pytest`:
+Both suites run in CI on every push/PR to `main` (`.github/workflows/ci.yml`).
+
+### Backend
+
+Unit tests live alongside the modules they cover (`backend/test_*.py`) and run with `pytest`:
 
 ```powershell
-py -m pip install pytest
+py -m pip install pytest ruff
 py -m pytest backend/
+ruff check backend/
 ```
 
-Current coverage includes evidence ranking, response templates, the summarizer, PubMed search, moderation, image analysis, image generation, video generation and clinical decision support. There is no frontend test suite yet -- verify UI changes by running `npm run dev` against a local backend and exercising the affected flow in the browser.
+Current coverage includes evidence ranking, response templates, moderation, image analysis, image generation, video generation, care-plan generation, the clinical orchestrator, intent/risk classification and the clinical-context guard. `backend/test_pubmed_search.py`, `backend/test_rag_engine.py`, and `backend/test_summarizer.py` are live-API manual smoke scripts rather than automated tests (no assertions, need a real `OPENAI_API_KEY` and network access) -- CI excludes them; run them manually with `python -m pytest backend/test_rag_engine.py` when you want to eyeball a real end-to-end answer.
+
+### Frontend
+
+Unit tests use [Vitest](https://vitest.dev/) and React Testing Library, covering the pure-logic modules (`frontend/src/utils.ts`, `frontend/src/api.ts`):
+
+```powershell
+cd frontend
+npm install
+npm test          # single run
+npm run test:watch # watch mode
+```
+
+There is no component/E2E test suite yet -- `App.tsx` is a single large file with no separately exported components. Verify UI changes by running `npm run dev` against a local backend and exercising the affected flow in the browser.
 
 ---
 
@@ -596,6 +616,12 @@ Allow microphone access in the browser and confirm the backend has a valid OpenA
 
 **MCP tools fail in Claude Desktop**
 Confirm `MCP_API_KEY` in your environment matches the key in `claude_desktop_config.json`. For local stdio mode, install the `mcp` package with `pip install mcp` first.
+
+---
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, code style, and pull request expectations. Everyone participating is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? Please follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
 ---
 

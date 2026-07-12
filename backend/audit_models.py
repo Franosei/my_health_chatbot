@@ -4,7 +4,7 @@ Structured audit models for clinical governance, policy tracking, and evidence t
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 def _utc_now() -> str:

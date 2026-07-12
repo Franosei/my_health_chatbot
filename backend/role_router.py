@@ -3,7 +3,7 @@ Role routing: maps user profile role strings to structured RoleConfig bundles
 that control downstream evidence tiering, escalation thresholds, and LLM persona.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 
 from backend.response_templates import get_persona_block, get_section_headings
@@ -97,7 +97,6 @@ _ALIAS_MAP: dict[str, str] = {
     # New clinical role strings (from updated signup form)
     "patient / individual": "patient",
     "patient": "patient",
-    "caregiver": "caregiver",
     "doctor / physician": "doctor",
     "doctor": "doctor",
     "physician": "doctor",
