@@ -141,8 +141,9 @@ class ClinicalContextDecision:
     def as_prompt_block(self) -> str:
         if self.status == "insufficient":
             return (
-                "Clinical context adjudication: insufficient structured evidence to confirm a "
-                "specific interpretation. Do not invent one; state what is missing."
+                "No record-specific interpretation is established for this request. Answer the "
+                "current question normally. Do not claim that a record was reviewed, and mention "
+                "missing details only when they are necessary to answer safely."
             )
 
         lines = [

@@ -25,26 +25,15 @@ def get_pathway_context(
     return PathwayContext(
         pathway_name="general_triage",
         additional_search_terms=[
-            "NICE CKS clinical knowledge summary",
-            "NHS clinical guidelines",
-            "NICE evidence-based guideline",
+            "current official clinical guideline",
+            "systematic review clinical guidance",
         ],
         safety_rules=[
-            "Always check for red flag symptoms before educational content: unexplained weight loss, "
-            "haemoptysis, dysphagia, postmenopausal bleeding, rectal bleeding, severe headache.",
-            "After red flags are considered, give the clearest safe disposition and timeframe rather than broad caution alone.",
-            "For fever: include serious bacterial infection red flags (petechial rash, neck stiffness, "
-            "photophobia, purpuric rash).",
-            "Sepsis red flags must always be escalated: confusion, tachycardia, hypotension, "
-            "reduced urine output, mottled skin.",
-            "For chest symptoms: always exclude ACS, PE, and pneumothorax before reassurance.",
-            "Neurological sudden-onset symptoms (FAST) require immediate 999 escalation.",
+            "Use only warning signs connected to the supplied presentation and capable of changing disposition.",
+            "Choose the lowest safe disposition supported by facts; do not escalate for missing information alone.",
+            "Give a direct next action and timeframe before optional educational detail.",
         ],
-        preferred_sources=["NICE", "NHS", "NICE CKS", "SIGN"],
-        escalation_signals=[
-            "red flag symptoms", "unexplained weight loss", "haemoptysis",
-            "meningitis symptoms", "sepsis signs", "chest pain exertional",
-            "stroke symptoms", "sudden neurological deficit",
-        ],
+        preferred_sources=[],
+        escalation_signals=[],
         evidence_tier_override=1,  # Prefer formal guidance for general triage
     )

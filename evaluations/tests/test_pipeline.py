@@ -1,6 +1,6 @@
 from evaluations.config import EvalConfig
 from evaluations.models import ConversationTurn, EvalCase
-from evaluations.pipeline import build_rag_engine, run_case
+from evaluations.pipeline import build_rag_engine, ensure_eval_account, run_case
 
 
 class _FakeRagEngine:
@@ -85,6 +85,85 @@ def test_run_case_captures_trace_and_sources():
     assert response.sources == [{"source_id": "S1", "title": "NHS guidance"}]
     assert response.trace["risk_level"] == "routine"
     assert response.duration_seconds >= 0
+
+
+def test_run_case_records_resolved_role_and_passes_user_through():
+    case = _case([{"role": "user", "content": "What are the new ACLS updates?"}])
+    fake_engine = _FakeRagEngine(
+        {"answer_markdown": "ans", "answer_text": "ans", "trace": {}}
+    )
+
+    response = run_case(
+        fake_engine, case, user="eval-harness-doctor-case-1", role="doctor"
+    )
+
+    assert fake_engine.calls[0]["user"] == "eval-harness-doctor-case-1"
+    assert response.resolved_role == "doctor"
+
+
+def test_run_case_defaults_to_patient_role_and_none_user():
+    case = _case([{"role": "user", "content": "I have a headache."}])
+    fake_engine = _FakeRagEngine(
+        {"answer_markdown": "ans", "answer_text": "ans", "trace": {}}
+    )
+
+    response = run_case(fake_engine, case)
+
+    assert fake_engine.calls[0]["user"] is None
+    assert response.resolved_role == "patient"
+
+
+def test_ensure_eval_account_returns_none_for_patient_role():
+    # patient is role_router.py's own default for an anonymous/empty profile,
+    # so there's nothing to create -- must not touch UserStore at all.
+    assert ensure_eval_account("patient", "case-1") is None
+
+
+def test_ensure_eval_account_creates_account_for_non_patient_role(monkeypatch):
+    import backend.user_store
+
+    created = {}
+
+    class _FakeUserStore:
+        @staticmethod
+        def get_user_profile(username):
+            return {}
+
+        @staticmethod
+        def create_user(**kwargs):
+            created.update(kwargs)
+            return True
+
+    monkeypatch.setattr(backend.user_store, "UserStore", _FakeUserStore)
+
+    username = ensure_eval_account("doctor", "case-42")
+
+    assert username is not None
+    assert username.startswith("eval-harness-doctor-")
+    assert created["clinical_role"] == "doctor"
+    assert created["role"] == "doctor"
+    assert created["username"] == username
+    assert len(created["password"]) >= 8
+
+
+def test_ensure_eval_account_does_not_recreate_existing_account(monkeypatch):
+    import backend.user_store
+
+    class _FakeUserStore:
+        @staticmethod
+        def get_user_profile(username):
+            return {"username": username, "clinical_role": "doctor"}  # already exists
+
+        @staticmethod
+        def create_user(**kwargs):
+            raise AssertionError(
+                "create_user should not be called for an existing account"
+            )
+
+    monkeypatch.setattr(backend.user_store, "UserStore", _FakeUserStore)
+
+    username = ensure_eval_account("doctor", "case-42")
+    assert username is not None
 
 
 def test_build_rag_engine_sets_generator_model_without_touching_source(monkeypatch):

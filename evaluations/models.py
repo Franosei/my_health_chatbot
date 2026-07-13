@@ -177,6 +177,9 @@ class PipelineResponse(BaseModel):
     trace: Dict[str, Any] = Field(default_factory=dict)
     full_payload: Dict[str, Any] = Field(default_factory=dict)
     duration_seconds: float = 0.0
+    # Role the case was actually run as (see evaluations/role_detection.py) --
+    # "patient" unless the conversation itself self-identifies a clinical role.
+    resolved_role: str = "patient"
 
 
 class CaseResult(BaseModel):

@@ -31,18 +31,10 @@ def get_pathway_context(
             "NICE intrapartum care guideline",
         ],
         safety_rules=[
-            "All medication advice in pregnancy must reference NICE or RCOG guidelines. "
-            "No off-label recommendation without explicit source backing.",
-            "Always list obstetric red flags requiring immediate 999: "
-            "heavy vaginal bleeding, reduced fetal movements (>28 weeks), severe headache with visual disturbance, "
-            "upper abdominal pain, rupture of membranes before 37 weeks, cord prolapse, "
-            "signs of pre-eclampsia (hypertension, proteinuria, oedema).",
-            "Pre-eclampsia and eclampsia: always escalate to emergency services immediately.",
-            "For postnatal period: include postpartum haemorrhage red flags, thromboembolism risk, "
-            "signs of postpartum psychosis (rapid behaviour change, confusion, hallucinations).",
-            "For newborn questions: include neonatal red flags (poor feeding, jaundice, temperature instability, "
-            "respiratory distress, hypotonia).",
-            "Apply highest safety threshold -- when in doubt, escalate.",
+            "Use pregnancy-, postpartum-, or newborn-specific evidence only when that context is established.",
+            "For medicine questions, verify the exact product and pregnancy or breastfeeding applicability.",
+            "Include only presentation-specific obstetric or neonatal warning signs that change disposition.",
+            "Use the lowest safe fact-supported disposition; uncertainty alone is not an emergency trigger.",
         ],
         preferred_sources=["RCOG", "NICE", "NHS", "NICE CKS"],
         escalation_signals=[

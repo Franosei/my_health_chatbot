@@ -121,6 +121,41 @@ def test_ambiguity_flag_is_ignored_when_risk_level_is_urgent(monkeypatch):
     assert bundle["kind"] == "answer"
 
 
+def test_doctor_acls_education_bypasses_crisis_short_circuit(monkeypatch):
+    orchestrator = _build_orchestrator(monkeypatch)
+    routine_clinical_intent = IntentClassification(
+        intent_category="general_info",
+        risk_level="routine",
+        pathway_hint="general_triage",
+    )
+    orchestrator.intent_classifier.classify = lambda *a, **kw: routine_clinical_intent
+
+    monkeypatch.setattr(
+        AgenticRetrievalLoop,
+        "run",
+        lambda self, *a, **kw: {
+            "collected_sources": [],
+            "personal_context": [],
+            "trial_results": [],
+            "tool_calls_made": [],
+        },
+    )
+
+    bundle = orchestrator.prepare_bundle(
+        question=(
+            "I'm an emergency medicine physician. Walk me through the new BLS and ACLS "
+            "guideline updates for adult in-hospital cardiac arrest, including airway research."
+        ),
+        user="doctor1",
+        user_profile={"clinical_role": "doctor"},
+        longitudinal_memory_summary="",
+    )
+
+    assert bundle["kind"] == "answer"
+    assert bundle["role_config"].role_key == "doctor"
+    assert bundle["intent"].crisis_detected is False
+
+
 class _FakeAgentCompletions:
     def __init__(self):
         self.calls = []

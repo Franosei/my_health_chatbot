@@ -123,6 +123,7 @@ def _sanitized_case_entry(case_result: CaseResult) -> dict:
         "case_id": case_result.case.case_id,
         "source_dataset": case_result.case.source_dataset,
         "tags": case_result.case.tags,
+        "resolved_role": case_result.pipeline_response.resolved_role,
         "weighted_score": round(case_result.weighted_score, 4),
         "overall_pass": case_result.overall_pass,
         "adjudicated": case_result.adjudication.triggered,

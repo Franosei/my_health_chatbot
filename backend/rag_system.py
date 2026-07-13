@@ -29,6 +29,11 @@ from backend.query_expander import QueryExpander
 from backend.summarizer import LLMHelper
 from backend.user_store import UserStore
 from backend.clinical_context_guard import ClinicalContextDecision, validate_generated_answer
+from backend.agentic_health_contract import (
+    remove_internal_language,
+    remove_unknown_citations,
+    validate_user_facing_language,
+)
 from backend.utils import build_excerpt, extract_text_from_pdf, render_pdf_pages_to_images, render_vital_for_prompt
 
 
@@ -490,8 +495,12 @@ class RAGEngine:
                 policy_context_note="\n".join(_pd.context_notes) if _pd else "",
                 clinical_context=(
                     bundle.get("clinical_context").as_prompt_block()
-                    if bundle.get("clinical_context") else ""
+                    if bundle.get("clinical_context")
+                    and bundle.get("clinical_context").status != "insufficient"
+                    else ""
                 ),
+                selected_skills=bundle.get("selected_skills", []),
+                current_location=bundle.get("current_location", ""),
             )
         return self._finalize_answer_payload(question=question, raw_answer=raw_answer, bundle=bundle)
 
@@ -576,8 +585,12 @@ class RAGEngine:
                 policy_context_note="\n".join(policy_decision.context_notes) if policy_decision else "",
                 clinical_context=(
                     bundle.get("clinical_context").as_prompt_block()
-                    if bundle.get("clinical_context") else ""
+                    if bundle.get("clinical_context")
+                    and bundle.get("clinical_context").status != "insufficient"
+                    else ""
                 ),
+                selected_skills=bundle.get("selected_skills", []),
+                current_location=bundle.get("current_location", ""),
             ):
                 streamed_chunks.append(chunk)
 
@@ -928,6 +941,21 @@ class RAGEngine:
         if not context_validation["valid"] and clinical_context:
             raw_answer = clinical_context.correction_message()
 
+        # Citation existence is a pre-display requirement, not merely an audit.
+        # Unknown model-generated markers are removed before links are rendered.
+        source_ids = [source.get("source_id", "") for source in bundle.get("combined_sources", [])]
+        raw_answer = remove_unknown_citations(raw_answer, source_ids)
+
+        language_valid, language_violations = validate_user_facing_language(raw_answer)
+        if not language_valid:
+            raw_answer = remove_internal_language(raw_answer)
+            language_valid, remaining_violations = validate_user_facing_language(raw_answer)
+            if remaining_violations or not raw_answer:
+                raw_answer = (
+                    "I need a little more information to answer safely. Please provide the specific "
+                    "symptom, medicine, or report wording you want help with."
+                )
+
         answer_markdown = self._link_citations(raw_answer, bundle["combined_sources"])
 
         # Prepend escalation banner to answer if policy triggered one
@@ -1022,6 +1050,10 @@ class RAGEngine:
             "claim_alignment": claim_alignment,
             "clinical_context": clinical_context.as_dict() if clinical_context else {},
             "clinical_context_validation": context_validation,
+            "user_facing_validation": {
+                "valid": language_valid,
+                "violations": language_violations,
+            },
         }
         extra_trace_metadata = bundle.get("extra_trace_metadata")
         if isinstance(extra_trace_metadata, dict):
@@ -1739,7 +1771,7 @@ class RAGEngine:
                 "\n\n---\n"
                 "**Return immediately if:**\n\n"
                 f"{trigger_lines}\n\n"
-                "If in any doubt, call 111 or go to your nearest A&E."
+                "If symptoms are severe or rapidly worsening, contact your local emergency services."
             )
 
     def _build_medication_check(
@@ -1900,16 +1932,6 @@ class RAGEngine:
             return f"[{source_id}]({url})"
 
         linked_answer = re.sub(r"\[(S\d+)\]", replace_match, answer_text)
-        if sources and linked_answer == answer_text:
-            fallback_links = []
-            for source in sources:
-                source_id = source.get("source_id", "Source")
-                url = source.get("url")
-                if url:
-                    fallback_links.append(f"[{source_id}]({url})")
-                else:
-                    fallback_links.append(f"`[{source_id}]`")
-            linked_answer += "\n\n**Sources used:** " + ", ".join(fallback_links)
         return linked_answer
 
     @staticmethod

@@ -76,6 +76,31 @@ def _pipeline_response():
     )
 
 
+def test_grading_prompt_uses_displayed_answer_and_source_metadata():
+    from evaluations.models import PipelineResponse
+
+    response = PipelineResponse(
+        case_id="case-1",
+        answer_markdown="Supported claim [S1](https://example.test/guideline).",
+        answer_text="Supported claim [S1].",
+        sources=[
+            {
+                "source_id": "S1",
+                "title": "Clinical guideline",
+                "url": "https://example.test/guideline",
+                "snippet": "The excerpt directly supports the claim.",
+            }
+        ],
+        trace={"risk_level": "routine", "crisis_detected": False},
+    )
+
+    prompt = grading._build_grading_prompt(_case(), response)
+
+    assert "[S1](https://example.test/guideline)" in prompt
+    assert "Clinical guideline" in prompt
+    assert "The excerpt directly supports the claim." in prompt
+
+
 def _config():
     return EvalConfig(max_retries=3)
 

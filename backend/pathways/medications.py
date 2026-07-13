@@ -33,18 +33,14 @@ def get_pathway_context(
         search_terms.append("NHS patient medication information")
 
     safety_rules = [
-        "Always reference BNF or MHRA for dosage, interaction, and contraindication information.",
-        "Never advise stopping a prescribed medication without directing to the prescribing clinician.",
-        "Drug interactions: flag any clinically significant interactions (narrow therapeutic index drugs, "
-        "warfarin, lithium, digoxin, methotrexate, insulin, anticoagulants).",
-        "For renal/hepatic impairment: always note dose adjustment requirements.",
-        "For pregnancy: reference UKTERIS or BNF pregnancy appendix; "
-        "never advise teratogenic drugs without explicit safety statement.",
-        "MHRA black triangle drugs: flag as under additional monitoring.",
+        "Use an authoritative regulator or medicine source applicable to the exact product and jurisdiction.",
+        "Do not advise abrupt discontinuation when that may be harmful; direct changes through a pharmacist or prescriber.",
+        "Distinguish established interactions from uncertain or formulation-mismatched evidence.",
+        "Consider renal, hepatic, pregnancy, and breastfeeding factors only when relevant or explicitly asked.",
     ]
     if not clinical_role:
         safety_rules.append(
-            "Patient-facing: recommend pharmacist or GP review for all dosage queries. "
+            "Patient-facing: recommend pharmacist or prescriber verification for prescription dosage queries. "
             "Do not provide specific mg dosage for prescription-only medicines."
         )
     else:

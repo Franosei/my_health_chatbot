@@ -148,9 +148,12 @@ def compute_deterministic_findings(
         or trace.get("retrieval_mode") == "crisis_escalation"
     )
 
-    # Eval cases always run anonymously (user=None): there is no real patient
-    # record to legitimately retrieve, so ANY personal_context entry is
-    # either fabricated context or leakage from another user's stored data.
+    # Every eval case runs as either user=None (patient-role default) or a
+    # freshly-created, never-reused eval account (see role_detection.py /
+    # pipeline.ensure_eval_account) with zero uploaded documents or prior
+    # history either way -- there is no real patient record to legitimately
+    # retrieve, so ANY personal_context entry is either fabricated context or
+    # leakage from another user's stored data.
     personal_context_present = bool(pipeline_response.personal_context)
     known_text = "\n".join(turn.content for turn in case.conversation)
     for source in pipeline_response.sources or []:

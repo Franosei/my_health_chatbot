@@ -4,20 +4,28 @@ from backend.role_router import RoleRouter
 from backend.triage_summary import normalize_triage_output
 
 
-def _decision_for(question: str, role: str = "nurse"):
+def _decision_for(
+    question: str,
+    presentation_hint: str,
+    role: str = "nurse",
+    vulnerable_flags: list[str] | None = None,
+):
     engine = ClinicalDecisionSupportEngine()
     router = RoleRouter()
     intent = IntentClassification(
         intent_category="symptom_triage",
         risk_level="routine",
         pathway_hint="general_triage",
+        presentation_hint=presentation_hint,
+        vulnerable_flags=vulnerable_flags or [],
     )
     return engine.assess(question, intent, router.resolve(role))
 
 
 def test_thunderclap_headache_pathway_is_immediate_review():
     decision = _decision_for(
-        "I have had a severe headache that came on suddenly an hour ago and it is the worst headache I have ever had."
+        "I have had a severe headache that came on suddenly an hour ago and it is the worst headache I have ever had.",
+        "thunderclap_headache",
     )
 
     assert decision.pathway_id == "thunderclap_headache"
@@ -28,7 +36,9 @@ def test_thunderclap_headache_pathway_is_immediate_review():
 
 def test_possible_sepsis_pathway_adds_elderly_flag_and_news2_action():
     decision = _decision_for(
-        "A 68-year-old patient has become increasingly confused over two days, has a temperature of 38.9 and is passing very little urine."
+        "A 68-year-old patient has become increasingly confused over two days, has a temperature of 38.9 and is passing very little urine.",
+        "possible_sepsis",
+        vulnerable_flags=["elderly"],
     )
 
     assert decision.pathway_id == "possible_sepsis"
@@ -39,7 +49,8 @@ def test_possible_sepsis_pathway_adds_elderly_flag_and_news2_action():
 
 def test_recurrent_blackout_pathway_is_same_day_review():
     decision = _decision_for(
-        "A patient tells me they have been having episodes where everything goes black for a few seconds and they nearly fall. This has happened three times in the past two weeks."
+        "A patient tells me they have been having episodes where everything goes black for a few seconds and they nearly fall. This has happened three times in the past two weeks.",
+        "recurrent_blackout",
     )
 
     assert decision.pathway_id == "recurrent_blackout"
@@ -49,10 +60,11 @@ def test_recurrent_blackout_pathway_is_same_day_review():
 
 def test_chronic_cough_pathway_remains_prompt_without_red_flags():
     decision = _decision_for(
-        "I have had a persistent cough for eight weeks. I am a non-smoker, I have not lost weight, and I have no night sweats."
+        "I have had a persistent cough for eight weeks. I am a non-smoker, I have not lost weight, and I have no night sweats.",
+        "chronic_cough_no_red_flags",
     )
 
-    assert decision.pathway_id == "chronic_cough"
+    assert decision.pathway_id == "chronic_cough_no_red_flags"
     assert decision.urgency_level == "Prompt"
     assert decision.next_step == "GP"
 

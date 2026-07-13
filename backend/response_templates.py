@@ -15,22 +15,24 @@ CRISIS_RESPONSE = f"""\
 Based on what you have described, this may be an emergency situation.
 
 **Please act immediately:**
-- **Call 999** (UK emergency services) or your local emergency number right now
-- If you are in the US, call **911**
-- If you are in immediate danger, go to your nearest Emergency Department
+- **Call your local emergency number now**
+- If you can do so safely, go to the nearest emergency department
 - Tell them exactly what you have told me
 
 ---
 
-**Crisis support lines (available 24/7):**
-- **Samaritans (UK):** 116 123 (free, 24/7)
-- **Crisis Text Line (UK):** Text SHOUT to 85258
-- **NHS 111:** For urgent medical advice that is not an emergency
-- **International Association for Suicide Prevention:** https://www.iasp.info/resources/Crisis_Centres/
-
----
-
 {PRODUCT_NAME} is not able to provide emergency care. Please reach out to a real person right now.
+"""
+
+CLINICAL_CRISIS_RESPONSE = """\
+## Active Emergency
+
+This describes an active emergency presentation.
+
+- Activate your local emergency or resuscitation pathway now.
+- Continue immediate assessment and treatment within your scope and current local protocol.
+- Mobilize the appropriate senior, resuscitation, anaesthetic, obstetric, or specialty support without delay.
+- Use verified point-of-care guidance rather than waiting for an educational evidence review.
 """
 
 TIER_LABELS = {
@@ -49,6 +51,13 @@ TIER_DESCRIPTIONS = {
 def build_tier_badge(tier: int) -> str:
     label = TIER_LABELS.get(tier, f"Tier {tier}")
     return f"[{label}]"
+
+
+def build_crisis_response(role_key: str = "patient") -> str:
+    """Return emergency guidance appropriate to the established user role."""
+    if role_key in ("doctor", "nurse", "midwife", "physiotherapist"):
+        return CLINICAL_CRISIS_RESPONSE
+    return CRISIS_RESPONSE
 
 
 def get_tier_description(tier: int) -> str:
@@ -168,7 +177,7 @@ ROLE_PERSONA_BLOCKS: dict[str, str] = {
         "Use plain, accessible language and avoid unexplained medical jargon. "
         "Give a clear working explanation without overstating certainty. "
         "Be specific about what the person should do next, including timeframe and where to seek help. "
-        "Prefer a clear route such as self-care, pharmacist, GP, same-day review, 111, or emergency care over vague reassurance. "
+        "Prefer a clear route such as self-care, pharmacist, primary-care review, same-day review, or emergency care. "
         "Use a warm, calm, and direct tone."
     ),
     "doctor": (
@@ -197,7 +206,7 @@ ROLE_PERSONA_BLOCKS: dict[str, str] = {
         "Apply heightened safety thresholds for all pregnancy, postpartum, and newborn-related content. "
         "Use maternity-specific clinical terminology. "
         "Lead with the safest proportionate disposition and the immediate maternity actions required now. "
-        "Always include obstetric red flags, referral triggers, and RCOG or NICE guidance where relevant. "
+        "Include only presentation-relevant obstetric warning signs and referral triggers. "
         "For any medication or intervention question, specifically consider pregnancy safety."
     ),
     "physiotherapist": (
@@ -205,8 +214,7 @@ ROLE_PERSONA_BLOCKS: dict[str, str] = {
         "Focus on MSK interpretation, functional movement, and rehabilitation principles. "
         "Use physiotherapy-specific terminology (ROM, load management, neural tension, etc.). "
         "Give a specific initial management plan, including load advice, contraindications, and onward referral thresholds. "
-        "Always include neurovascular red flags and non-mechanical warning signs that require "
-        "onward referral. Reference NICE MSK guidelines and NICE CKS where relevant."
+        "Include neurovascular or non-mechanical warning signs only when connected to the presentation."
     ),
     "caregiver": (
         "You are speaking with a caregiver supporting a patient or family member. "
@@ -214,7 +222,7 @@ ROLE_PERSONA_BLOCKS: dict[str, str] = {
         "Focus on what the caregiver can practically do next and when to seek professional help. "
         "Prefer specific care routes and timeframes over general caution. "
         "Include caregiver-specific support considerations. "
-        "Always include clear escalation guidance."
+        "Include escalation guidance when the presentation calls for it."
     ),
 }
 

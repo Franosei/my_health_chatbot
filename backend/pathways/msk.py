@@ -31,18 +31,9 @@ def get_pathway_context(
             "NICE neck pain osteoarthritis guideline",
         ],
         safety_rules=[
-            "Always screen for non-mechanical red flags before recommending exercise or movement: "
-            "unexplained night pain, rest pain, fever, unexplained weight loss, history of cancer, "
-            "morning stiffness >45 minutes, bilateral symptoms, bowel/bladder dysfunction.",
-            "Cauda equina syndrome: always escalate immediately -- bilateral leg weakness, "
-            "saddle anaesthesia, bladder/bowel dysfunction with back pain = 999 emergency.",
-            "Neurovascular compromise: check pulses, capillary refill, sensation, and power "
-            "for acute limb injuries before movement recommendations.",
-            "Fracture red flags: bone pain after trauma, point tenderness, inability to weight-bear.",
-            "For inflammatory arthropathy (RA, PsA, AS): reference NICE biologics/DMARD pathways. "
-            "Do not delay referral to rheumatology.",
-            "Exercise and load management: reference NICE NG59 for back pain, "
-            "NICE NG226 for osteoarthritis.",
+            "Before movement advice, consider only non-mechanical, neurovascular, fracture, or cord features supported by the presentation.",
+            "Do not inject unrelated MSK warning signs or theoretical diagnoses.",
+            "Give specific load or movement advice only when appropriate to the supplied injury or condition.",
         ],
         preferred_sources=["NICE", "NICE CKS", "NHS", "SIGN", "BJSM"],
         escalation_signals=[

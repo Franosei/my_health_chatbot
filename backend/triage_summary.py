@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Dict
 
 
-TRIAGE_STEPS = {"self-care", "gp", "111", "same-day review", "immediate review", "999"}
+TRIAGE_STEPS = {
+    "self-care", "gp", "primary-care clinician", "local urgent-care service",
+    "111", "same-day review", "immediate review", "999", "local emergency services",
+}
 TRIAGE_STEP_RANK = {
     "self-care": 1,
     "gp": 2,
@@ -11,6 +14,9 @@ TRIAGE_STEP_RANK = {
     "111": 3,
     "immediate review": 4,
     "999": 5,
+    "primary-care clinician": 2,
+    "local urgent-care service": 3,
+    "local emergency services": 5,
 }
 
 
@@ -22,7 +28,7 @@ def build_default_triage(intent, policy_decision) -> Dict:
     if risk_level == "crisis" or getattr(intent, "crisis_detected", False):
         return {
             "urgency_level": "Emergency",
-            "next_step": "999",
+            "next_step": "local emergency services",
             "what_to_monitor": [
                 "Any further deterioration while waiting for emergency help",
             ],
@@ -32,7 +38,7 @@ def build_default_triage(intent, policy_decision) -> Dict:
     if risk_level == "urgent":
         return {
             "urgency_level": "Urgent",
-            "next_step": "111",
+            "next_step": "local urgent-care service",
             "what_to_monitor": [
                 "Worsening pain, breathing difficulty, new neurological symptoms, or reduced responsiveness",
             ],
@@ -42,7 +48,7 @@ def build_default_triage(intent, policy_decision) -> Dict:
     if risk_level == "elevated" or policy_action != "allow":
         return {
             "urgency_level": "Prompt",
-            "next_step": "GP",
+            "next_step": "Primary-care clinician",
             "what_to_monitor": [
                 "Persistent symptoms, worsening severity, or new red flags",
             ],
@@ -77,6 +83,9 @@ def normalize_triage_output(payload: Dict, fallback: Dict) -> Dict:
         "same-day review": "Same-day review",
         "immediate review": "Immediate review",
         "999": "999",
+        "primary-care clinician": "Primary-care clinician",
+        "local urgent-care service": "Local urgent-care service",
+        "local emergency services": "Local emergency services",
     }.get(normalized_next_step, "GP")
 
     monitor = merged.get("what_to_monitor", [])

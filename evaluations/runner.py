@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 import time
 from datetime import datetime, timezone
@@ -72,13 +73,19 @@ def _load_completed_case_ids(raw_path: Path) -> Set[str]:
 
 
 def dry_run(cases: List[EvalCase], config: EvalConfig) -> None:
-    """Validates data and prompts without calling any model."""
+    """Validates data and prompts without calling any model. Also reports the
+    role each case would be routed as (see resolve_case_user/role_detection.py)
+    without actually creating any eval account -- purely informational."""
     from evaluations.grading import (
         _build_grading_prompt,
     )  # local import: internal helper, dry-run only
+    from evaluations.role_detection import detect_stated_role
 
     errors = 0
+    role_counts: dict = {}
     for case in cases:
+        role = detect_stated_role(case)
+        role_counts[role] = role_counts.get(role, 0) + 1
         try:
             case.last_user_turn()
             _build_grading_prompt(case, _FakeDryRunResponse(case))
@@ -90,6 +97,7 @@ def dry_run(cases: List[EvalCase], config: EvalConfig) -> None:
             )
 
     print(f"[dry-run] {len(cases)} cases loaded, {errors} failed validation.")
+    print(f"[dry-run] detected roles: {role_counts}")
     print(
         f"[dry-run] generator_model={config.generator_model} primary_grader_model={config.primary_grader_model} adjudicator_model={config.adjudicator_model}"
     )
@@ -102,13 +110,30 @@ class _FakeDryRunResponse:
 
     def __init__(self, case: EvalCase) -> None:
         self.answer_text = "[dry-run placeholder response]"
+        self.answer_markdown = self.answer_text
+        self.sources = []
+
+
+def resolve_case_user(case: EvalCase) -> tuple[str, Optional[str]]:
+    """Detects a self-stated clinical role in the case's own conversation and
+    resolves the eval account to run it as (None for patient -- FlynnMed's
+    own default for an anonymous/empty profile, so nothing changes for the
+    common case). Returns (role, user). See evaluations/role_detection.py and
+    evaluations/pipeline.py's module docstring for why this exists."""
+    from evaluations.pipeline import ensure_eval_account
+    from evaluations.role_detection import detect_stated_role
+
+    role = detect_stated_role(case)
+    return role, ensure_eval_account(role, case.case_id)
 
 
 def run_case_pipeline(case: EvalCase, rag_engine, config: EvalConfig):
     from evaluations.pipeline import run_case
 
+    role, user = resolve_case_user(case)
     return call_with_retry(
-        lambda: run_case(rag_engine, case), max_retries=config.max_retries
+        lambda: run_case(rag_engine, case, user=user, role=role),
+        max_retries=config.max_retries,
     )
 
 
@@ -176,6 +201,11 @@ def run_dataset(
     dataset_name: str, args: argparse.Namespace, config: EvalConfig
 ) -> None:
     cases = _prepare_cases(dataset_name, force_download=args.force_download)
+
+    random_seed = getattr(args, "random_seed", None)
+    if random_seed is not None:
+        random.Random(random_seed).shuffle(cases)
+        print(f"[{dataset_name}] randomized case order with seed {random_seed}.")
 
     if config.sample_limit is not None:
         cases = cases[: config.sample_limit]
@@ -348,6 +378,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         type=int,
         default=None,
         help="Only run the first N cases (overrides EVAL_SAMPLE_LIMIT).",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=None,
+        help="Shuffle cases reproducibly before applying --sample.",
     )
     parser.add_argument(
         "--resume",

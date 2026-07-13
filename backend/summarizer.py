@@ -7,6 +7,7 @@ from openai import OpenAI
 
 from backend.product_config import PRODUCT_NAME
 from backend.user_store import compute_current_age
+from backend.agentic_health_contract import operating_contract_prompt
 
 if TYPE_CHECKING:
     from backend.role_router import RoleConfig
@@ -44,6 +45,8 @@ class LLMHelper:
         escalation_banner: str = "",
         policy_context_note: str = "",
         clinical_context: str = "",
+        selected_skills: Optional[list[str]] = None,
+        current_location: str = "",
     ) -> str | Generator[str, None, None]:
         """
         Creates a role-aware, evidence-grounded response using the supplied evidence dossier.
@@ -64,33 +67,34 @@ class LLMHelper:
                 "role": "system",
                 "content": (
                     f"{persona}\n\n"
+                    f"{operating_contract_prompt(selected_skills or ['response_validation'], current_location)}\n\n"
                     "CORE RULES:\n"
                     "1. Use only the supplied evidence dossier and conversation context.\n"
                     "2. Use concise markdown with the role-appropriate section headings provided.\n"
-                    "3. Cite every factual claim inline with source markers [S1], [S1][S2], etc.\n"
+                    "3. Cite clinical claims that rely on the supplied sources inline with [S1], [S1][S2], etc. "
+                    "Do not force citations onto conversational guidance, questions, or clearly labelled uncertainty.\n"
                     "4. Do not state a definitive diagnosis. For clinicians, label impressions as provisional.\n"
-                    "5. Always surface emergency or urgent patterns before educational content.\n"
+                    "5. Surface emergency or urgent action first only when supported by the supplied facts.\n"
                     "6. Synthesize across sources -- do not copy any single source.\n"
                     "7. Prioritize Tier 1 (formal guidance) first, then Tier 2/3 for nuance.\n"
-                    "8. CAUSAL REASONING: Before composing your answer, review the longitudinal patient "
-                    "memory. Reason explicitly about how this patient's specific conditions, medications, "
-                    "lab results, and vitals modify the risk, differential, or management of their question. "
-                    "Name the connection out loud -- do not silently ignore it.\n"
-                    "9. Evidence-quality labels are binding: use patient_aligned sources for patient-specific "
-                    "guidance; use question_aligned or background_only sources only for general context. "
-                    "Never imply that background-only evidence has been validated against the patient profile.\n"
-                    "10. If a patient-profile fact is missing, say it is not recorded. Do not infer age, sex, "
-                    "medications, diagnoses, allergies, pregnancy status, or test results.\n"
+                    "8. Review longitudinal memory but mention only facts that materially change this answer. "
+                    "Explain relevant connections in plain language and ignore unrelated history.\n"
+                    "9. Source-use labels are private instructions. Never repeat their names or describe retrieval, "
+                    "filtering, evidence checks, internal review, or whether evidence passed. Use patient-aligned "
+                    "sources for patient-specific claims and other sources only for general context.\n"
+                    "10. Do not infer age, sex, medicines, diagnoses, allergies, pregnancy status, or test results. "
+                    "Mention a missing fact only when it is necessary for the requested decision; do not imply a "
+                    "record exists or was reviewed unless actual personal context was supplied.\n"
                     "11. Do NOT add a disclaimer footer -- one is appended automatically.\n"
                     "12. If a clinical-context adjudication is supplied, it is binding. Do not reinterpret "
                     "a measurement or test as another specialty, even if the user's wording is commonly "
                     "used elsewhere.\n\n"
-                    "SPECIFICITY REQUIREMENTS -- these are mandatory:\n"
-                    "- Quote the patient's actual recorded values where relevant. "
+                    "SPECIFICITY REQUIREMENTS:\n"
+                    "- Quote the patient's actual recorded values only where relevant. "
                     "Never write 'your blood pressure appears elevated' when you have the number; "
                     "write 'your last recorded BP of X/Y mmHg on [date] is Stage 2 hypertension'.\n"
-                    "- Name every medication, condition, lab result, and vital sign by its actual name "
-                    "from the patient record -- never say 'your medication' or 'your condition'.\n"
+                    "- Name each relevant medication, condition, result, or vital by its recorded name; "
+                    "do not force unrelated history into the response.\n"
                     "- Give concrete timeframes and thresholds only when the supplied evidence or "
                     "deterministic safety route supports them. Never invent a target, range, or deadline.\n"
                     "- Make monitoring points measurable when the record and evidence provide a measure; "
@@ -98,6 +102,7 @@ class LLMHelper:
                     "- For clinical users: include specific investigation targets, drug doses where the "
                     "evidence explicitly supports them, and escalation criteria.\n\n"
                     "Write naturally and directly. Avoid filler, repeated warnings, and generic lists. "
+                    "Answer in the user's language unless they request another language. "
                     "If the next step depends on a clinician confirming the test or diagnosis, say that "
                     "plainly and explain exactly what information the patient should bring."
                 ),
@@ -108,13 +113,7 @@ class LLMHelper:
             from backend.response_templates import get_section_headings_text
             headings_text = get_section_headings_text(role_config.role_key)
         else:
-            headings_text = (
-                "## In plain terms\n"
-                "## What I would do next\n"
-                "## What to keep track of\n"
-                "## Evidence behind this\n"
-                "## When to get help"
-            )
+            headings_text = "Use only the few headings that materially help answer this request."
 
         policy_block = ""
         if policy_context_note:
@@ -146,17 +145,19 @@ class LLMHelper:
                     f"{policy_block}"
                     f"Current question:\n{question}\n\n"
                     f"{banner_instruction}"
-                    f"Write the answer using these headings:\n{headings_text}\n\n"
+                    f"Available role-appropriate headings:\n{headings_text}\n"
+                    "Use only helpful sections; for a simple request, answer in one or two short paragraphs. "
+                    "Do not force an emergency, differential, evidence, disclaimer, or monitoring section.\n\n"
                     + (
-                        "MANDATORY: The patient's longitudinal memory contains specific lab values, vitals, "
-                        "conditions, and medications. You MUST reference these by their actual numbers and names "
-                        "in your answer -- connect this patient's specific data to your guidance.\n\n"
+                        "The longitudinal memory contains patient data. Use actual names and values only when they "
+                        "are relevant to the current question; otherwise leave them out.\n\n"
                         if has_patient_data else ""
                     )
-                    + "Every evidence-based statement must include source markers.\n"
+                    + "Cite claims drawn from evidence; omit a citation if direct support is unavailable and narrow "
+                    "or omit the claim instead.\n"
                     "Where multiple sources agree, synthesize into one statement with combined citations.\n"
                     "Label evidence tier (Tier 1 / Tier 2 / Tier 3) when it helps assess recommendation strength.\n"
-                    "Be decisive: give specific routes, thresholds, and timeframes throughout."
+                    "Give specific routes, thresholds, and timeframes only when supported."
                 ),
             }
         )
@@ -299,7 +300,9 @@ class LLMHelper:
                         "Use only the supplied answer and fallback safety route. "
                         "Never lower the acuity below the fallback next step. "
                         "Return a JSON object with these exact keys: urgency_level, next_step, what_to_monitor, rationale. "
-                        "The next_step must be one of: Self-care, GP, 111, 999. "
+                        "The next_step must be one of: Self-care, Primary-care clinician, "
+                        "Local urgent-care service, Same-day review, Immediate review, "
+                        "Local emergency services. Do not invent a national service or number. "
                         "what_to_monitor must be an array of up to 3 short phrases."
                     ),
                 },

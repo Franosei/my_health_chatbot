@@ -80,6 +80,30 @@ _CRISIS_PATTERNS: List[re.Pattern] = [
     ),
 ]
 
+_CLINICAL_EDUCATION_PATTERN = re.compile(
+    r"\b(guidelines?|updates?|evidence|research|literature|protocol|policy|teaching|"
+    r"training|simulation|quality improvement|audit|review article|recommended dosing|"
+    r"bls|acls|als|approach(?:es)? to|walk me through)\b",
+    re.IGNORECASE,
+)
+_GENERAL_EDUCATION_PATTERN = re.compile(
+    r"\b(what (?:are|is)|how does|explain|learn about|information about|difference between)\b",
+    re.IGNORECASE,
+)
+_ACTIVE_EMERGENCY_PATTERN = re.compile(
+    r"\b(right now|currently (?:happening|resuscitating)|in front of me|just collapsed|"
+    r"code (?:is )?in progress|patient is (?:unresponsive|not breathing|in cardiac arrest)|"
+    r"we are (?:resuscitating|doing cpr)|i am (?:having|experiencing)|can't breathe now)\b",
+    re.IGNORECASE,
+)
+_CLINICAL_ROLES = {"doctor", "nurse", "midwife", "physiotherapist"}
+_PERSONAL_PNEUMONIA_TREATMENT_PATTERN = re.compile(
+    r"\b(i (?:have|was diagnosed with)|i've got|estou com|tenho|tengo|"
+    r"me diagnosticaron|j['’]ai|diagnosed? with)\b.{0,80}"
+    r"\b(pneumonia|pneumonie|neumon[ií]a)\b.{0,120}\bantibi[oó]tic",
+    re.IGNORECASE,
+)
+
 # ── Intent → pathway mapping ───────────────────────────────────────────────────
 _INTENT_TO_PATHWAY: dict[str, str] = {
     "symptom_triage": "general_triage",
@@ -122,7 +146,7 @@ class IntentRiskClassifier:
         inside the orchestrator to minimise latency.
         """
         # Stage 1: Instant crisis check
-        if self._crisis_prescreen(question):
+        if self._crisis_prescreen(question, role_key=role_key):
             return IntentClassification(
                 intent_category="crisis",
                 risk_level="crisis",
@@ -133,6 +157,20 @@ class IntentRiskClassifier:
                 confidence=0.95,
             )
 
+        # A personal request to choose antibiotics for stated pneumonia needs
+        # prompt in-person severity assessment; it is neither routine dosing
+        # advice nor an automatic emergency. Keep clinician education out of
+        # this rule so professional guideline questions still reach retrieval.
+        if self._acute_treatment_prescreen(question, role_key=role_key):
+            return IntentClassification(
+                intent_category="medication_query",
+                risk_level="urgent",
+                escalation_required=True,
+                escalation_reason="Pneumonia treatment requires prompt clinical assessment.",
+                pathway_hint="medications",
+                confidence=0.95,
+            )
+
         # Stage 2: LLM classification
         try:
             return self._llm_classify(question, user_profile or {}, role_key, patient_history, recent_turns)
@@ -140,10 +178,28 @@ class IntentRiskClassifier:
             print(f"IntentRiskClassifier LLM call failed, using safe defaults: {exc}")
             return self._safe_default()
 
-    def _crisis_prescreen(self, question: str) -> bool:
-        """Fast regex check -- runs synchronously before any LLM call."""
+    def _crisis_prescreen(self, question: str, role_key: str = "patient") -> bool:
+        """Detect an active emergency without treating topic mentions as events.
+
+        Clinical education and guideline questions must proceed to retrieval.
+        An explicit active emergency still wins for every role.
+        """
         text = (question or "").strip()
-        return any(pattern.search(text) for pattern in _CRISIS_PATTERNS)
+        if not any(pattern.search(text) for pattern in _CRISIS_PATTERNS):
+            return False
+        if _ACTIVE_EMERGENCY_PATTERN.search(text):
+            return True
+
+        educational = bool(_GENERAL_EDUCATION_PATTERN.search(text))
+        if role_key in _CLINICAL_ROLES:
+            educational = educational or bool(_CLINICAL_EDUCATION_PATTERN.search(text))
+        return not educational
+
+    def _acute_treatment_prescreen(self, question: str, role_key: str = "patient") -> bool:
+        text = (question or "").strip()
+        if role_key in _CLINICAL_ROLES and _CLINICAL_EDUCATION_PATTERN.search(text):
+            return False
+        return bool(_PERSONAL_PNEUMONIA_TREATMENT_PATTERN.search(text))
 
     def _llm_classify(
         self,
@@ -165,11 +221,9 @@ class IntentRiskClassifier:
                 history_block = (
                     "\n\nPatient's known medical history:\n"
                     + history_text
-                    + "\n\nCRITICAL: A symptom that appears routine in isolation may be elevated "
-                    "or urgent given this history. Examples: headache in a hypertensive patient, "
-                    "any bleeding in a patient on anticoagulants, fever in an immunocompromised "
-                    "patient, chest tightness in a patient with cardiac history. "
-                    "Always consider whether this history raises the risk level of the current question."
+                    + "\n\nUse a history item only when it has a validated connection to the current "
+                    "presentation. A diagnosis, medicine, vulnerability label, or prior escalation alone "
+                    "must not raise urgency without compatible current facts. Ignore unrelated history."
                 )
 
         continuation_block = ""
@@ -193,6 +247,11 @@ class IntentRiskClassifier:
         prompt = (
             "You are a clinical intent classifier for a health information system.\n"
             f"{role_hint}{pregnancy_hint}{history_block}{continuation_block}\n\n"
+            "First distinguish an active patient event from professional education, guideline review, "
+            "research, teaching, audit, or hypothetical discussion. Emergency terminology in an educational "
+            "request is not evidence that an emergency is occurring. If a clinician describes an active patient, "
+            "classify the patient's acuity; otherwise keep educational requests routine. Apply this distinction "
+            "in any language.\n\n"
             "Classify the following health question and return a JSON object with these exact keys:\n"
             "- intent_category: one of [symptom_triage, medication_query, chronic_condition, "
             "maternity, msk, mental_health, general_info, crisis, administrative]\n"

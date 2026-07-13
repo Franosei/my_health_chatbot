@@ -61,6 +61,9 @@ python -m evaluations.runner --dataset healthbench --dry-run
 # 2. Small, cheap sample run (5-10 cases) to sanity-check end to end
 python -m evaluations.runner --dataset healthbench --sample 8
 
+# Reproducible random sample (shuffle first, then take 10)
+python -m evaluations.runner --dataset healthbench --sample 10 --random-seed 20260713
+
 # 3. Full dataset
 python -m evaluations.runner --dataset healthbench
 
@@ -83,6 +86,31 @@ to `evaluations/datasets/normalized/` (also gitignored) on each run.
 
 1. **Generation**: FlynnMed's real pipeline answers the case's final user
    turn, with all prior turns as chat history.
+
+   **Role-aware evaluation**: FlynnMed's role-aware behaviour
+   (`backend/role_router.py`) is driven entirely by the calling account's
+   stored `clinical_role` profile field -- nothing in the pipeline infers
+   role from the message text itself. A case run anonymously always gets
+   patient-mode defaults (most conservative escalation threshold, lay
+   terminology), even if the conversation explicitly says "I'm an emergency
+   medicine physician." To evaluate the pipeline the way a real account with
+   that role would actually behave, `evaluations/role_detection.py` scans
+   each case's own user turns for an explicit first-person clinical
+   self-identification ("I'm a doctor", "I am a nurse", etc. -- conservative
+   by design, so "my doctor told me..." is never misdetected as the patient
+   being a doctor) and, when found, `evaluations/pipeline.py`'s
+   `ensure_eval_account()` creates a fresh, clearly-namespaced, **one-shot**
+   account (`eval-harness-<role>-<case_id>`, via the existing public
+   `UserStore.create_user` API -- no backend code was changed) for that run.
+   Because each account is used for exactly one case and never reused,
+   there's no risk of one case's saved trace/triage history leaking into
+   another case's patient-history context. Cases with no detected clinical
+   self-identification keep using `user=None` exactly as before -- this only
+   changes behaviour for cases that actually claim a different role. The
+   resolved role is recorded on every result (`resolved_role` in the report)
+   so you can always see which role a case was evaluated as. `--dry-run`
+   reports detected-role counts without creating any account.
+
 2. **Primary grading (Luna)**: every case is graded against its own rubric
    (including negative-point/penalty criteria), returning validated
    structured JSON -- rubric results, clinical-correctness score, triage
@@ -108,6 +136,16 @@ to `evaluations/datasets/normalized/` (also gitignored) on each run.
 clinically-informed judgement, not an objective label in HealthBench itself
 -- the dataset has no explicit urgency ground truth. This is stated in the
 report, not hidden.
+
+### A note on `users.json`
+
+Cases with a detected clinical role create a real (but clearly namespaced,
+`eval-harness-<role>-<case_id>`, one-shot, never-reused) account via the
+same `UserStore.create_user` API the real signup flow uses -- this is local
+account/profile data, not part of the gitignored `evaluations/` output, so
+it will show up in your local `users.json` like any other account. They're
+inert (no real credentials, no real user), but feel free to delete any
+`eval-harness-*` entries between runs if you'd rather not accumulate them.
 
 ## Output
 

@@ -13,9 +13,8 @@ from backend.audit_models import PolicyGateRecord
 from backend.intent_risk_classifier import IntentClassification
 from backend.role_router import RoleConfig
 from backend.response_templates import (
-    CRISIS_RESPONSE,
+    build_crisis_response,
     build_escalation_banner,
-    build_vulnerability_notice,
     build_no_diagnosis_disclaimer,
 )
 
@@ -97,12 +96,14 @@ class PolicyEngine:
         self._gate_elderly_polypharmacy(intent, all_flags, decision)
         self._gate_mental_health(intent, role_config, decision)
 
-        # Build vulnerability notice if applicable
-        if all_flags:
-            decision.vulnerability_notice = build_vulnerability_notice(all_flags)
+        # A vulnerability label alone is not an escalation trigger and should not
+        # add generic safety padding.  Relevant gates already contribute focused
+        # instructions when the current request engages the context.
 
-        # Always attach a no-diagnosis disclaimer
-        decision.disclaimer = build_no_diagnosis_disclaimer(role_config.role_key)
+        # Disclaimers help on personal clinical questions, but are noise on
+        # administrative and purely definitional requests.
+        if intent.intent_category not in ("administrative", "general_info"):
+            decision.disclaimer = build_no_diagnosis_disclaimer(role_config.role_key)
 
         return decision
 
@@ -124,7 +125,7 @@ class PolicyEngine:
         )
         decision.add_gate(gate)
         decision.action = "escalate_only"
-        decision.crisis_response = CRISIS_RESPONSE
+        decision.crisis_response = build_crisis_response(role_config.role_key)
 
     def _gate_urgent_escalation(
         self,
@@ -185,7 +186,7 @@ class PolicyEngine:
             "Apply heightened caution for all medication, dosage, and intervention advice. "
             "Reference NICE/RCOG guidelines specifically. "
             "Never recommend stopping or starting prescription medication without explicit NICE guidance. "
-            "Always include obstetric red flags where relevant and state the safest immediate care route."
+            "Include only obstetric warning signs connected to the presentation and state a proportionate care route."
         )
         if role_config.role_key not in ("midwife", "doctor"):
             decision.escalation_banner = build_escalation_banner(
@@ -361,7 +362,7 @@ class PolicyEngine:
         decision.add_gate(gate)
         decision.context_notes.append(
             "POLICY NOTE: Mental health topic. "
-            "Always include crisis support resources (Samaritans 116 123, Crisis Text Line). "
+            "Include locally verified crisis support only when self-harm, suicide, or immediate safety concerns are present. "
             "Use empathetic, non-stigmatising language. "
             "Never minimise distress. "
             "If any self-harm or suicidal ideation is implied, apply crisis response."
@@ -407,6 +408,17 @@ class PolicyEngine:
         is_med_query = intent.intent_category == "medication_query"
         is_mental    = intent.intent_category == "mental_health"
         llm_risk     = intent.risk_level  # what the LLM decided (already saw history)
+
+        # Historical conditions and vulnerability labels do not independently
+        # prove deterioration in the current presentation.  Reinforce symptom
+        # escalation only after compatible urgent facts were identified.  Drug
+        # questions continue so relevant contraindications can still be checked.
+        if is_symptom and not (
+            intent.escalation_required
+            or intent.crisis_detected
+            or llm_risk in ("urgent", "crisis")
+        ):
+            return
 
         # ── CARDIAC ──────────────────────────────────────────────────────────────
         # The LLM already had cardiac history context. If it still flagged elevated+

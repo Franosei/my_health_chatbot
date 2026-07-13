@@ -1,5 +1,6 @@
 from backend.response_templates import (
     DEFAULT_PERSONA_BLOCK,
+    build_crisis_response,
     get_persona_block,
     get_section_headings,
 )
@@ -33,3 +34,10 @@ def test_patient_headings_include_monitoring_and_urgent_route():
 
     assert "## What To Monitor" in headings
     assert "## Get Urgent Help If" in headings
+
+
+def test_crisis_response_is_role_appropriate():
+    assert "local emergency number" in build_crisis_response("patient")
+    clinical = build_crisis_response("doctor")
+    assert "resuscitation pathway" in clinical
+    assert "local emergency number" not in clinical

@@ -44,7 +44,12 @@ from backend.evidence_ranker import EvidenceRanker
 from backend.intent_risk_classifier import IntentClassification, IntentRiskClassifier
 from backend.patient_history import PatientHistoryContext, build_patient_history_context
 from backend.policy_engine import PolicyEngine, PolicyDecision
-from backend.response_templates import CRISIS_RESPONSE
+from backend.response_templates import build_crisis_response
+from backend.agentic_health_contract import (
+    current_location_from_profile,
+    operating_contract_prompt,
+    select_skills,
+)
 from backend.role_router import RoleConfig, RoleRouter
 from backend.utils import build_excerpt
 
@@ -213,6 +218,8 @@ class AgenticRetrievalLoop:
         role_key: str,
         pathway_hint: str,
         patient_medications: Optional[List[str]] = None,
+        current_location: str = "",
+        selected_skills: Optional[List[str]] = None,
         max_iterations: int = 5,
     ) -> Dict:
         """
@@ -241,7 +248,7 @@ class AgenticRetrievalLoop:
                 "Prioritise NICE chronic disease guidelines. "
                 "Focus on long-term management and patient-specific risks."
             ),
-        }.get(pathway_hint, "Search NHS guidance first, then PubMed if more detail is needed.")
+        }.get(pathway_hint, "Search current official guidance first, then research evidence if needed.")
 
         med_hint = ""
         if patient_medications:
@@ -251,14 +258,16 @@ class AgenticRetrievalLoop:
             )
 
         system_prompt = (
-            "You are a clinical evidence retrieval agent for FlynnMed, a UK health AI assistant.\n"
+            "You are a clinical evidence retrieval agent for a worldwide health-information assistant.\n"
+            f"{operating_contract_prompt(selected_skills or ['evidence_retrieval'], current_location)}\n\n"
             "Your task: decide which tools to call to gather the right evidence BEFORE the answer is written.\n"
             "Do NOT answer the question yourself.\n\n"
             f"Clinical role: {role_key}\n"
             f"Pathway: {pathway_hint}\n"
             f"Retrieval strategy: {pathway_guidance}{med_hint}\n\n"
             "Rules:\n"
-            "- Call search_nhs_guidance first for any clinical or medication question.\n"
+            "- Call search_nhs_guidance when UK/NICE guidance is relevant; treat it as general evidence "
+            "when the user's jurisdiction is unknown or different.\n"
             "- Call search_pubmed when you need research evidence or more detail.\n"
             "- Call check_drug_interactions if the question involves medications or interactions.\n"
             "- Call search_patient_documents if the question relates to the patient's own records.\n"
@@ -376,7 +385,7 @@ class AgenticRetrievalLoop:
             if name == "search_clinical_trials":
                 return self._search_trials(
                     args.get("condition", ""),
-                    args.get("location", "United Kingdom"),
+                    args.get("location", ""),
                 )
             return {"summary": f"Unknown tool: {name}"}
         except Exception as exc:
@@ -552,7 +561,7 @@ class AgenticRetrievalLoop:
             "summary": f"Found {len(personal)} matches in patient documents.",
         }
 
-    def _search_trials(self, condition: str, location: str = "United Kingdom") -> Dict:
+    def _search_trials(self, condition: str, location: str = "") -> Dict:
         if not condition:
             return {"summary": "No condition provided.", "trials": []}
         try:
@@ -641,6 +650,7 @@ class ClinicalOrchestrator:
         plus new clinical governance and agentic metadata keys.
         """
         normalized_user = (user or "").strip().lower() or None
+        current_location = current_location_from_profile(user_profile)
 
         # -- Step 1: Role resolution (instant) --------------------------------
         clinical_role = user_profile.get("clinical_role") or user_profile.get("role", "")
@@ -677,7 +687,7 @@ class ClinicalOrchestrator:
         )
 
         # -- Step 3: Crisis pre-screen (regex, instant, before any LLM call) --
-        if self.intent_classifier._crisis_prescreen(question):
+        if self.intent_classifier._crisis_prescreen(question, role_key=role_config.role_key):
             return self._build_crisis_bundle(question, normalized_user, role_config)
 
         # -- Step 4: Moderation -----------------------------------------------
@@ -700,6 +710,8 @@ class ClinicalOrchestrator:
         except Exception as exc:
             print(f"[Orchestrator] Intent classification failed: {exc}")
             intent = IntentClassification()
+
+        selected_skills = select_skills(intent.intent_category, question)
 
         # -- Step 6: Policy gate (8 hard safety gates) ------------------------
         clinical_decision = self.decision_support.assess(question, intent, role_config)
@@ -765,6 +777,8 @@ class ClinicalOrchestrator:
                 role_key=role_config.role_key,
                 pathway_hint=intent.pathway_hint or "general_triage",
                 patient_medications=med_names,
+                current_location=current_location,
+                selected_skills=selected_skills,
             )
         except Exception as exc:
             print(f"[Orchestrator] Agentic loop failed, using fallback: {exc}")
@@ -909,6 +923,8 @@ class ClinicalOrchestrator:
             "evidence_dossier": evidence_dossier,
             # Agentic metadata (new)
             "agentic_tool_calls": tool_calls_made,
+            "selected_skills": selected_skills,
+            "current_location": current_location,
         }
 
     # -- Bundle builders ------------------------------------------------------
@@ -919,18 +935,19 @@ class ClinicalOrchestrator:
         normalized_user: Optional[str],
         role_config: RoleConfig,
     ) -> Dict:
+        crisis_response = build_crisis_response(role_config.role_key)
         return {
             "kind": "final",
             "payload": {
-                "answer_markdown": CRISIS_RESPONSE,
-                "answer_text": CRISIS_RESPONSE,
+                "answer_markdown": crisis_response,
+                "answer_text": crisis_response,
                 "sources": [],
                 "personal_context": [],
                 "trace": {
                     "trace_id": "trace-crisis",
                     "created_at": _utc_now(),
                     "question": question,
-                    "answer_preview": CRISIS_RESPONSE[:280],
+                    "answer_preview": crisis_response[:280],
                     "sources": [],
                     "retrieval_mode": "crisis_escalation",
                     "role_key": role_config.role_key,
@@ -1145,7 +1162,7 @@ class ClinicalOrchestrator:
     ) -> str:
         parts = []
 
-        if clinical_context:
+        if clinical_context and clinical_context.status != "insufficient":
             parts.append(clinical_context.as_prompt_block())
 
         if personal_context:
@@ -1211,7 +1228,10 @@ class ClinicalOrchestrator:
                 "- Binding rule: use patient_aligned sources for patient-specific guidance; "
                 "use question_aligned or background_only sources only for general context."
             )
-            parts.append("Evidence quality gate:\n" + "\n".join(quality_lines))
+            parts.append(
+                "Private source-use instructions (never mention these labels or this filtering process):\n"
+                + "\n".join(quality_lines)
+            )
 
         if evidence_dossier and evidence_dossier.articles:
             parts.append(
@@ -1249,16 +1269,17 @@ class ClinicalOrchestrator:
             )
             if filtered:
                 parts.append(
-                    "Note: Retrieved evidence was found but did not pass the evidence-quality gate. "
-                    "Do not cite filtered sources. State that patient-aligned live evidence was not "
-                    "available and keep guidance safety-oriented and grounded in the clinical pathway."
+                    "Private source-use instruction: do not cite the retrieved sources because they do "
+                    "not directly answer this request. Answer useful parts from established general "
+                    "clinical knowledge, label uncertainty naturally, and ask only for details that "
+                    "would change the next action. Never mention filtering, retrieval, evidence checks, "
+                    "structured evidence, or internal review processes."
                 )
             else:
                 parts.append(
-                    "Note: No live evidence was retrieved for this query. "
-                    "Answer from general clinical knowledge, clearly indicating this is general guidance "
-                    "and not based on retrieved literature. Still provide a clear disposition and "
-                    "concrete next-step management plan where possible."
+                    "Private source-use instruction: answer from established general clinical knowledge. "
+                    "Do not claim that evidence was missing or describe retrieval. Give a proportionate "
+                    "disposition and concrete next step where possible."
                 )
 
         return "\n\n".join(parts)

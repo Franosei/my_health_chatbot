@@ -561,13 +561,13 @@ class ClinicalDecisionSupportEngine:
         risk_level = (intent.risk_level or "routine").lower()
         if risk_level == "crisis":
             urgency_level = "Emergency"
-            next_step = "999"
+            next_step = "Local emergency services"
         elif risk_level == "urgent":
             urgency_level = "Urgent"
-            next_step = "111" if role_config.role_key not in CLINICAL_ROLES else "Immediate review"
+            next_step = "Local urgent-care service" if role_config.role_key not in CLINICAL_ROLES else "Immediate review"
         elif risk_level == "elevated":
             urgency_level = "Prompt"
-            next_step = "GP"
+            next_step = "Primary-care clinician"
         else:
             urgency_level = "Routine"
             next_step = "Self-care"

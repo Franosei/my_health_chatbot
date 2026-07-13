@@ -144,3 +144,52 @@ def test_default_ambiguity_fields_are_off():
     assert default.ambiguous_term == ""
     assert default.ambiguity_clarifying_question == ""
     assert default.ambiguity_reply_options == []
+
+
+def test_clinician_guideline_question_does_not_trigger_crisis_prescreen():
+    classifier = IntentRiskClassifier.__new__(IntentRiskClassifier)
+    question = (
+        "I'm an emergency medicine physician seeing more in-hospital adult cardiac arrests. "
+        "Walk me through the new BLS and ACLS guideline updates, vasopressor dosing intervals, "
+        "and advanced airway research."
+    )
+
+    assert classifier._crisis_prescreen(question, role_key="doctor") is False
+
+
+def test_active_clinician_emergency_still_triggers_crisis_prescreen():
+    classifier = IntentRiskClassifier.__new__(IntentRiskClassifier)
+    question = "My patient is in cardiac arrest right now and we are doing CPR."
+
+    assert classifier._crisis_prescreen(question, role_key="doctor") is True
+
+
+def test_patient_general_emergency_education_is_not_a_personal_crisis():
+    classifier = IntentRiskClassifier.__new__(IntentRiskClassifier)
+
+    assert classifier._crisis_prescreen(
+        "What are stroke symptoms and how does the FAST test work?",
+        role_key="patient",
+    ) is False
+
+
+def test_portuguese_personal_pneumonia_antibiotic_request_is_urgent():
+    classifier = IntentRiskClassifier.__new__(IntentRiskClassifier)
+
+    result = classifier.classify(
+        "Estou com pneumonia e preciso saber qual antibiotico devo tomar.",
+        role_key="patient",
+    )
+
+    assert result.risk_level == "urgent"
+    assert result.intent_category == "medication_query"
+    assert result.escalation_required is True
+
+
+def test_clinician_pneumonia_guideline_request_is_not_personal_triage():
+    classifier = IntentRiskClassifier.__new__(IntentRiskClassifier)
+
+    assert classifier._acute_treatment_prescreen(
+        "Review the antibiotic guideline updates for pneumonia treatment.",
+        role_key="doctor",
+    ) is False

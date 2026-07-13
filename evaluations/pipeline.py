@@ -1,23 +1,65 @@
 """Thin wrapper connecting the evaluation harness to FlynnMed's real,
-production end-to-end pipeline -- nothing here reimplements clinical logic.
+production end-to-end pipeline -- nothing here reimplements clinical logic
+or modifies backend/ in any way.
 
 Every case is run through `backend.rag_system.RAGEngine.handle_user_question`,
-the exact same call the chat API uses, with `user=None` (anonymous): this
-exercises the full pipeline (role routing, patient-history context, crisis
-pre-screen, moderation, intent/risk classification, policy gate, pathway
-context, agentic evidence retrieval, and response synthesis) without ever
-touching a real account or persisting anything (`UserStore` writes in
-`_finalize_answer_payload`/`_enrich_prebuilt_payload` are all guarded on a
-truthy `user` and are skipped for `user=None` -- verified by reading
-backend/rag_system.py).
+the exact same call the chat API uses. This exercises the full pipeline
+(role routing, patient-history context, crisis pre-screen, moderation,
+intent/risk classification, policy gate, pathway context, agentic evidence
+retrieval, and response synthesis) unmodified.
+
+Role handling: FlynnMed's role-aware behaviour (backend/role_router.py) is
+driven entirely by the calling account's stored `clinical_role` profile
+field, not by anything inferred from the message text. A case run with
+`user=None` always gets patient-mode defaults regardless of what the
+conversation says (e.g. "I'm an emergency medicine physician..."). To
+actually exercise the pipeline the way a real account with that role would,
+`ensure_eval_account()` creates a clearly-namespaced, one-shot, never-reused
+account (via `UserStore.create_user`, an existing public API -- no new
+backend code) with the role `evaluations.role_detection.detect_stated_role`
+found in the case's own text, and `run_case` passes that account's username
+instead of `None`. Cases with no detected clinical self-identification keep
+using `user=None` (patient-mode), identical to before -- role_router.py's
+own default for an empty profile is already "patient", so this changes
+nothing for the common case, only for cases that actually claim a different
+role. Because each account is used for exactly one case and never read
+again, there is no risk of one case's saved trace/triage history leaking
+into another's patient-history context.
 """
 
 from __future__ import annotations
 
 import time
+from typing import Optional
 
 from evaluations.config import EvalConfig
 from evaluations.models import EvalCase, PipelineResponse
+from evaluations.role_detection import eval_account_username
+
+
+def ensure_eval_account(role: str, case_id: str) -> Optional[str]:
+    """Returns the username to run this case as, creating a fresh, one-shot
+    account for the detected role if it isn't "patient" (patient already IS
+    role_router.py's default for an anonymous/empty profile, so there's
+    nothing to gain from creating an account for it)."""
+    if role == "patient":
+        return None
+
+    from backend.user_store import UserStore
+
+    username = eval_account_username(role, case_id)
+    if not UserStore.get_user_profile(username):
+        UserStore.create_user(
+            username=username,
+            password="eval-harness-not-a-real-account-0000",
+            display_name=f"Eval Harness ({role.title()})",
+            email=f"{username}@example.invalid",
+            care_context="Automated evaluation harness -- not a real account",
+            role=role,
+            clinical_role=role,
+            terms_version="eval-harness",
+        )
+    return username
 
 
 def build_rag_engine(config: EvalConfig):
@@ -40,8 +82,15 @@ def build_rag_engine(config: EvalConfig):
     return RAGEngine()
 
 
-def run_case(rag_engine, case: EvalCase) -> PipelineResponse:
+def run_case(
+    rag_engine, case: EvalCase, user: Optional[str] = None, role: str = "patient"
+) -> PipelineResponse:
     """Runs one EvalCase through the real pipeline and captures the result.
+
+    `user`: resolved by the caller via `detect_stated_role` +
+    `ensure_eval_account` -- `None` (the default) reproduces the original
+    anonymous/patient-mode behaviour exactly. `role` is recorded on the
+    result purely for report transparency (see PipelineResponse.resolved_role).
 
     Raises whatever RAGEngine.handle_user_question raises -- the runner is
     responsible for retry/error handling (see evaluations/grading.py's
@@ -57,7 +106,7 @@ def run_case(rag_engine, case: EvalCase) -> PipelineResponse:
         question=question_turn.content,
         chat_history=chat_history or None,
         stream=False,
-        user=None,
+        user=user,
     )
     duration = time.perf_counter() - started
 
@@ -71,4 +120,5 @@ def run_case(rag_engine, case: EvalCase) -> PipelineResponse:
         trace=trace,
         full_payload=payload,
         duration_seconds=duration,
+        resolved_role=role,
     )

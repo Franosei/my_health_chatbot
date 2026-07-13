@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 
 from evaluations import runner
 from evaluations.config import EvalConfig
@@ -199,3 +200,33 @@ def test_run_dataset_dry_run_never_builds_rag_engine(tmp_path, monkeypatch):
     )
 
     runner.run_dataset("healthbench", args, config)  # should not raise
+
+
+def test_run_dataset_randomizes_before_sampling(tmp_path, monkeypatch):
+    all_cases = [_valid_case(f"case-{i}") for i in range(8)]
+    monkeypatch.setattr(
+        runner, "_prepare_cases", lambda dataset_name, force_download: list(all_cases)
+    )
+    observed = []
+    monkeypatch.setattr(
+        runner,
+        "dry_run",
+        lambda cases, config: observed.extend(case.case_id for case in cases),
+    )
+
+    expected = list(all_cases)
+    random.Random(20260713).shuffle(expected)
+
+    config = EvalConfig(output_path=tmp_path, sample_limit=3)
+    args = argparse.Namespace(
+        dry_run=True,
+        resume=False,
+        run_id=None,
+        force_download=False,
+        batch=False,
+        random_seed=20260713,
+    )
+
+    runner.run_dataset("healthbench", args, config)
+
+    assert observed == [case.case_id for case in expected[:3]]
