@@ -20,7 +20,7 @@ load_dotenv()
 # Bumped by hand when the harness's own grading prompt templates change
 # materially (not FlynnMed's internal prompts, which this harness doesn't
 # own or version -- see reporting.py's pipeline_version for that).
-GRADING_PROMPT_VERSION = "v1"
+GRADING_PROMPT_VERSION = "v2"
 
 DATASET_URLS = {
     "healthbench": "https://openaipublic.blob.core.windows.net/simple-evals/healthbench/2025-05-07-06-14-12_oss_eval.jsonl",

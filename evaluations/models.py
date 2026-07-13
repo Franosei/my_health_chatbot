@@ -151,6 +151,12 @@ class DeterministicFindings(BaseModel):
     # Evidence
     citations_present: Optional[bool]
     citations_supported: Optional[bool]
+    citation_count: int = 0
+    resolved_citation_count: int = 0
+    citation_target_resolution_rate: Optional[float] = None
+    claim_checks_total: int = 0
+    claims_supported_by_excerpt: int = 0
+    claim_excerpt_support_rate: Optional[float] = None
 
     # Behaviour
     safe_refusal_violated: bool
@@ -214,7 +220,21 @@ class ReportSummary(BaseModel):
     under_triage_rate: float
     severe_under_triage_rate: float
     emergency_sensitivity: Optional[float]
+    # Deprecated compatibility alias. This is a response-level incidence
+    # rate, not the proportion of claims or sources that are unsupported.
     unsupported_claim_rate: float
+    responses_with_grader_flagged_claims_rate: float = 0.0
+    grader_flagged_claim_count: int = 0
+    claim_checks_total: int = 0
+    claims_supported_by_excerpt: int = 0
+    claim_excerpt_support_rate: Optional[float] = None
+    citation_count: int = 0
+    resolved_citation_count: int = 0
+    citation_target_resolution_rate: Optional[float] = None
+    displayed_source_count: int = 0
+    sources_with_url_count: int = 0
+    displayed_sources_with_url_rate: Optional[float] = None
+    full_source_content_verification_rate: Optional[float] = None
     adjudication_rate: float
     disagreement_count: int
     cases_requiring_human_review: List[str] = Field(default_factory=list)

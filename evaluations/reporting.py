@@ -47,17 +47,21 @@ def build_report_summary(
     case_results: List[CaseResult],
     config: EvalConfig,
     dataset_version: str,
+    prompt_version: str | None = None,
+    run_date: str | None = None,
 ) -> ReportSummary:
+    effective_prompt_version = prompt_version or GRADING_PROMPT_VERSION
+    effective_run_date = run_date or _utc_now()
     total = len(case_results)
     if total == 0:
         return ReportSummary(
             dataset_version=dataset_version,
             pipeline_version=pipeline_version(),
-            prompt_version=GRADING_PROMPT_VERSION,
+            prompt_version=effective_prompt_version,
             generator_model=config.generator_model,
             primary_grader_model=config.primary_grader_model,
             adjudicator_model=config.adjudicator_model,
-            run_date=_utc_now(),
+            run_date=effective_run_date,
             total_cases=0,
             pass_rate=0.0,
             weighted_healthbench_score=0.0,
@@ -65,6 +69,7 @@ def build_report_summary(
             severe_under_triage_rate=0.0,
             emergency_sensitivity=None,
             unsupported_claim_rate=0.0,
+            responses_with_grader_flagged_claims_rate=0.0,
             adjudication_rate=0.0,
             disagreement_count=0,
             cases_requiring_human_review=[],
@@ -77,8 +82,28 @@ def build_report_summary(
     severe_under_triage = sum(
         1 for cr in case_results if cr.deterministic.severe_under_triage
     )
-    unsupported_claims = sum(
+    responses_with_flagged_claims = sum(
         1 for cr in case_results if cr.adjudication.final_grade.unsupported_claims
+    )
+    grader_flagged_claim_count = sum(
+        len(cr.adjudication.final_grade.unsupported_claims) for cr in case_results
+    )
+    claim_checks_total = sum(cr.deterministic.claim_checks_total for cr in case_results)
+    claims_supported_by_excerpt = sum(
+        cr.deterministic.claims_supported_by_excerpt for cr in case_results
+    )
+    citation_count = sum(cr.deterministic.citation_count for cr in case_results)
+    resolved_citation_count = sum(
+        cr.deterministic.resolved_citation_count for cr in case_results
+    )
+    displayed_source_count = sum(
+        len(cr.pipeline_response.sources or []) for cr in case_results
+    )
+    sources_with_url_count = sum(
+        1
+        for cr in case_results
+        for source in (cr.pipeline_response.sources or [])
+        if str(source.get("url") or "").strip()
     )
     adjudicated = sum(1 for cr in case_results if cr.adjudication.triggered)
     disagreements = sum(1 for cr in case_results if cr.adjudication.agreement is False)
@@ -100,18 +125,42 @@ def build_report_summary(
     return ReportSummary(
         dataset_version=dataset_version,
         pipeline_version=pipeline_version(),
-        prompt_version=GRADING_PROMPT_VERSION,
+        prompt_version=effective_prompt_version,
         generator_model=config.generator_model,
         primary_grader_model=config.primary_grader_model,
         adjudicator_model=config.adjudicator_model,
-        run_date=_utc_now(),
+        run_date=effective_run_date,
         total_cases=total,
         pass_rate=passed / total,
         weighted_healthbench_score=sum(weighted_scores) / total,
         under_triage_rate=under_triage / total,
         severe_under_triage_rate=severe_under_triage / total,
         emergency_sensitivity=emergency_sensitivity,
-        unsupported_claim_rate=unsupported_claims / total,
+        unsupported_claim_rate=responses_with_flagged_claims / total,
+        responses_with_grader_flagged_claims_rate=responses_with_flagged_claims / total,
+        grader_flagged_claim_count=grader_flagged_claim_count,
+        claim_checks_total=claim_checks_total,
+        claims_supported_by_excerpt=claims_supported_by_excerpt,
+        claim_excerpt_support_rate=(
+            claims_supported_by_excerpt / claim_checks_total
+            if claim_checks_total
+            else None
+        ),
+        citation_count=citation_count,
+        resolved_citation_count=resolved_citation_count,
+        citation_target_resolution_rate=(
+            resolved_citation_count / citation_count if citation_count else None
+        ),
+        displayed_source_count=displayed_source_count,
+        sources_with_url_count=sources_with_url_count,
+        displayed_sources_with_url_rate=(
+            sources_with_url_count / displayed_source_count
+            if displayed_source_count
+            else None
+        ),
+        # The harness currently sends stored excerpts to Luna/Terra and does
+        # not fetch/read entire publications. None is the only truthful value.
+        full_source_content_verification_rate=None,
         adjudication_rate=adjudicated / total,
         disagreement_count=disagreements,
         cases_requiring_human_review=review_cases,
@@ -170,9 +219,40 @@ def _markdown_report(summary: ReportSummary, case_results: List[CaseResult]) -> 
             if summary.emergency_sensitivity is not None
             else "- Emergency sensitivity: n/a (no cases expected an emergency disposition)"
         ),
-        f"- Unsupported-claim rate: {summary.unsupported_claim_rate:.1%}",
+        (
+            "- Responses with at least one grader-flagged claim: "
+            f"{summary.responses_with_grader_flagged_claims_rate:.1%} "
+            f"({summary.grader_flagged_claim_count} flagged claim(s))"
+        ),
+        (
+            "- Stored-excerpt support among pipeline-checked claims: "
+            f"{summary.claim_excerpt_support_rate:.1%} "
+            f"({summary.claims_supported_by_excerpt}/{summary.claim_checks_total})"
+            if summary.claim_excerpt_support_rate is not None
+            else "- Stored-excerpt support among pipeline-checked claims: n/a (no claims checked)"
+        ),
+        (
+            "- Displayed citation targets resolving to their source records: "
+            f"{summary.citation_target_resolution_rate:.1%} "
+            f"({summary.resolved_citation_count}/{summary.citation_count})"
+            if summary.citation_target_resolution_rate is not None
+            else "- Displayed citation target resolution: n/a (no citations displayed)"
+        ),
+        (
+            "- Displayed source records containing a URL: "
+            f"{summary.displayed_sources_with_url_rate:.1%} "
+            f"({summary.sources_with_url_count}/{summary.displayed_source_count})"
+            if summary.displayed_sources_with_url_rate is not None
+            else "- Displayed source records containing a URL: n/a (no sources displayed)"
+        ),
+        "- Full-source content verification: not performed (stored excerpts only)",
         f"- Adjudication rate (Terra invoked): {summary.adjudication_rate:.1%}",
         f"- Luna/Terra disagreements: {summary.disagreement_count}",
+        "",
+        "Evidence metric definitions: a grader-flagged claim is an LLM-judge signal; "
+        "stored-excerpt support measures only claims checked against the retrieved excerpts; "
+        "citation resolution verifies the displayed link maps to the supplied source record. "
+        "None of these establishes that an entire external publication was independently read.",
         "",
     ]
 
@@ -206,6 +286,8 @@ def write_report(
     config: EvalConfig,
     dataset_version: str,
     run_id: str,
+    prompt_version: str | None = None,
+    run_date: str | None = None,
 ) -> Tuple[Path, Path, Path]:
     """Writes raw results (full detail, gitignored) plus a sanitised JSON and
     Markdown summary. Returns (raw_path, summary_json_path, summary_md_path).
@@ -221,7 +303,13 @@ def write_report(
         for case_result in case_results:
             fh.write(case_result.model_dump_json() + "\n")
 
-    summary = build_report_summary(case_results, config, dataset_version)
+    summary = build_report_summary(
+        case_results,
+        config,
+        dataset_version,
+        prompt_version=prompt_version,
+        run_date=run_date,
+    )
 
     summary_json_path = reports_dir / f"{run_id}_summary.json"
     sanitized = {

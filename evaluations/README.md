@@ -158,8 +158,37 @@ inert (no real credentials, no real user), but feel free to delete any
 The summary contains: dataset version, pipeline version (git commit SHA),
 grading prompt version, exact model identifiers used, run date, pass rate,
 weighted HealthBench score, under-triage rate, emergency sensitivity,
-unsupported-claim rate, adjudication rate, disagreement count, and the list
+evidence-support metrics, adjudication rate, disagreement count, and the list
 of cases requiring human review.
+
+### Reading the evidence metrics correctly
+
+The evidence measures deliberately report different questions separately:
+
+- **Responses with a grader-flagged claim** is the percentage of responses
+  where Luna/Terra listed at least one potentially unsupported statement. It
+  is a response-level LLM-judge signal, not the percentage of false claims or
+  inaccurate publications. The JSON field `unsupported_claim_rate` remains as
+  a deprecated compatibility alias for this same response-level incidence.
+- **Stored-excerpt support among pipeline-checked claims** is the percentage
+  of entries in the production pipeline's `claim_alignment` trace marked
+  `supported`. Its denominator is printed in the report. It assesses the
+  retrieved excerpt, not the entire publication.
+- **Displayed citation target resolution** checks that each clickable `[S#]`
+  link exactly matches the URL in its supplied source record. This validates
+  citation wiring, not medical entailment.
+- **Displayed sources containing a URL** reports source-record completeness;
+  it does not claim that the URL was reachable or that all page content was
+  reviewed.
+- **Full-source content verification** is reported as `not performed` and as
+  `null` in JSON. Luna and Terra receive stored source excerpts, and the
+  evaluator must not claim independent full-publication verification when it
+  did not fetch and read the complete external source.
+
+These distinctions are intentional: a response may have accurate PubMed or
+official-guidance sources while still containing an uncited recommendation,
+or while the selected excerpt is too narrow to demonstrate the claim. Such a
+case must not be summarized as an inaccurate source.
 
 ## Why results aren't committed
 

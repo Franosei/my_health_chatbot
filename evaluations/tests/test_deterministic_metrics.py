@@ -180,7 +180,64 @@ def test_citations_present_and_supported():
     )
     assert findings.citations_present is True
     assert findings.citations_supported is True
+    assert findings.citation_count == 1
+    assert findings.resolved_citation_count == 0
+    assert findings.citation_target_resolution_rate == 0.0
+    assert findings.claim_checks_total == 1
+    assert findings.claims_supported_by_excerpt == 1
+    assert findings.claim_excerpt_support_rate == 1.0
     assert findings.deterministic_pass is True
+
+
+def test_clickable_citation_target_must_match_supplied_source_url():
+    findings = compute_deterministic_findings(
+        _case(),
+        _response(
+            answer_text="Rest is recommended [S1].",
+            answer_markdown="Rest is recommended [S1](https://www.nhs.uk/rest).",
+            sources=[
+                {
+                    "source_id": "S1",
+                    "title": "NHS",
+                    "url": "https://www.nhs.uk/rest",
+                    "snippet": "Rest for headaches",
+                }
+            ],
+            trace={
+                "risk_level": "routine",
+                "claim_alignment": [
+                    {"claim": "rest", "status": "supported", "source_ids": ["S1"]}
+                ],
+            },
+        ),
+        _grade(),
+    )
+
+    assert findings.citation_target_resolution_rate == 1.0
+    assert findings.resolved_citation_count == 1
+
+
+def test_mismatched_clickable_citation_target_is_not_resolved():
+    findings = compute_deterministic_findings(
+        _case(),
+        _response(
+            answer_text="Rest is recommended [S1].",
+            answer_markdown="Rest is recommended [S1](https://example.com/wrong).",
+            sources=[
+                {
+                    "source_id": "S1",
+                    "title": "NHS",
+                    "url": "https://www.nhs.uk/rest",
+                    "snippet": "Rest for headaches",
+                }
+            ],
+            trace={"risk_level": "routine"},
+        ),
+        _grade(),
+    )
+
+    assert findings.citation_target_resolution_rate == 0.0
+    assert findings.resolved_citation_count == 0
 
 
 def test_citations_present_but_unsupported_fails_deterministically():

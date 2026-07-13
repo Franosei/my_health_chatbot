@@ -99,6 +99,8 @@ def test_grading_prompt_uses_displayed_answer_and_source_metadata():
     assert "[S1](https://example.test/guideline)" in prompt
     assert "Clinical guideline" in prompt
     assert "The excerpt directly supports the claim." in prompt
+    assert "not browsing or reading the complete external publication" in prompt
+    assert "never state or imply that the full source is inaccurate" in prompt
 
 
 def _config():

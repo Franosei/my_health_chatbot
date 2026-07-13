@@ -136,6 +136,18 @@ def test_build_report_summary_handles_empty_list():
     assert summary.notes
 
 
+def test_historical_report_can_preserve_original_prompt_version():
+    summary = build_report_summary(
+        [_case_result("case-1")],
+        EvalConfig(),
+        dataset_version="healthbench",
+        prompt_version="v1",
+        run_date="2026-07-13T06:30:27+00:00",
+    )
+    assert summary.prompt_version == "v1"
+    assert summary.run_date == "2026-07-13T06:30:27+00:00"
+
+
 def test_emergency_sensitivity_none_when_no_emergency_expected():
     results = [
         _case_result("case-1", deterministic_overrides={"crisis_gate_expected": False})
@@ -172,6 +184,36 @@ def test_disagreement_count():
     results[0].adjudication.agreement = False
     summary = build_report_summary(results, EvalConfig(), dataset_version="healthbench")
     assert summary.disagreement_count == 1
+
+
+def test_evidence_metrics_do_not_mislabel_full_source_truth():
+    result = _case_result(
+        "case-1",
+        grade_overrides={"unsupported_claims": ["one uncited recommendation"]},
+        deterministic_overrides={
+            "citation_count": 2,
+            "resolved_citation_count": 2,
+            "citation_target_resolution_rate": 1.0,
+            "claim_checks_total": 5,
+            "claims_supported_by_excerpt": 4,
+            "claim_excerpt_support_rate": 0.8,
+        },
+    )
+    result.pipeline_response.sources = [
+        {"source_id": "S1", "url": "https://www.nhs.uk/example"},
+        {"source_id": "S2", "url": "https://pubmed.ncbi.nlm.nih.gov/1/"},
+    ]
+
+    summary = build_report_summary(
+        [result], EvalConfig(), dataset_version="healthbench"
+    )
+
+    assert summary.responses_with_grader_flagged_claims_rate == 1.0
+    assert summary.grader_flagged_claim_count == 1
+    assert summary.claim_excerpt_support_rate == 0.8
+    assert summary.citation_target_resolution_rate == 1.0
+    assert summary.displayed_sources_with_url_rate == 1.0
+    assert summary.full_source_content_verification_rate is None
 
 
 def test_write_report_creates_raw_and_sanitised_files(tmp_path):
