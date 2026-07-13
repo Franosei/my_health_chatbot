@@ -13,6 +13,17 @@
 users.json
 data/
 
+# Evaluation harness: downloaded/normalized/private datasets and raw results
+# are large and/or may contain restricted or sensitive data -- never commit.
+evaluations/datasets/downloaded/*
+evaluations/datasets/normalized/*
+evaluations/datasets/private/*
+evaluations/results/*
+!evaluations/datasets/downloaded/.gitkeep
+!evaluations/datasets/normalized/.gitkeep
+!evaluations/datasets/private/.gitkeep
+!evaluations/results/.gitkeep
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
