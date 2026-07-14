@@ -24,13 +24,18 @@ class LLMHelper:
     # gpt-4o-mini is used only for cheap auxiliary calls (triage JSON, extraction, etc.)
     ANSWER_MODEL = "gpt-4o"
     AUX_MODEL = "gpt-4o-mini"
+    REQUEST_TIMEOUT_SECONDS = 120.0
 
     def __init__(self, model: str = "gpt-4o-mini"):
         self.model = model
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not set in .env")
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(
+            api_key=api_key,
+            timeout=self.REQUEST_TIMEOUT_SECONDS,
+            max_retries=0,
+        )
 
     def answer_question(
         self,
@@ -47,6 +52,8 @@ class LLMHelper:
         clinical_context: str = "",
         selected_skills: Optional[list[str]] = None,
         current_location: str = "",
+        task_mode=None,
+        response_completion_guidance: str = "",
     ) -> str | Generator[str, None, None]:
         """
         Creates a role-aware, evidence-grounded response using the supplied evidence dossier.
@@ -54,6 +61,7 @@ class LLMHelper:
         """
         if role_config:
             from backend.response_templates import get_persona_block
+
             persona = get_persona_block(role_config.role_key)
         else:
             persona = (
@@ -68,7 +76,11 @@ class LLMHelper:
                 "content": (
                     f"{persona}\n\n"
                     f"{operating_contract_prompt(selected_skills or ['response_validation'], current_location)}\n\n"
+                    f"{task_mode.prompt_block() if task_mode else ''}\n\n"
                     "CORE RULES:\n"
+                    "0. Follow the CONTROLLED TASK MODE when one is supplied. For literal documentation or "
+                    "translation, its output constraints override clinical headings, evidence, citation, and "
+                    "patient-advice instructions below.\n"
                     "1. Use only the supplied evidence dossier and conversation context.\n"
                     "2. Use concise markdown with the role-appropriate section headings provided.\n"
                     "3. Cite clinical claims that rely on the supplied sources inline with [S1], [S1][S2], etc. "
@@ -111,9 +123,30 @@ class LLMHelper:
 
         if role_config:
             from backend.response_templates import get_section_headings_text
+
             headings_text = get_section_headings_text(role_config.role_key)
         else:
-            headings_text = "Use only the few headings that materially help answer this request."
+            headings_text = (
+                "Use only the few headings that materially help answer this request."
+            )
+
+        is_transformation = bool(task_mode and task_mode.is_transformation)
+        if is_transformation:
+            response_instructions = (
+                "Follow the controlled transformation mode exactly. Do not use role-oriented health headings, "
+                "do not add citations, and do not append clinical commentary or follow-up questions."
+            )
+        else:
+            response_instructions = (
+                f"Available role-appropriate headings:\n{headings_text}\n"
+                "Use only helpful sections; for a simple request, answer in one or two short paragraphs. "
+                "Do not force an emergency, differential, evidence, disclaimer, or monitoring section.\n\n"
+                "Cite claims drawn from evidence; omit a citation if direct support is unavailable and narrow "
+                "or omit the claim instead.\n"
+                "Where multiple sources agree, synthesize into one statement with combined citations.\n"
+                "Label evidence tier (Tier 1 / Tier 2 / Tier 3) when it helps assess recommendation strength.\n"
+                "Give specific routes, thresholds, and timeframes only when supported."
+            )
 
         policy_block = ""
         if policy_context_note:
@@ -131,7 +164,9 @@ class LLMHelper:
             )
 
         memory_text = self._render_longitudinal_memory(longitudinal_memory)
-        has_patient_data = memory_text != "No durable patient-specific memory recorded yet."
+        has_patient_data = (
+            memory_text != "No durable patient-specific memory recorded yet."
+        )
 
         messages.append(
             {
@@ -142,22 +177,22 @@ class LLMHelper:
                     f"Recent conversation:\n{self._render_chat_history(chat_history)}\n\n"
                     f"Evidence dossier:\n{self._render_evidence_dossier(source_briefings, context)}\n\n"
                     f"Clinical context gate:\n{clinical_context or 'No cross-specialty context decision was needed.'}\n\n"
-                    f"{policy_block}"
+                    + (
+                        "Controlled response requirements:\n"
+                        f"{response_completion_guidance}\n\n"
+                        if response_completion_guidance
+                        else ""
+                    )
+                    + f"{policy_block}"
                     f"Current question:\n{question}\n\n"
                     f"{banner_instruction}"
-                    f"Available role-appropriate headings:\n{headings_text}\n"
-                    "Use only helpful sections; for a simple request, answer in one or two short paragraphs. "
-                    "Do not force an emergency, differential, evidence, disclaimer, or monitoring section.\n\n"
+                    f"{response_instructions}\n\n"
                     + (
                         "The longitudinal memory contains patient data. Use actual names and values only when they "
                         "are relevant to the current question; otherwise leave them out.\n\n"
-                        if has_patient_data else ""
+                        if has_patient_data
+                        else ""
                     )
-                    + "Cite claims drawn from evidence; omit a citation if direct support is unavailable and narrow "
-                    "or omit the claim instead.\n"
-                    "Where multiple sources agree, synthesize into one statement with combined citations.\n"
-                    "Label evidence tier (Tier 1 / Tier 2 / Tier 3) when it helps assess recommendation strength.\n"
-                    "Give specific routes, thresholds, and timeframes only when supported."
                 ),
             }
         )
@@ -353,7 +388,7 @@ class LLMHelper:
                         "'supported' (a listed source clearly backs it), or "
                         "'general_knowledge' (plausible but not directly in any listed source). "
                         "Return a JSON object with one key: claims. "
-                        "Each claim is: {\"claim\": str, \"status\": str, \"source_ids\": [str]}."
+                        'Each claim is: {"claim": str, "status": str, "source_ids": [str]}.'
                     ),
                 },
                 {
@@ -376,11 +411,13 @@ class LLMHelper:
         result = []
         for item in items[:5]:
             if isinstance(item, dict) and item.get("claim"):
-                result.append({
-                    "claim": str(item.get("claim", "")).strip(),
-                    "status": str(item.get("status", "general_knowledge")).strip(),
-                    "source_ids": [str(s) for s in item.get("source_ids", [])],
-                })
+                result.append(
+                    {
+                        "claim": str(item.get("claim", "")).strip(),
+                        "status": str(item.get("status", "general_knowledge")).strip(),
+                        "source_ids": [str(s) for s in item.get("source_ids", [])],
+                    }
+                )
         return result
 
     def generate_follow_up_questions(
@@ -393,18 +430,21 @@ class LLMHelper:
         role_key: str = "patient",
     ) -> list[str]:
         profile_text = self._render_profile_summary(user_profile)
-        patient_data = (patient_context or "").strip() or "No structured patient data available."
+        patient_data = (
+            patient_context or ""
+        ).strip() or "No structured patient data available."
         # Last 3 conversation turns -- full content, no truncation
         recent_turns = ""
         if chat_history:
             turns = [
-                m for m in chat_history
-                if m.get("role") in ("user", "assistant") and m.get("content", "").strip()
+                m
+                for m in chat_history
+                if m.get("role") in ("user", "assistant")
+                and m.get("content", "").strip()
             ][-6:]  # last 3 pairs = 6 messages
             if turns:
                 recent_turns = "\n".join(
-                    f"{m['role'].title()}: {m['content'].strip()}"
-                    for m in turns
+                    f"{m['role'].title()}: {m['content'].strip()}" for m in turns
                 )
 
         messages = [
@@ -433,7 +473,7 @@ class LLMHelper:
                     "   c) Ask how this changes or refines the answer\n"
                     "   Example: 'Regarding my sore throat question -- I also have a fever of "
                     "around 38.5°C. Does this change whether I need antibiotics or a GP visit?'\n\n"
-                    "Return JSON: {'questions': [{\"display\": str, \"prompt\": str}, ...]}, "
+                    'Return JSON: {\'questions\': [{"display": str, "prompt": str}, ...]}, '
                     "up to 5 items."
                 ),
             },
@@ -443,7 +483,11 @@ class LLMHelper:
                     f"Role: {role_key}\n"
                     f"Patient profile:\n{profile_text}\n\n"
                     f"Patient health record:\n{patient_data}\n\n"
-                    + (f"Recent conversation:\n{recent_turns}\n\n" if recent_turns else "")
+                    + (
+                        f"Recent conversation:\n{recent_turns}\n\n"
+                        if recent_turns
+                        else ""
+                    )
                     + f"Original question:\n{question}\n\n"
                     f"Answer given (read this to find what risk factors, red flags, "
                     f"or associated findings were raised but not yet confirmed):\n{answer}\n\n"
@@ -487,7 +531,9 @@ class LLMHelper:
         )
         return response.choices[0].message.content.strip()
 
-    def _stream_response(self, messages, model: Optional[str] = None) -> Generator[str, None, None]:
+    def _stream_response(
+        self, messages, model: Optional[str] = None
+    ) -> Generator[str, None, None]:
         stream = self.client.chat.completions.create(
             model=model or self.model,
             messages=messages,
@@ -538,7 +584,11 @@ class LLMHelper:
             value = (user_profile.get(field) or "").strip()
             if value:
                 fragments.append(f"{field.replace('_', ' ').title()}: {value}")
-        return "\n".join(fragments) if fragments else "No additional user profile available."
+        return (
+            "\n".join(fragments)
+            if fragments
+            else "No additional user profile available."
+        )
 
     @staticmethod
     def _render_longitudinal_memory(longitudinal_memory: Optional[str]) -> str:
@@ -546,7 +596,9 @@ class LLMHelper:
         return cleaned or "No durable patient-specific memory recorded yet."
 
     @staticmethod
-    def _render_evidence_dossier(source_briefings: Optional[list[dict]], fallback_context: str) -> str:
+    def _render_evidence_dossier(
+        source_briefings: Optional[list[dict]], fallback_context: str
+    ) -> str:
         if source_briefings:
             blocks = []
             for source in source_briefings:
@@ -572,13 +624,17 @@ class LLMHelper:
                             ),
                             (
                                 "Matched profile facts: "
-                                + ", ".join(source.get("patient_alignment_facts", [])[:5])
+                                + ", ".join(
+                                    source.get("patient_alignment_facts", [])[:5]
+                                )
                                 if source.get("patient_alignment_facts")
                                 else "Matched profile facts: none"
                             ),
                             (
                                 "Quality notes: "
-                                + "; ".join(source.get("evidence_quality_reasons", [])[:3])
+                                + "; ".join(
+                                    source.get("evidence_quality_reasons", [])[:3]
+                                )
                                 if source.get("evidence_quality_reasons")
                                 else "Quality notes: none"
                             ),

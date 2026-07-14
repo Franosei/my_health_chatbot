@@ -2,6 +2,8 @@ import argparse
 import json
 import random
 
+import pytest
+
 from evaluations import runner
 from evaluations.config import EvalConfig
 from evaluations.models import (
@@ -12,7 +14,10 @@ from evaluations.models import (
     EvalCase,
     GradingResult,
     PipelineResponse,
+    MetricScore,
+    RAGMetricsResult,
     RubricItem,
+    RubricResult,
 )
 
 
@@ -85,6 +90,8 @@ def _minimal_case_result(case_id: str) -> CaseResult:
         deterministic_pass=True,
         failure_reasons=[],
     )
+    metric = MetricScore(score=0.9, applicable=True, explanation="fine")
+    unavailable = MetricScore(score=None, applicable=False, explanation="n/a")
     return CaseResult(
         case=_valid_case(case_id),
         pipeline_response=PipelineResponse(
@@ -99,6 +106,21 @@ def _minimal_case_result(case_id: str) -> CaseResult:
         deterministic=findings,
         weighted_score=1.0,
         overall_pass=True,
+        rag_metrics=RAGMetricsResult(
+            case_id=case_id,
+            judge_model="judge",
+            faithfulness=metric,
+            context_relevance=metric,
+            noise_sensitivity=unavailable,
+            context_recall=metric,
+            answer_correctness=metric,
+            calibration=metric,
+            contradiction_handling=unavailable,
+            citation_accuracy=unavailable,
+            context_precision_ranking=metric,
+            clinical_harmlessness=metric,
+            consistency=unavailable,
+        ),
     )
 
 
@@ -122,6 +144,27 @@ def test_load_completed_case_ids_skips_malformed_lines(tmp_path):
         fh.write("not valid json\n")
 
     assert runner._load_completed_case_ids(raw_path) == {"case-1"}
+
+
+def test_load_completed_case_ids_ignores_legacy_results_without_new_metrics(tmp_path):
+    raw_path = tmp_path / "cases.jsonl"
+    payload = _minimal_case_result("legacy-case").model_dump()
+    payload["rag_metrics"] = None
+    raw_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    assert runner._load_completed_case_ids(raw_path) == set()
+
+
+def test_load_completed_case_ids_ignores_rag_only_results_without_healthbench(tmp_path):
+    raw_path = tmp_path / "cases.jsonl"
+    payload = _minimal_case_result("rag-only-case").model_dump()
+    payload["adjudication"] = None
+    payload["deterministic"] = None
+    payload["weighted_score"] = None
+    payload["overall_pass"] = None
+    raw_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    assert runner._load_completed_case_ids(raw_path) == set()
 
 
 def test_run_dataset_applies_sample_limit_and_resume(tmp_path, monkeypatch):
@@ -230,3 +273,201 @@ def test_run_dataset_randomizes_before_sampling(tmp_path, monkeypatch):
     runner.run_dataset("healthbench", args, config)
 
     assert observed == [case.case_id for case in expected[:3]]
+
+
+def test_consistency_repeats_are_opt_in(monkeypatch):
+    primary = PipelineResponse(
+        case_id="case-1", answer_markdown="primary", answer_text="primary"
+    )
+    answers = iter(
+        [
+            PipelineResponse(
+                case_id="case-1", answer_markdown="repeat 1", answer_text="repeat 1"
+            ),
+            PipelineResponse(
+                case_id="case-1", answer_markdown="repeat 2", answer_text="repeat 2"
+            ),
+        ]
+    )
+    monkeypatch.setattr(runner, "run_case_pipeline", lambda *args: next(answers))
+
+    result = runner._add_consistency_repeats(
+        _valid_case(), primary, object(), EvalConfig(consistency_repeats=2)
+    )
+
+    assert result.consistency_answers == ["repeat 1", "repeat 2"]
+
+
+def test_finalize_healthbench_score_uses_dataset_points_not_grader_score(monkeypatch):
+    case = _valid_case()
+    response = PipelineResponse(
+        case_id=case.case_id,
+        answer_markdown="Rest.",
+        answer_text="Rest.",
+        trace={"risk_level": "routine", "crisis_detected": False},
+    )
+    grade = GradingResult(
+        case_id=case.case_id,
+        grader_model="luna",
+        rubric_results=[
+            RubricResult(
+                criterion="Advises rest.",
+                points=5,
+                met=True,
+                explanation="The answer advises rest.",
+                answer_evidence="Rest",
+            )
+        ],
+        # Deliberately different: this field must not become the weighted score.
+        clinical_correctness_score=0.1,
+        triage_appropriateness="appropriate",
+        potential_harm_level="none",
+        confidence=0.9,
+        explanation="Rubric evidence controls the HealthBench score.",
+        expected_urgency_level="routine",
+    )
+    monkeypatch.setattr(runner, "should_adjudicate", lambda *args: (False, []))
+
+    result = runner.finalize_healthbench_result(
+        case,
+        response,
+        grade,
+        EvalConfig(adjudicator_model="gpt-4o-mini"),
+    )
+
+    assert result.weighted_score == 1.0
+    assert result.adjudication.final_grade is grade
+    assert result.overall_pass is True
+
+
+def test_failed_secondary_adjudication_preserves_primary_grade(monkeypatch):
+    case = _valid_case()
+    response = PipelineResponse(
+        case_id=case.case_id,
+        answer_markdown="Rest.",
+        answer_text="Rest.",
+        trace={"risk_level": "routine", "crisis_detected": False},
+    )
+    grade = GradingResult(
+        case_id=case.case_id,
+        grader_model="gpt-5.6-luna",
+        rubric_results=[
+            RubricResult(
+                criterion="Advises rest.",
+                points=5,
+                met=True,
+                answer_evidence="Rest",
+            )
+        ],
+        clinical_correctness_score=0.9,
+        triage_appropriateness="appropriate",
+        potential_harm_level="none",
+        confidence=0.9,
+        explanation="Primary grade is valid.",
+        expected_urgency_level="routine",
+    )
+    monkeypatch.setattr(
+        runner, "should_adjudicate", lambda *args: (True, ["high_stakes_category"])
+    )
+    monkeypatch.setattr(
+        runner,
+        "grade_with_terra",
+        lambda *args: (_ for _ in ()).throw(ValueError("invalid evidence")),
+    )
+
+    result = runner.finalize_healthbench_result(case, response, grade, EvalConfig())
+
+    assert result.weighted_score == 1.0
+    assert result.adjudication.final_grade is grade
+    assert result.adjudication.terra_grade is None
+    assert "adjudicator_failed" in result.adjudication.trigger_reasons
+    assert "invalid evidence" in result.adjudication.adjudication_error
+
+
+def test_same_model_secondary_adjudication_is_skipped(monkeypatch):
+    case = _valid_case()
+    response = PipelineResponse(
+        case_id=case.case_id,
+        answer_markdown="Rest.",
+        answer_text="Rest.",
+        trace={"risk_level": "routine", "crisis_detected": False},
+    )
+    grade = GradingResult(
+        case_id=case.case_id,
+        grader_model="gpt-5.4-mini",
+        rubric_results=[
+            RubricResult(
+                criterion="Advises rest.",
+                points=5,
+                met=True,
+                answer_evidence="Rest",
+            )
+        ],
+        clinical_correctness_score=0.9,
+        triage_appropriateness="appropriate",
+        potential_harm_level="none",
+        confidence=0.9,
+        explanation="Primary grade is valid.",
+        expected_urgency_level="routine",
+    )
+    monkeypatch.setattr(
+        runner, "should_adjudicate", lambda *args: (True, ["high_stakes_category"])
+    )
+    monkeypatch.setattr(
+        runner,
+        "grade_with_terra",
+        lambda *args: pytest.fail("same model must not be called twice"),
+    )
+
+    result = runner.finalize_healthbench_result(case, response, grade, EvalConfig())
+
+    assert result.adjudication.triggered is True
+    assert result.adjudication.adjudication_skipped is True
+    assert result.adjudication.terra_grade is None
+    assert "same_model_adjudication_skipped" in result.adjudication.trigger_reasons
+
+
+def test_main_stops_before_dataset_when_evaluator_access_fails(monkeypatch, capsys):
+    from evaluations import grading
+
+    monkeypatch.setattr(runner, "load_config", lambda: EvalConfig())
+    monkeypatch.setattr(
+        grading,
+        "validate_evaluator_access",
+        lambda config: (_ for _ in ()).throw(
+            grading.EvaluatorAccessError("HTTP 401; set EVAL_API_KEY")
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_dataset",
+        lambda *args: pytest.fail("dataset must not start after failed preflight"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        runner.main(["--dataset", "healthbench", "--sample", "10"])
+
+    assert exc_info.value.code == 2
+    assert "HTTP 401" in capsys.readouterr().err
+
+
+def test_warns_when_adjudicator_matches_primary_grader(capsys):
+    config = EvalConfig(
+        primary_grader_model="gpt-5.4-mini", adjudicator_model="gpt-5.4-mini"
+    )
+
+    runner.warn_if_adjudication_disabled(config)
+
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "EVAL_ADJUDICATOR_MODEL" in err
+
+
+def test_no_warning_when_adjudicator_differs_from_primary_grader(capsys):
+    config = EvalConfig(
+        primary_grader_model="gpt-5.4-mini", adjudicator_model="gpt-4o-mini"
+    )
+
+    runner.warn_if_adjudication_disabled(config)
+
+    assert capsys.readouterr().err == ""

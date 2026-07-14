@@ -8,37 +8,87 @@ from evaluations.models import (
     DeterministicFindings,
     EvalCase,
     GradingResult,
+    MetricScore,
     PipelineResponse,
+    RAGMetricsResult,
 )
-from evaluations.reporting import REPORT_LABEL, build_report_summary, write_report
+from evaluations.reporting import (
+    REPORT_LABEL,
+    _sanitized_case_entry,
+    build_report_summary,
+    write_report,
+)
 
 _UNIQUE_CONVERSATION_MARKER = (
     "a very specific patient sentence that must never leak into the sanitised summary"
 )
 
 
-def _grade(**overrides):
-    fields = dict(
+def _rag_metrics(score=0.8, error=None):
+    applicable = MetricScore(score=score, applicable=True, explanation="ok")
+    unavailable = MetricScore(score=None, applicable=False, explanation="n/a")
+    return RAGMetricsResult(
         case_id="case-1",
+        judge_model="judge",
+        relevant_source_ids=["S1"],
+        irrelevant_source_ids=["S2"],
+        faithfulness=applicable,
+        context_relevance=applicable,
+        noise_sensitivity=applicable,
+        context_recall=applicable,
+        answer_correctness=unavailable,
+        calibration=applicable,
+        contradiction_handling=unavailable,
+        citation_accuracy=applicable,
+        context_precision_ranking=applicable,
+        clinical_harmlessness=applicable,
+        consistency=unavailable,
+        evaluation_error=error,
+    )
+
+
+def _case_result(case_id="case-1", rag_metrics=None, tags=None):
+    case = EvalCase(
+        case_id=case_id,
+        source_dataset="healthbench",
+        conversation=[
+            ConversationTurn(role="user", content=_UNIQUE_CONVERSATION_MARKER)
+        ],
+        rubrics=[],
+        tags=tags if tags is not None else ["theme:test"],
+    )
+    return CaseResult(
+        case=case,
+        pipeline_response=PipelineResponse(
+            case_id=case_id,
+            answer_markdown=_UNIQUE_CONVERSATION_MARKER + " answer",
+            answer_text=_UNIQUE_CONVERSATION_MARKER + " answer",
+            trace={"risk_level": "routine"},
+        ),
+        rag_metrics=rag_metrics,
+    )
+
+
+def _with_healthbench(result: CaseResult) -> CaseResult:
+    grade = GradingResult(
+        case_id=result.case.case_id,
         grader_model="luna",
         rubric_results=[],
-        clinical_correctness_score=0.9,
+        clinical_correctness_score=0.8,
         triage_appropriateness="appropriate",
         potential_harm_level="none",
-        unsupported_claims=[],
-        missing_critical_information=[],
         confidence=0.9,
-        explanation="fine",
+        explanation="Rubric-bound grade.",
         expected_urgency_level="routine",
-        clarification_warranted=False,
     )
-    fields.update(overrides)
-    return GradingResult.model_validate(fields)
-
-
-def _findings(**overrides):
-    fields = dict(
-        case_id="case-1",
+    result.adjudication = AdjudicationDecision(
+        case_id=result.case.case_id,
+        triggered=False,
+        luna_grade=grade,
+        final_grade=grade,
+    )
+    result.deterministic = DeterministicFindings(
+        case_id=result.case.case_id,
         expected_urgency_level="routine",
         actual_urgency_level="routine",
         under_triage=False,
@@ -58,213 +108,202 @@ def _findings(**overrides):
         prompt_injection_detected=False,
         prompt_injection_resisted=None,
         deterministic_pass=True,
-        failure_reasons=[],
     )
-    fields.update(overrides)
-    return DeterministicFindings(**fields)
+    result.weighted_score = 0.8
+    result.overall_pass = True
+    return result
 
 
-def _case_result(
-    case_id="case-1",
-    overall_pass=True,
-    weighted_score=0.9,
-    deterministic_overrides=None,
-    grade_overrides=None,
-    adjudicated=False,
-) -> CaseResult:
-    case = EvalCase(
-        case_id=case_id,
-        source_dataset="healthbench",
-        conversation=[
-            ConversationTurn(role="user", content=_UNIQUE_CONVERSATION_MARKER)
-        ],
-        rubrics=[],
-        tags=["theme:test"],
-    )
-    pipeline_response = PipelineResponse(
-        case_id=case_id,
-        answer_markdown=_UNIQUE_CONVERSATION_MARKER + " answer",
-        answer_text=_UNIQUE_CONVERSATION_MARKER + " answer",
-        trace={"risk_level": "routine"},
-    )
-    grade = _grade(case_id=case_id, **(grade_overrides or {}))
-    findings = _findings(case_id=case_id, **(deterministic_overrides or {}))
-    adjudication = AdjudicationDecision(
-        case_id=case_id,
-        triggered=adjudicated,
-        trigger_reasons=["emergency_case"] if adjudicated else [],
-        luna_grade=grade,
-        terra_grade=grade if adjudicated else None,
-        agreement=True if adjudicated else None,
-        final_grade=grade,
-    )
-    return CaseResult(
-        case=case,
-        pipeline_response=pipeline_response,
-        adjudication=adjudication,
-        deterministic=findings,
-        weighted_score=weighted_score,
-        overall_pass=overall_pass,
-    )
-
-
-def test_build_report_summary_computes_pass_rate():
-    results = [
-        _case_result("case-1", overall_pass=True, weighted_score=1.0),
-        _case_result(
-            "case-2",
-            overall_pass=False,
-            weighted_score=0.0,
-            deterministic_overrides={
-                "deterministic_pass": False,
-                "failure_reasons": ["severe_under_triage"],
-            },
-        ),
-    ]
-    summary = build_report_summary(results, EvalConfig(), dataset_version="healthbench")
-
-    assert summary.total_cases == 2
-    assert summary.pass_rate == 0.5
-    assert summary.weighted_healthbench_score == 0.5
-    assert "case-2" in summary.cases_requiring_human_review
-
-
-def test_build_report_summary_handles_empty_list():
-    summary = build_report_summary([], EvalConfig(), dataset_version="healthbench")
-    assert summary.total_cases == 0
-    assert summary.pass_rate == 0.0
-    assert summary.notes
-
-
-def test_historical_report_can_preserve_original_prompt_version():
-    summary = build_report_summary(
-        [_case_result("case-1")],
-        EvalConfig(),
-        dataset_version="healthbench",
-        prompt_version="v1",
-        run_date="2026-07-13T06:30:27+00:00",
-    )
-    assert summary.prompt_version == "v1"
-    assert summary.run_date == "2026-07-13T06:30:27+00:00"
-
-
-def test_emergency_sensitivity_none_when_no_emergency_expected():
-    results = [
-        _case_result("case-1", deterministic_overrides={"crisis_gate_expected": False})
-    ]
-    summary = build_report_summary(results, EvalConfig(), dataset_version="healthbench")
-    assert summary.emergency_sensitivity is None
-
-
-def test_emergency_sensitivity_computed_from_crisis_gate_cases():
-    results = [
-        _case_result(
-            "case-1",
-            deterministic_overrides={
-                "crisis_gate_expected": True,
-                "crisis_gate_activated": True,
-            },
-        ),
-        _case_result(
-            "case-2",
-            deterministic_overrides={
-                "crisis_gate_expected": True,
-                "crisis_gate_activated": False,
-                "deterministic_pass": False,
-                "failure_reasons": ["crisis_gate_missed"],
-            },
-        ),
-    ]
-    summary = build_report_summary(results, EvalConfig(), dataset_version="healthbench")
-    assert summary.emergency_sensitivity == 0.5
-
-
-def test_disagreement_count():
-    results = [_case_result("case-1", adjudicated=True)]
-    results[0].adjudication.agreement = False
-    summary = build_report_summary(results, EvalConfig(), dataset_version="healthbench")
-    assert summary.disagreement_count == 1
-
-
-def test_evidence_metrics_do_not_mislabel_full_source_truth():
-    result = _case_result(
-        "case-1",
-        grade_overrides={"unsupported_claims": ["one uncited recommendation"]},
-        deterministic_overrides={
-            "citation_count": 2,
-            "resolved_citation_count": 2,
-            "citation_target_resolution_rate": 1.0,
-            "claim_checks_total": 5,
-            "claims_supported_by_excerpt": 4,
-            "claim_excerpt_support_rate": 0.8,
-        },
-    )
-    result.pipeline_response.sources = [
-        {"source_id": "S1", "url": "https://www.nhs.uk/example"},
-        {"source_id": "S2", "url": "https://pubmed.ncbi.nlm.nih.gov/1/"},
-    ]
+def test_report_supports_rag_metrics_when_healthbench_grade_is_missing():
+    result = _case_result(rag_metrics=_rag_metrics())
 
     summary = build_report_summary(
         [result], EvalConfig(), dataset_version="healthbench"
     )
 
-    assert summary.responses_with_grader_flagged_claims_rate == 1.0
-    assert summary.grader_flagged_claim_count == 1
-    assert summary.claim_excerpt_support_rate == 0.8
-    assert summary.citation_target_resolution_rate == 1.0
-    assert summary.displayed_sources_with_url_rate == 1.0
-    assert summary.full_source_content_verification_rate is None
+    assert summary.total_cases == 1
+    assert summary.rag_metric_aggregates["faithfulness"].average_score == 0.8
+    assert summary.rag_metric_aggregates["faithfulness"].applicable_cases == 1
+    assert summary.rag_metric_aggregates["answer_correctness"].average_score is None
+    assert summary.relevant_document_count == 1
+    assert summary.irrelevant_document_count == 1
+    assert summary.healthbench_graded_cases == 0
+    assert summary.pass_rate is None
+    assert summary.weighted_healthbench_score is None
+    assert summary.adjudication_rate is None
 
 
-def test_write_report_creates_raw_and_sanitised_files(tmp_path):
-    config = EvalConfig(output_path=tmp_path)
-    results = [_case_result("case-1")]
+def test_sanitized_entry_distinguishes_triggered_from_completed_adjudication():
+    result = _with_healthbench(_case_result())
+    result.adjudication.triggered = True
+    result.adjudication.adjudication_skipped = True
 
-    raw_path, summary_json_path, summary_md_path = write_report(
-        results, config, dataset_version="healthbench", run_id="test-run"
+    entry = _sanitized_case_entry(result)
+
+    assert entry["healthbench"]["adjudication_triggered"] is True
+    assert entry["healthbench"]["adjudication_completed"] is False
+    assert entry["healthbench"]["adjudication_skipped"] is True
+
+
+def test_sanitized_entry_marks_adjudication_completed_when_terra_grade_present():
+    result = _with_healthbench(_case_result())
+    terra_grade = result.adjudication.luna_grade.model_copy(
+        update={"grader_model": "terra"}
     )
+    result.adjudication.triggered = True
+    result.adjudication.adjudication_skipped = False
+    result.adjudication.terra_grade = terra_grade
+    result.adjudication.final_grade = terra_grade
 
-    assert raw_path.exists()
-    assert summary_json_path.exists()
-    assert summary_md_path.exists()
+    entry = _sanitized_case_entry(result)
 
-    raw_content = raw_path.read_text(encoding="utf-8")
-    assert (
-        _UNIQUE_CONVERSATION_MARKER in raw_content
-    )  # full detail belongs in raw results
-
-    summary_content = summary_json_path.read_text(encoding="utf-8")
-    assert (
-        _UNIQUE_CONVERSATION_MARKER not in summary_content
-    )  # never in the sanitised summary
-
-    summary_json = json.loads(summary_content)
-    assert summary_json["label"] == REPORT_LABEL
-    assert summary_json["cases"][0]["case_id"] == "case-1"
-
-    md_content = summary_md_path.read_text(encoding="utf-8")
-    assert REPORT_LABEL in md_content
-    assert _UNIQUE_CONVERSATION_MARKER not in md_content
+    assert entry["healthbench"]["adjudication_triggered"] is True
+    assert entry["healthbench"]["adjudication_completed"] is True
 
 
-def test_write_report_lists_human_review_cases_in_markdown(tmp_path):
-    config = EvalConfig(output_path=tmp_path)
-    results = [
+def test_build_report_summary_breaks_healthbench_scoring_down_by_tag():
+    case_1 = _with_healthbench(
+        _case_result(case_id="case-1", tags=["theme:communication"])
+    )
+    case_1.weighted_score = 1.0
+    case_1.overall_pass = True
+
+    case_2 = _with_healthbench(
         _case_result(
-            "case-1",
-            overall_pass=False,
-            deterministic_overrides={
-                "deterministic_pass": False,
-                "failure_reasons": ["medication_or_allergy_fabrication"],
-            },
-        ),
-    ]
+            case_id="case-2", tags=["theme:communication", "theme:hedging"]
+        )
+    )
+    case_2.weighted_score = 0.0
+    case_2.overall_pass = False
+    case_2.deterministic.under_triage = True
 
-    _, _, summary_md_path = write_report(
-        results, config, dataset_version="healthbench", run_id="test-run-2"
+    case_3 = _with_healthbench(
+        _case_result(case_id="case-3", tags=["theme:emergency_referrals"])
+    )
+    case_3.weighted_score = 0.6
+    case_3.overall_pass = True
+
+    summary = build_report_summary(
+        [case_1, case_2, case_3], EvalConfig(), dataset_version="healthbench"
     )
 
-    md_content = summary_md_path.read_text(encoding="utf-8")
-    assert "case-1" in md_content
-    assert "medication_or_allergy_fabrication" in md_content
-    assert "qualified clinician review" in md_content.lower()
+    assert set(summary.by_tag) == {
+        "theme:communication",
+        "theme:hedging",
+        "theme:emergency_referrals",
+    }
+
+    communication = summary.by_tag["theme:communication"]
+    assert communication.case_count == 2
+    assert communication.healthbench_graded_cases == 2
+    assert communication.pass_rate == 0.5
+    assert communication.weighted_healthbench_score == 0.5
+    assert communication.under_triage_rate == 0.5
+
+    hedging = summary.by_tag["theme:hedging"]
+    assert hedging.case_count == 1
+    assert hedging.pass_rate == 0.0
+    assert hedging.under_triage_rate == 1.0
+
+    emergency = summary.by_tag["theme:emergency_referrals"]
+    assert emergency.case_count == 1
+    assert emergency.pass_rate == 1.0
+    assert emergency.weighted_healthbench_score == 0.6
+    assert emergency.under_triage_rate == 0.0
+
+
+def test_build_report_summary_handles_empty_list():
+    summary = build_report_summary([], EvalConfig(), dataset_version="healthbench")
+    assert summary.total_cases == 0
+    assert summary.notes
+
+
+def test_report_combines_healthbench_and_tier_metrics(tmp_path):
+    result = _with_healthbench(_case_result(rag_metrics=_rag_metrics()))
+    summary = build_report_summary(
+        [result], EvalConfig(), dataset_version="healthbench"
+    )
+
+    assert summary.healthbench_graded_cases == 1
+    assert summary.pass_rate == 1.0
+    assert summary.weighted_healthbench_score == 0.8
+    assert summary.rag_metric_aggregates["faithfulness"].average_score == 0.8
+
+    _, json_path, markdown_path = write_report(
+        [result], EvalConfig(output_path=tmp_path), "healthbench", "combined-run"
+    )
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["cases"][0]["healthbench"]["weighted_score"] == 0.8
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "Weighted HealthBench score: 0.800" in markdown
+    assert "Tiered RAG quality metrics" in markdown
+    assert "PROVISIONAL - insufficient sample" in markdown
+
+
+def test_metric_aggregate_reports_item_denominator_and_sufficiency():
+    result = _case_result(rag_metrics=_rag_metrics())
+    result.rag_metrics.faithfulness.sample_size = 7
+
+    summary = build_report_summary(
+        [result],
+        EvalConfig(minimum_reliable_sample_size=5),
+        dataset_version="healthbench",
+    )
+
+    aggregate = summary.rag_metric_aggregates["faithfulness"]
+    assert aggregate.assessment_count == 7
+    assert aggregate.status == "sufficient"
+
+
+def test_historical_report_can_preserve_original_prompt_version():
+    summary = build_report_summary(
+        [_case_result(rag_metrics=_rag_metrics())],
+        EvalConfig(),
+        dataset_version="healthbench",
+        prompt_version="healthbench-rubric-v1",
+        run_date="2026-07-13T06:30:27+00:00",
+    )
+    assert summary.prompt_version == "healthbench-rubric-v1"
+    assert summary.run_date == "2026-07-13T06:30:27+00:00"
+
+
+def test_write_report_creates_raw_and_sanitised_files_for_partial_historical_row(
+    tmp_path,
+):
+    result = _case_result(rag_metrics=_rag_metrics())
+    raw_path, summary_json_path, summary_md_path = write_report(
+        [result],
+        EvalConfig(output_path=tmp_path),
+        dataset_version="healthbench",
+        run_id="test-run",
+    )
+
+    assert _UNIQUE_CONVERSATION_MARKER in raw_path.read_text(encoding="utf-8")
+    summary_content = summary_json_path.read_text(encoding="utf-8")
+    assert _UNIQUE_CONVERSATION_MARKER not in summary_content
+    payload = json.loads(summary_content)
+    assert payload["label"] == REPORT_LABEL
+    assert "healthbench" not in payload["cases"][0]
+
+    markdown = summary_md_path.read_text(encoding="utf-8")
+    assert "Tier 1" in markdown
+    assert "Noise robustness" in markdown
+    assert "Pass rate" not in markdown
+    assert "No completed HealthBench rubric grades" in markdown
+
+
+def test_metric_error_requires_human_review_and_is_excluded(tmp_path):
+    result = _case_result(
+        rag_metrics=_rag_metrics(score=0.8, error="temporary judge failure")
+    )
+    summary = build_report_summary(
+        [result], EvalConfig(), dataset_version="healthbench"
+    )
+    assert result.requires_human_review() is True
+    assert summary.rag_metrics_error_count == 1
+
+    _, _, report_path = write_report(
+        [result], EvalConfig(output_path=tmp_path), "healthbench", "error-run"
+    )
+    report = report_path.read_text(encoding="utf-8")
+    assert "metric judge error" in report

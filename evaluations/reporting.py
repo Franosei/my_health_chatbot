@@ -1,12 +1,12 @@
 """Builds the raw results file plus a sanitised JSON + Markdown summary from
 a completed evaluation run.
 
-Raw results (full conversations, full answer text, full grading explanations)
+Raw results (full conversations, full answer text, rubric evidence, source splits,
+metric explanations)
 are written under `evaluations/results/raw/` -- gitignored, local only. The
 sanitised summary/report only ever contains case identifiers, tags, scores,
-and flags -- never full conversation or answer text -- and both the JSON and
-Markdown outputs are headed with the "automated benchmark evaluation, not
-clinical validation" label plus an explicit list of cases needing qualified
+and flags -- never full conversation or answer text. HealthBench and RAG
+results share one report with an explicit list of cases needing qualified
 clinician review.
 """
 
@@ -18,10 +18,120 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
-from evaluations.config import GRADING_PROMPT_VERSION, EvalConfig
-from evaluations.models import CaseResult, ReportSummary
+from evaluations.config import (
+    HEALTHBENCH_GRADING_PROMPT_VERSION,
+    RAG_METRICS_PROMPT_VERSION,
+    EvalConfig,
+)
+from evaluations.models import CaseResult, MetricAggregate, ReportSummary, TagAggregate
 
-REPORT_LABEL = "Automated benchmark evaluation -- not clinical validation"
+REPORT_LABEL = "Automated HealthBench and RAG evaluation -- not clinical validation"
+
+_RAG_METRIC_TIERS = {
+    "Tier 1 - Core": (
+        ("faithfulness", "Faithfulness / groundedness"),
+        ("context_relevance", "Context relevance (precision)"),
+        ("noise_sensitivity", "Noise robustness (1 = no contamination)"),
+        ("context_recall", "Context recall (coverage)"),
+        ("answer_correctness", "Answer correctness vs. gold"),
+        ("calibration", "Calibration / appropriate hedging"),
+    ),
+    "Tier 2 - Important": (
+        ("contradiction_handling", "Contradiction / conflict handling"),
+        ("citation_accuracy", "Citation accuracy (attached claim only)"),
+        ("citation_completeness", "Citation completeness (material-claim coverage)"),
+        ("context_precision_ranking", "Context precision (ranking nDCG)"),
+    ),
+    "Tier 3 - Periodic safety monitoring": (
+        ("clinical_harmlessness", "Clinical harmlessness"),
+        ("consistency", "Consistency / reproducibility"),
+    ),
+}
+
+
+def _aggregate_rag_metrics(
+    case_results: List[CaseResult],
+    minimum_reliable_sample_size: int = 5,
+) -> dict[str, MetricAggregate]:
+    aggregates: dict[str, MetricAggregate] = {}
+    total = len(case_results)
+    for metrics in _RAG_METRIC_TIERS.values():
+        for name, _ in metrics:
+            scores = []
+            assessment_count = 0
+            for case_result in case_results:
+                rag_metrics = case_result.rag_metrics
+                if not rag_metrics:
+                    continue
+                metric = getattr(rag_metrics, name)
+                if metric.applicable and metric.score is not None:
+                    scores.append(metric.score)
+                    assessment_count += metric.sample_size or 1
+            status = "not_applicable"
+            if scores:
+                status = (
+                    "sufficient"
+                    if assessment_count >= minimum_reliable_sample_size
+                    else "insufficient_sample"
+                )
+            aggregates[name] = MetricAggregate(
+                average_score=sum(scores) / len(scores) if scores else None,
+                applicable_cases=len(scores),
+                total_cases=total,
+                assessment_count=assessment_count,
+                status=status,
+            )
+    return aggregates
+
+
+def _healthbench_graded(case_results: List[CaseResult]) -> List[CaseResult]:
+    return [
+        cr
+        for cr in case_results
+        if cr.adjudication
+        and cr.deterministic
+        and cr.weighted_score is not None
+        and cr.overall_pass is not None
+    ]
+
+
+def _aggregate_by_tag(case_results: List[CaseResult]) -> dict[str, TagAggregate]:
+    """Breaks HealthBench scoring down per tag (theme:*, physician_agreed_category:*,
+    etc). A case can carry several tags, so it contributes to each of its tags'
+    buckets -- these do not sum to the overall totals."""
+    tags = sorted({tag for cr in case_results for tag in cr.case.tags})
+    aggregates: dict[str, TagAggregate] = {}
+    for tag in tags:
+        tagged = [cr for cr in case_results if tag in cr.case.tags]
+        graded = _healthbench_graded(tagged)
+        graded_count = len(graded)
+        aggregates[tag] = TagAggregate(
+            case_count=len(tagged),
+            healthbench_graded_cases=graded_count,
+            pass_rate=(
+                sum(1 for cr in graded if cr.overall_pass) / graded_count
+                if graded_count
+                else None
+            ),
+            weighted_healthbench_score=(
+                sum(cr.weighted_score for cr in graded) / graded_count
+                if graded_count
+                else None
+            ),
+            under_triage_rate=(
+                sum(1 for cr in graded if cr.deterministic.under_triage)
+                / graded_count
+                if graded_count
+                else None
+            ),
+            severe_under_triage_rate=(
+                sum(1 for cr in graded if cr.deterministic.severe_under_triage)
+                / graded_count
+                if graded_count
+                else None
+            ),
+        )
+    return aggregates
 
 
 def _utc_now() -> str:
@@ -50,7 +160,7 @@ def build_report_summary(
     prompt_version: str | None = None,
     run_date: str | None = None,
 ) -> ReportSummary:
-    effective_prompt_version = prompt_version or GRADING_PROMPT_VERSION
+    effective_prompt_version = prompt_version or HEALTHBENCH_GRADING_PROMPT_VERSION
     effective_run_date = run_date or _utc_now()
     total = len(case_results)
     if total == 0:
@@ -58,58 +168,45 @@ def build_report_summary(
             dataset_version=dataset_version,
             pipeline_version=pipeline_version(),
             prompt_version=effective_prompt_version,
+            rag_metrics_prompt_version=RAG_METRICS_PROMPT_VERSION,
             generator_model=config.generator_model,
             primary_grader_model=config.primary_grader_model,
             adjudicator_model=config.adjudicator_model,
+            rag_metrics_model=config.rag_metrics_model,
             run_date=effective_run_date,
             total_cases=0,
-            pass_rate=0.0,
-            weighted_healthbench_score=0.0,
-            under_triage_rate=0.0,
-            severe_under_triage_rate=0.0,
-            emergency_sensitivity=None,
-            unsupported_claim_rate=0.0,
-            responses_with_grader_flagged_claims_rate=0.0,
-            adjudication_rate=0.0,
-            disagreement_count=0,
             cases_requiring_human_review=[],
             notes=["No cases were evaluated in this run."],
         )
-
-    passed = sum(1 for cr in case_results if cr.overall_pass)
-    weighted_scores = [cr.weighted_score for cr in case_results]
-    under_triage = sum(1 for cr in case_results if cr.deterministic.under_triage)
-    severe_under_triage = sum(
-        1 for cr in case_results if cr.deterministic.severe_under_triage
+    rag_metric_aggregates = _aggregate_rag_metrics(
+        case_results, config.minimum_reliable_sample_size
     )
-    responses_with_flagged_claims = sum(
-        1 for cr in case_results if cr.adjudication.final_grade.unsupported_claims
+    healthbench_results = _healthbench_graded(case_results)
+    graded_count = len(healthbench_results)
+    pass_rate = (
+        sum(1 for cr in healthbench_results if cr.overall_pass) / graded_count
+        if graded_count
+        else None
     )
-    grader_flagged_claim_count = sum(
-        len(cr.adjudication.final_grade.unsupported_claims) for cr in case_results
+    weighted_healthbench_score = (
+        sum(cr.weighted_score for cr in healthbench_results) / graded_count
+        if graded_count
+        else None
     )
-    claim_checks_total = sum(cr.deterministic.claim_checks_total for cr in case_results)
-    claims_supported_by_excerpt = sum(
-        cr.deterministic.claims_supported_by_excerpt for cr in case_results
+    under_triage_rate = (
+        sum(1 for cr in healthbench_results if cr.deterministic.under_triage)
+        / graded_count
+        if graded_count
+        else None
     )
-    citation_count = sum(cr.deterministic.citation_count for cr in case_results)
-    resolved_citation_count = sum(
-        cr.deterministic.resolved_citation_count for cr in case_results
+    severe_under_triage_rate = (
+        sum(1 for cr in healthbench_results if cr.deterministic.severe_under_triage)
+        / graded_count
+        if graded_count
+        else None
     )
-    displayed_source_count = sum(
-        len(cr.pipeline_response.sources or []) for cr in case_results
-    )
-    sources_with_url_count = sum(
-        1
-        for cr in case_results
-        for source in (cr.pipeline_response.sources or [])
-        if str(source.get("url") or "").strip()
-    )
-    adjudicated = sum(1 for cr in case_results if cr.adjudication.triggered)
-    disagreements = sum(1 for cr in case_results if cr.adjudication.agreement is False)
-
     emergency_expected = [
-        cr for cr in case_results if cr.deterministic.crisis_gate_expected
+        cr for cr in healthbench_results if cr.deterministic.crisis_gate_expected
     ]
     emergency_sensitivity = (
         sum(1 for cr in emergency_expected if cr.deterministic.crisis_gate_activated)
@@ -117,75 +214,245 @@ def build_report_summary(
         if emergency_expected
         else None
     )
+    adjudication_rate = (
+        sum(1 for cr in healthbench_results if cr.adjudication.terra_grade is not None)
+        / graded_count
+        if graded_count
+        else None
+    )
+    disagreement_count = sum(
+        1 for cr in healthbench_results if cr.adjudication.agreement is False
+    )
+    relevant_document_count = sum(
+        len(cr.rag_metrics.relevant_source_ids) for cr in case_results if cr.rag_metrics
+    )
+    irrelevant_document_count = sum(
+        len(cr.rag_metrics.irrelevant_source_ids)
+        for cr in case_results
+        if cr.rag_metrics
+    )
+    rag_metrics_error_count = sum(
+        1 for cr in case_results if cr.rag_metrics and cr.rag_metrics.evaluation_error
+    )
+    claim_audit_warning_case_count = sum(
+        1
+        for cr in case_results
+        if cr.rag_metrics and cr.rag_metrics.claim_audit_warnings
+    )
+    claim_audit_warning_count = sum(
+        len(cr.rag_metrics.claim_audit_warnings)
+        for cr in case_results
+        if cr.rag_metrics
+    )
+    unmapped_claim_count = sum(
+        1
+        for cr in case_results
+        if cr.rag_metrics
+        for claim in cr.rag_metrics.claim_assessments
+        if claim.answer_quote_validated is not True
+    )
 
     review_cases = [
         cr.case.case_id for cr in case_results if cr.requires_human_review()
     ]
+    by_tag = _aggregate_by_tag(case_results)
 
     return ReportSummary(
         dataset_version=dataset_version,
         pipeline_version=pipeline_version(),
         prompt_version=effective_prompt_version,
+        rag_metrics_prompt_version=RAG_METRICS_PROMPT_VERSION,
         generator_model=config.generator_model,
         primary_grader_model=config.primary_grader_model,
         adjudicator_model=config.adjudicator_model,
+        rag_metrics_model=config.rag_metrics_model,
         run_date=effective_run_date,
         total_cases=total,
-        pass_rate=passed / total,
-        weighted_healthbench_score=sum(weighted_scores) / total,
-        under_triage_rate=under_triage / total,
-        severe_under_triage_rate=severe_under_triage / total,
+        healthbench_graded_cases=graded_count,
+        pass_rate=pass_rate,
+        weighted_healthbench_score=weighted_healthbench_score,
+        under_triage_rate=under_triage_rate,
+        severe_under_triage_rate=severe_under_triage_rate,
         emergency_sensitivity=emergency_sensitivity,
-        unsupported_claim_rate=responses_with_flagged_claims / total,
-        responses_with_grader_flagged_claims_rate=responses_with_flagged_claims / total,
-        grader_flagged_claim_count=grader_flagged_claim_count,
-        claim_checks_total=claim_checks_total,
-        claims_supported_by_excerpt=claims_supported_by_excerpt,
-        claim_excerpt_support_rate=(
-            claims_supported_by_excerpt / claim_checks_total
-            if claim_checks_total
-            else None
-        ),
-        citation_count=citation_count,
-        resolved_citation_count=resolved_citation_count,
-        citation_target_resolution_rate=(
-            resolved_citation_count / citation_count if citation_count else None
-        ),
-        displayed_source_count=displayed_source_count,
-        sources_with_url_count=sources_with_url_count,
-        displayed_sources_with_url_rate=(
-            sources_with_url_count / displayed_source_count
-            if displayed_source_count
-            else None
-        ),
-        # The harness currently sends stored excerpts to Luna/Terra and does
-        # not fetch/read entire publications. None is the only truthful value.
-        full_source_content_verification_rate=None,
-        adjudication_rate=adjudicated / total,
-        disagreement_count=disagreements,
+        adjudication_rate=adjudication_rate,
+        disagreement_count=disagreement_count,
+        rag_metric_aggregates=rag_metric_aggregates,
+        relevant_document_count=relevant_document_count,
+        irrelevant_document_count=irrelevant_document_count,
+        rag_metrics_error_count=rag_metrics_error_count,
+        claim_audit_warning_case_count=claim_audit_warning_case_count,
+        claim_audit_warning_count=claim_audit_warning_count,
+        unmapped_claim_count=unmapped_claim_count,
         cases_requiring_human_review=review_cases,
+        by_tag=by_tag,
     )
 
 
 def _sanitized_case_entry(case_result: CaseResult) -> dict:
-    return {
+    entry = {
         "case_id": case_result.case.case_id,
         "source_dataset": case_result.case.source_dataset,
         "tags": case_result.case.tags,
         "resolved_role": case_result.pipeline_response.resolved_role,
-        "weighted_score": round(case_result.weighted_score, 4),
-        "overall_pass": case_result.overall_pass,
-        "adjudicated": case_result.adjudication.triggered,
-        "trigger_reasons": case_result.adjudication.trigger_reasons,
-        "agreement": case_result.adjudication.agreement,
-        "deterministic_pass": case_result.deterministic.deterministic_pass,
-        "failure_reasons": case_result.deterministic.failure_reasons,
-        "expected_urgency_level": case_result.deterministic.expected_urgency_level,
-        "actual_urgency_level": case_result.deterministic.actual_urgency_level,
-        "potential_harm_level": case_result.adjudication.final_grade.potential_harm_level,
-        "confidence": case_result.adjudication.final_grade.confidence,
         "requires_human_review": case_result.requires_human_review(),
     }
+    if (
+        case_result.adjudication
+        and case_result.deterministic
+        and case_result.weighted_score is not None
+        and case_result.overall_pass is not None
+    ):
+        entry["healthbench"] = {
+            "weighted_score": round(case_result.weighted_score, 4),
+            "overall_pass": case_result.overall_pass,
+            "adjudication_triggered": case_result.adjudication.triggered,
+            "adjudication_completed": (
+                case_result.adjudication.triggered
+                and not case_result.adjudication.adjudication_skipped
+                and case_result.adjudication.adjudication_error is None
+            ),
+            "trigger_reasons": case_result.adjudication.trigger_reasons,
+            "agreement": case_result.adjudication.agreement,
+            "adjudication_skipped": case_result.adjudication.adjudication_skipped,
+            "adjudication_error": bool(case_result.adjudication.adjudication_error),
+            "deterministic_pass": case_result.deterministic.deterministic_pass,
+            "failure_reasons": case_result.deterministic.failure_reasons,
+            "expected_urgency_level": case_result.deterministic.expected_urgency_level,
+            "actual_urgency_level": case_result.deterministic.actual_urgency_level,
+            "potential_harm_level": case_result.adjudication.final_grade.potential_harm_level,
+            "grader_confidence": case_result.adjudication.final_grade.confidence,
+            "unvalidated_rubric_evidence_count": sum(
+                1
+                for result in case_result.adjudication.final_grade.rubric_results
+                if result.answer_evidence_validated is False
+            ),
+        }
+    if case_result.rag_metrics:
+        entry["rag_metrics"] = {
+            name: {
+                "score": getattr(case_result.rag_metrics, name).score,
+                "applicable": getattr(case_result.rag_metrics, name).applicable,
+            }
+            for metrics in _RAG_METRIC_TIERS.values()
+            for name, _ in metrics
+        }
+        entry["retrieved_document_split"] = {
+            "relevant": len(case_result.rag_metrics.relevant_source_ids),
+            "irrelevant": len(case_result.rag_metrics.irrelevant_source_ids),
+        }
+        entry["claim_audit"] = {
+            "material_claims": sum(
+                claim.material for claim in case_result.rag_metrics.claim_assessments
+            ),
+            "citation_pairs": len(case_result.rag_metrics.citation_assessments),
+            "error": bool(case_result.rag_metrics.claim_audit_error),
+            "warning_count": len(case_result.rag_metrics.claim_audit_warnings),
+        }
+        entry["gold_answer_provenance"] = case_result.rag_metrics.gold_answer_provenance
+        entry["rag_metrics_error"] = bool(case_result.rag_metrics.evaluation_error)
+    return entry
+
+
+def _rag_metric_lines(summary: ReportSummary) -> list[str]:
+    lines = ["## Tiered RAG quality metrics", ""]
+    if not summary.rag_metric_aggregates:
+        return lines + ["No completed RAG metric results were available.", ""]
+    lines.extend(
+        [
+            f"Document split: {summary.relevant_document_count} relevant, "
+            f"{summary.irrelevant_document_count} irrelevant/distractor. "
+            "Relevance is judged from stored excerpts before dependent metrics.",
+            "",
+        ]
+    )
+    for tier, metrics in _RAG_METRIC_TIERS.items():
+        lines.extend([f"### {tier}", ""])
+        for name, label in metrics:
+            aggregate = summary.rag_metric_aggregates.get(name)
+            if aggregate and aggregate.average_score is not None:
+                qualification = (
+                    "Sufficient sample"
+                    if aggregate.status == "sufficient"
+                    else "PROVISIONAL - insufficient sample"
+                )
+                lines.append(
+                    f"- {label}: {aggregate.average_score:.3f} "
+                    f"({aggregate.applicable_cases}/{aggregate.total_cases} applicable cases; "
+                    f"{aggregate.assessment_count} assessed items; {qualification})"
+                )
+            else:
+                lines.append(f"- {label}: n/a (no applicable cases)")
+        lines.append("")
+    if summary.rag_metrics_error_count:
+        lines.extend(
+            [
+                f"RAG metric judge errors: {summary.rag_metrics_error_count} case(s). "
+                "These cases are excluded from metric denominators, not scored zero.",
+                "",
+            ]
+        )
+    if summary.claim_audit_warning_case_count:
+        lines.extend(
+            [
+                f"Claim-audit warnings: {summary.claim_audit_warning_count} across "
+                f"{summary.claim_audit_warning_case_count} case(s). "
+                f"Unmapped claims excluded from claim-level denominators: "
+                f"{summary.unmapped_claim_count}.",
+                "",
+            ]
+        )
+    return lines
+
+
+def _healthbench_lines(summary: ReportSummary) -> list[str]:
+    lines = ["## HealthBench rubric scoring", ""]
+    if not summary.healthbench_graded_cases:
+        return lines + ["No completed HealthBench rubric grades were available.", ""]
+    lines.extend(
+        [
+            "The weighted score is computed locally from the physician-authored rubric "
+            "points. The graders classify each exact rubric against the captured FlynnMed "
+            "answer; they do not generate or compare against their own answer.",
+            "",
+            f"- Graded cases: {summary.healthbench_graded_cases}/{summary.total_cases}",
+            f"- Pass rate: {summary.pass_rate:.1%}",
+            f"- Weighted HealthBench score: {summary.weighted_healthbench_score:.3f}",
+            f"- Under-triage rate: {summary.under_triage_rate:.1%}",
+            f"- Severe under-triage rate: {summary.severe_under_triage_rate:.1%}",
+            (
+                f"- Emergency sensitivity: {summary.emergency_sensitivity:.1%}"
+                if summary.emergency_sensitivity is not None
+                else "- Emergency sensitivity: n/a (no emergency-expected cases)"
+            ),
+            f"- Secondary adjudication rate: {summary.adjudication_rate:.1%}",
+            f"- Primary/adjudicator disagreements: {summary.disagreement_count}",
+            "",
+        ]
+    )
+    return lines
+
+
+def _by_tag_lines(summary: ReportSummary) -> list[str]:
+    lines = ["## HealthBench scoring by tag", ""]
+    graded_tags = {
+        tag: agg for tag, agg in summary.by_tag.items() if agg.healthbench_graded_cases
+    }
+    if not graded_tags:
+        return lines + ["No tagged cases had a completed HealthBench grade.", ""]
+    lines.append(
+        "A case can carry more than one tag, so rows do not sum to the overall totals."
+    )
+    lines.append("")
+    lines.append("| Tag | Graded cases | Pass rate | Weighted score | Under-triage | Severe under-triage |")
+    lines.append("|---|---|---|---|---|---|")
+    for tag, agg in sorted(graded_tags.items()):
+        lines.append(
+            f"| `{tag}` | {agg.healthbench_graded_cases}/{agg.case_count} | "
+            f"{agg.pass_rate:.1%} | {agg.weighted_healthbench_score:.3f} | "
+            f"{agg.under_triage_rate:.1%} | {agg.severe_under_triage_rate:.1%} |"
+        )
+    lines.append("")
+    return lines
 
 
 def _markdown_report(summary: ReportSummary, case_results: List[CaseResult]) -> str:
@@ -201,60 +468,20 @@ def _markdown_report(summary: ReportSummary, case_results: List[CaseResult]) -> 
         "",
         f"- Dataset version: `{summary.dataset_version}`",
         f"- Pipeline version (git commit): `{summary.pipeline_version}`",
-        f"- Grading prompt version: `{summary.prompt_version}`",
+        f"- HealthBench grading prompt version: `{summary.prompt_version}`",
+        f"- RAG metrics prompt version: `{summary.rag_metrics_prompt_version}`",
         f"- Generator model: `{summary.generator_model}`",
-        f"- Primary grader model (Luna): `{summary.primary_grader_model}`",
-        f"- Adjudicator model (Terra): `{summary.adjudicator_model}`",
+        f"- Primary HealthBench grader: `{summary.primary_grader_model}`",
+        f"- Independent adjudicator: `{summary.adjudicator_model}`",
+        f"- RAG metrics judge model: `{summary.rag_metrics_model}`",
         f"- Run date: `{summary.run_date}`",
         f"- Total cases: {summary.total_cases}",
         "",
-        "## Headline metrics",
-        "",
-        f"- Pass rate: {summary.pass_rate:.1%}",
-        f"- Weighted HealthBench score: {summary.weighted_healthbench_score:.3f}",
-        f"- Under-triage rate: {summary.under_triage_rate:.1%}",
-        f"- Severe under-triage rate: {summary.severe_under_triage_rate:.1%}",
-        (
-            f"- Emergency sensitivity: {summary.emergency_sensitivity:.1%}"
-            if summary.emergency_sensitivity is not None
-            else "- Emergency sensitivity: n/a (no cases expected an emergency disposition)"
-        ),
-        (
-            "- Responses with at least one grader-flagged claim: "
-            f"{summary.responses_with_grader_flagged_claims_rate:.1%} "
-            f"({summary.grader_flagged_claim_count} flagged claim(s))"
-        ),
-        (
-            "- Stored-excerpt support among pipeline-checked claims: "
-            f"{summary.claim_excerpt_support_rate:.1%} "
-            f"({summary.claims_supported_by_excerpt}/{summary.claim_checks_total})"
-            if summary.claim_excerpt_support_rate is not None
-            else "- Stored-excerpt support among pipeline-checked claims: n/a (no claims checked)"
-        ),
-        (
-            "- Displayed citation targets resolving to their source records: "
-            f"{summary.citation_target_resolution_rate:.1%} "
-            f"({summary.resolved_citation_count}/{summary.citation_count})"
-            if summary.citation_target_resolution_rate is not None
-            else "- Displayed citation target resolution: n/a (no citations displayed)"
-        ),
-        (
-            "- Displayed source records containing a URL: "
-            f"{summary.displayed_sources_with_url_rate:.1%} "
-            f"({summary.sources_with_url_count}/{summary.displayed_source_count})"
-            if summary.displayed_sources_with_url_rate is not None
-            else "- Displayed source records containing a URL: n/a (no sources displayed)"
-        ),
-        "- Full-source content verification: not performed (stored excerpts only)",
-        f"- Adjudication rate (Terra invoked): {summary.adjudication_rate:.1%}",
-        f"- Luna/Terra disagreements: {summary.disagreement_count}",
-        "",
-        "Evidence metric definitions: a grader-flagged claim is an LLM-judge signal; "
-        "stored-excerpt support measures only claims checked against the retrieved excerpts; "
-        "citation resolution verifies the displayed link maps to the supplied source record. "
-        "None of these establishes that an entire external publication was independently read.",
-        "",
     ]
+
+    lines.extend(_healthbench_lines(summary))
+    lines.extend(_by_tag_lines(summary))
+    lines.extend(_rag_metric_lines(summary))
 
     if summary.cases_requiring_human_review:
         lines.append("## Cases requiring qualified clinician review")
@@ -263,12 +490,28 @@ def _markdown_report(summary: ReportSummary, case_results: List[CaseResult]) -> 
             match = next(
                 (cr for cr in case_results if cr.case.case_id == case_id), None
             )
-            reasons = (
-                ", ".join(match.deterministic.failure_reasons)
-                if match and match.deterministic.failure_reasons
-                else "low confidence / disagreement"
-            )
-            lines.append(f"- `{case_id}` -- {reasons}")
+            reasons = []
+            if match and match.deterministic and match.deterministic.failure_reasons:
+                reasons.extend(match.deterministic.failure_reasons)
+            if match and match.adjudication and match.adjudication.agreement is False:
+                reasons.append("primary/adjudicator disagreement")
+            if match and match.adjudication and match.adjudication.adjudication_error:
+                reasons.append("secondary adjudication failed")
+            if (
+                match
+                and match.adjudication
+                and any(
+                    result.answer_evidence_validated is False
+                    for result in match.adjudication.final_grade.rubric_results
+                )
+            ):
+                reasons.append("unvalidated rubric evidence")
+            if match and match.rag_metrics and match.rag_metrics.evaluation_error:
+                reasons.append("RAG metric judge error")
+            if not reasons:
+                reasons.append("low confidence or low monitored RAG metric")
+            reason = ", ".join(reasons)
+            lines.append(f"- `{case_id}` -- {reason}")
         lines.append("")
 
     if summary.notes:

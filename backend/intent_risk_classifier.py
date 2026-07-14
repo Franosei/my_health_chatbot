@@ -69,7 +69,7 @@ _CRISIS_PATTERNS: List[re.Pattern] = [
     # Major trauma / overdose
     re.compile(
         r"(overdosed?|taken\s*too\s*many\s*(pills|tablets)|"
-        r"unconscious|unresponsive|not\s*waking)",
+        r"unconscious|unresponsive|not\s*waking|collaps(?:e|ed|ing))",
         re.IGNORECASE,
     ),
     # Meningitis

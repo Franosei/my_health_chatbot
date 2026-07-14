@@ -12,7 +12,10 @@ from backend.anonymizer import DocumentAnonymizer
 from backend.anonymization_agent import AnonymizationAgent
 from backend.duplicate_detection_agent import DuplicateDetectionAgent
 from backend.document_relevance_agent import DocumentRelevanceAgent
-from backend.document_extractor import extract_health_data_from_document, extract_health_data_from_images
+from backend.document_extractor import (
+    extract_health_data_from_document,
+    extract_health_data_from_images,
+)
 from backend.clinical_orchestrator import ClinicalOrchestrator
 from backend.image_analysis_agent import ImageAnalysisAgent, ImageAnalysisError
 from backend.image_generator import ImageGenerator
@@ -28,13 +31,21 @@ from backend.pubmed_search import PubMedCentralSearcher
 from backend.query_expander import QueryExpander
 from backend.summarizer import LLMHelper
 from backend.user_store import UserStore
-from backend.clinical_context_guard import ClinicalContextDecision, validate_generated_answer
+from backend.clinical_context_guard import (
+    ClinicalContextDecision,
+    validate_generated_answer,
+)
 from backend.agentic_health_contract import (
     remove_internal_language,
     remove_unknown_citations,
     validate_user_facing_language,
 )
-from backend.utils import build_excerpt, extract_text_from_pdf, render_pdf_pages_to_images, render_vital_for_prompt
+from backend.utils import (
+    build_excerpt,
+    extract_text_from_pdf,
+    render_pdf_pages_to_images,
+    render_vital_for_prompt,
+)
 
 
 class RAGEngine:
@@ -220,12 +231,16 @@ class RAGEngine:
         """
         normalized_user = user.strip().lower() if user else None
         explicit_upload_paths = file_paths is not None
-        documents = [Path(path) for path in (file_paths or self._default_document_paths(normalized_user))]
+        documents = [
+            Path(path)
+            for path in (file_paths or self._default_document_paths(normalized_user))
+        ]
         indexed_documents = []
-        known_uploads = {
-            item.get("file")
-            for item in UserStore.get_uploads(normalized_user)
-        } if normalized_user else set()
+        known_uploads = (
+            {item.get("file") for item in UserStore.get_uploads(normalized_user)}
+            if normalized_user
+            else set()
+        )
 
         for path in documents:
             if not path.exists() or path.suffix.lower() != ".pdf":
@@ -260,9 +275,13 @@ class RAGEngine:
                     continue
 
                 if normalized_user:
-                    existing_summaries = UserStore.get_document_summaries(normalized_user)
+                    existing_summaries = UserStore.get_document_summaries(
+                        normalized_user
+                    )
                     duplicate_match = (
-                        self._duplicate_agent.check(raw_text, path.name, existing_summaries)
+                        self._duplicate_agent.check(
+                            raw_text, path.name, existing_summaries
+                        )
                         if existing_summaries
                         else None
                     )
@@ -290,7 +309,10 @@ class RAGEngine:
                     summary = self.llm.summarize_user_health_record(anonymized)
                 except Exception as exc:
                     summary_error = f"Document summary failed: {exc}"
-                    summary = build_excerpt(raw_text, max_chars=900) or "Uploaded document could not be summarized."
+                    summary = (
+                        build_excerpt(raw_text, max_chars=900)
+                        or "Uploaded document could not be summarized."
+                    )
 
             memory_key = f"{normalized_user or 'global'}:upload:{path.name}"
             self.memory.upsert_entries(
@@ -332,16 +354,27 @@ class RAGEngine:
                     # text-based extraction comes back empty even though the page clearly
                     # has data. Fall back to reading the rendered page images directly.
                     has_any_data = any(
-                        extracted.get(key) for key in ("vitals", "medications", "allergies", "conditions")
+                        extracted.get(key)
+                        for key in ("vitals", "medications", "allergies", "conditions")
                     )
                     if not has_any_data:
                         try:
                             page_images = render_pdf_pages_to_images(path)
-                            vision_extracted = extract_health_data_from_images(page_images, path.name)
+                            vision_extracted = extract_health_data_from_images(
+                                page_images, path.name
+                            )
                         except Exception as exc:
-                            vision_extracted = {"extraction_errors": [f"Vision fallback failed: {exc}"]}
+                            vision_extracted = {
+                                "extraction_errors": [f"Vision fallback failed: {exc}"]
+                            }
                         vision_has_data = any(
-                            vision_extracted.get(key) for key in ("vitals", "medications", "allergies", "conditions")
+                            vision_extracted.get(key)
+                            for key in (
+                                "vitals",
+                                "medications",
+                                "allergies",
+                                "conditions",
+                            )
                         )
                         if vision_has_data:
                             vision_extracted["extraction_method"] = "vision_fallback"
@@ -349,13 +382,19 @@ class RAGEngine:
                         else:
                             extracted.setdefault("extraction_errors", []).extend(
                                 vision_extracted.get("extraction_errors")
-                                or ["Vision-based fallback extraction also found no structured health data."]
+                                or [
+                                    "Vision-based fallback extraction also found no structured health data."
+                                ]
                             )
 
                     # Vitals / lab results -- content-based dedup (type + value + date)
                     existing_vitals = UserStore.get_vitals(normalized_user, limit=None)
                     existing_keys = {
-                        (v.get("type", "").lower(), v.get("value", "").lower(), v.get("recorded_on", ""))
+                        (
+                            v.get("type", "").lower(),
+                            v.get("value", "").lower(),
+                            v.get("recorded_on", ""),
+                        )
                         for v in existing_vitals
                     }
                     for vital in extracted.get("vitals", []):
@@ -367,45 +406,60 @@ class RAGEngine:
                         if (vtype, vval, vdate) in existing_keys:
                             continue
                         existing_keys.add((vtype, vval, vdate))
-                        UserStore.save_vitals_entry(normalized_user, {
-                            "type": vtype,
-                            "value": str(vital.get("value") or "").strip(),
-                            "unit": str(vital.get("unit") or "").strip(),
-                            "recorded_on": vdate,
-                            "notes": (
-                                f"{vital.get('notes', '').strip()} [{source_note}]"
-                                if vital.get("notes") else f"[{source_note}]"
-                            ).strip(),
-                        })
+                        UserStore.save_vitals_entry(
+                            normalized_user,
+                            {
+                                "type": vtype,
+                                "value": str(vital.get("value") or "").strip(),
+                                "unit": str(vital.get("unit") or "").strip(),
+                                "recorded_on": vdate,
+                                "notes": (
+                                    f"{vital.get('notes', '').strip()} [{source_note}]"
+                                    if vital.get("notes")
+                                    else f"[{source_note}]"
+                                ).strip(),
+                            },
+                        )
 
                     # Medications -- UserStore.save_medication deduplicates by name
                     for med in extracted.get("medications", []):
                         if not str(med.get("name") or "").strip():
                             continue
-                        UserStore.save_medication(normalized_user, {
-                            "name": str(med.get("name") or "").strip(),
-                            "dose": str(med.get("dose") or "").strip(),
-                            "schedule": str(med.get("schedule") or "").strip(),
-                            "reason": str(med.get("reason") or "").strip(),
-                            "started_on": str(med.get("started_on") or "").strip(),
-                            "notes": (
-                                f"{med.get('notes', '').strip()} [{source_note}]"
-                                if med.get("notes") else f"[{source_note}]"
-                            ).strip(),
-                        })
+                        UserStore.save_medication(
+                            normalized_user,
+                            {
+                                "name": str(med.get("name") or "").strip(),
+                                "dose": str(med.get("dose") or "").strip(),
+                                "schedule": str(med.get("schedule") or "").strip(),
+                                "reason": str(med.get("reason") or "").strip(),
+                                "started_on": str(med.get("started_on") or "").strip(),
+                                "notes": (
+                                    f"{med.get('notes', '').strip()} [{source_note}]"
+                                    if med.get("notes")
+                                    else f"[{source_note}]"
+                                ).strip(),
+                            },
+                        )
 
                     # Allergies -- UserStore.save_allergy deduplicates by name
                     for allergy in extracted.get("allergies", []):
                         if not str(allergy.get("name") or "").strip():
                             continue
-                        UserStore.save_allergy(normalized_user, {
-                            "name": str(allergy.get("name") or "").strip(),
-                            "reaction": str(allergy.get("reaction") or "").strip(),
-                            "severity": str(allergy.get("severity") or "unknown").strip(),
-                            "allergy_type": str(allergy.get("allergy_type") or "other").strip(),
-                            "confirmed": bool(allergy.get("confirmed", True)),
-                            "notes": f"[{source_note}]",
-                        })
+                        UserStore.save_allergy(
+                            normalized_user,
+                            {
+                                "name": str(allergy.get("name") or "").strip(),
+                                "reaction": str(allergy.get("reaction") or "").strip(),
+                                "severity": str(
+                                    allergy.get("severity") or "unknown"
+                                ).strip(),
+                                "allergy_type": str(
+                                    allergy.get("allergy_type") or "other"
+                                ).strip(),
+                                "confirmed": bool(allergy.get("confirmed", True)),
+                                "notes": f"[{source_note}]",
+                            },
+                        )
 
                     # Conditions / past history: UserStore.save_condition deduplicates by name.
                     for condition in extracted.get("conditions", []):
@@ -414,21 +468,32 @@ class RAGEngine:
                             if not condition_name:
                                 continue
                             condition_notes = str(condition.get("notes") or "").strip()
-                            UserStore.save_condition(normalized_user, {
-                                "name": condition_name,
-                                "status": str(condition.get("status") or "unknown").strip(),
-                                "recorded_on": str(condition.get("recorded_on") or "").strip(),
-                                "notes": (
-                                    f"{condition_notes} [{source_note}]"
-                                    if condition_notes else f"[{source_note}]"
-                                ).strip(),
-                            })
+                            UserStore.save_condition(
+                                normalized_user,
+                                {
+                                    "name": condition_name,
+                                    "status": str(
+                                        condition.get("status") or "unknown"
+                                    ).strip(),
+                                    "recorded_on": str(
+                                        condition.get("recorded_on") or ""
+                                    ).strip(),
+                                    "notes": (
+                                        f"{condition_notes} [{source_note}]"
+                                        if condition_notes
+                                        else f"[{source_note}]"
+                                    ).strip(),
+                                },
+                            )
                         elif str(condition or "").strip():
-                            UserStore.save_condition(normalized_user, {
-                                "name": str(condition).strip(),
-                                "status": "unknown",
-                                "notes": f"[{source_note}]",
-                            })
+                            UserStore.save_condition(
+                                normalized_user,
+                                {
+                                    "name": str(condition).strip(),
+                                    "status": "unknown",
+                                    "notes": f"[{source_note}]",
+                                },
+                            )
 
                 UserStore.save_document_summary(
                     normalized_user,
@@ -472,15 +537,25 @@ class RAGEngine:
         clickable sources, personal context traceability, and audit metadata.
         """
         del stream
-        bundle = self._prepare_answer_bundle(question=question, user=user, chat_history=chat_history)
+        bundle = self._prepare_answer_bundle(
+            question=question, user=user, chat_history=chat_history
+        )
         if bundle["kind"] == "final":
-            return self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user)
+            return self._enrich_prebuilt_payload(
+                question=question, payload=bundle["payload"], user=user
+            )
 
         _pd = bundle.get("policy_decision")
         clinical_decision = bundle.get("clinical_decision")
         if clinical_decision and clinical_decision.deterministic_response:
-            role_key = bundle.get("role_config").role_key if bundle.get("role_config") else "patient"
-            raw_answer = clinical_decision.render_markdown(role_key, bundle["combined_sources"])
+            role_key = (
+                bundle.get("role_config").role_key
+                if bundle.get("role_config")
+                else "patient"
+            )
+            raw_answer = clinical_decision.render_markdown(
+                role_key, bundle["combined_sources"]
+            )
         else:
             raw_answer = self.llm.answer_question(
                 question=question,
@@ -501,8 +576,14 @@ class RAGEngine:
                 ),
                 selected_skills=bundle.get("selected_skills", []),
                 current_location=bundle.get("current_location", ""),
+                task_mode=bundle.get("task_mode"),
+                response_completion_guidance=bundle.get(
+                    "response_completion_guidance", ""
+                ),
             )
-        return self._finalize_answer_payload(question=question, raw_answer=raw_answer, bundle=bundle)
+        return self._finalize_answer_payload(
+            question=question, raw_answer=raw_answer, bundle=bundle
+        )
 
     def stream_user_question_events(
         self,
@@ -528,14 +609,22 @@ class RAGEngine:
             if allow_generated_media
             else False
         )
-        needs_video = self._video_generator.detect_video_request(question) if allow_generated_media else False
+        needs_video = (
+            self._video_generator.detect_video_request(question)
+            if allow_generated_media
+            else False
+        )
         # Video takes priority over static illustration when both match
         if needs_video:
             needs_illustration = False
 
-        bundle = self._prepare_answer_bundle(question=question, user=user, chat_history=chat_history)
+        bundle = self._prepare_answer_bundle(
+            question=question, user=user, chat_history=chat_history
+        )
         if bundle["kind"] == "final":
-            payload = self._enrich_prebuilt_payload(question=question, payload=bundle["payload"], user=user)
+            payload = self._enrich_prebuilt_payload(
+                question=question, payload=bundle["payload"], user=user
+            )
             if extra_trace_metadata:
                 payload.setdefault("trace", {}).update(extra_trace_metadata)
             yield {
@@ -555,8 +644,12 @@ class RAGEngine:
             )
             if extra_trace_metadata:
                 payload.setdefault("trace", {}).update(extra_trace_metadata)
-                payload["image_analysis"] = extra_trace_metadata.get("image_analysis", {})
-                payload["image_original_question"] = extra_trace_metadata.get("image_original_question", "")
+                payload["image_analysis"] = extra_trace_metadata.get(
+                    "image_analysis", {}
+                )
+                payload["image_original_question"] = extra_trace_metadata.get(
+                    "image_original_question", ""
+                )
             yield {"type": "final", "payload": payload}
             return
 
@@ -568,8 +661,14 @@ class RAGEngine:
         policy_decision = bundle.get("policy_decision")
         clinical_decision = bundle.get("clinical_decision")
         if clinical_decision and clinical_decision.deterministic_response:
-            role_key = bundle.get("role_config").role_key if bundle.get("role_config") else "patient"
-            deterministic_answer = clinical_decision.render_markdown(role_key, bundle["combined_sources"])
+            role_key = (
+                bundle.get("role_config").role_key
+                if bundle.get("role_config")
+                else "patient"
+            )
+            deterministic_answer = clinical_decision.render_markdown(
+                role_key, bundle["combined_sources"]
+            )
             streamed_chunks.append(deterministic_answer)
         else:
             for chunk in self.llm.answer_question(
@@ -581,8 +680,12 @@ class RAGEngine:
                 source_briefings=bundle["combined_sources"],
                 longitudinal_memory=bundle["longitudinal_memory_summary"],
                 role_config=bundle.get("role_config"),
-                escalation_banner=policy_decision.escalation_banner if policy_decision else "",
-                policy_context_note="\n".join(policy_decision.context_notes) if policy_decision else "",
+                escalation_banner=policy_decision.escalation_banner
+                if policy_decision
+                else "",
+                policy_context_note="\n".join(policy_decision.context_notes)
+                if policy_decision
+                else "",
                 clinical_context=(
                     bundle.get("clinical_context").as_prompt_block()
                     if bundle.get("clinical_context")
@@ -591,6 +694,10 @@ class RAGEngine:
                 ),
                 selected_skills=bundle.get("selected_skills", []),
                 current_location=bundle.get("current_location", ""),
+                task_mode=bundle.get("task_mode"),
+                response_completion_guidance=bundle.get(
+                    "response_completion_guidance", ""
+                ),
             ):
                 streamed_chunks.append(chunk)
 
@@ -603,12 +710,16 @@ class RAGEngine:
 
         if needs_video and user:
             from backend.user_store import UserStore as _US
+
             last_video_at = _US.get_last_video_generated_at(user)
             rate = self._video_generator.check_rate_limit(last_video_at)
             if not rate.allowed:
                 video_rate_limit_msg = rate.message
             else:
-                yield {"type": "status", "message": "Generating Sora-2 video (this may take a moment)..."}
+                yield {
+                    "type": "status",
+                    "message": "Generating Sora-2 video (this may take a moment)...",
+                }
                 try:
                     video_result = self._video_generator.generate_video(
                         question=question,
@@ -637,7 +748,9 @@ class RAGEngine:
         )
         if illustration:
             payload["image_url"] = illustration.image_url
-            payload["image_bytes"] = illustration.image_bytes  # bytes when gpt-image-1, None otherwise
+            payload["image_bytes"] = (
+                illustration.image_bytes
+            )  # bytes when gpt-image-1, None otherwise
             payload["image_caption"] = illustration.caption
         if video_result:
             payload["video_url"] = video_result.video_url
@@ -650,29 +763,34 @@ class RAGEngine:
         # before the persisted response is corrected.
         yield {"type": "token", "delta": payload.get("answer_markdown", raw_answer)}
 
-        # Generate patient-specific follow-up questions (fast aux call, non-blocking)
-        try:
-            role_config = bundle.get("role_config")
-            _norm_user = (user or "").strip().lower()
-            follow_up_context = self._build_follow_up_patient_context(
-                vitals=UserStore.get_vitals(_norm_user, limit=None),
-                medications=UserStore.get_medications(_norm_user),
-                allergies=UserStore.get_allergies(_norm_user),
-                conditions=UserStore.get_conditions(_norm_user),
-                symptom_logs=UserStore.get_symptom_logs(_norm_user, limit=None),
-            )
-            follow_up_questions = self.llm.generate_follow_up_questions(
-                question=question,
-                answer=raw_answer,
-                chat_history=chat_history,
-                user_profile=bundle.get("user_profile", {}),
-                patient_context=follow_up_context,
-                role_key=role_config.role_key if role_config else "patient",
-            )
-            payload["follow_up_questions"] = follow_up_questions
-        except Exception as exc:
-            print(f"Follow-up generation failed: {exc}")
+        # Literal transformations are complete outputs; generated health
+        # follow-ups would violate the requested task and can introduce facts.
+        task_mode = bundle.get("task_mode")
+        if task_mode and task_mode.is_transformation:
             payload["follow_up_questions"] = []
+        else:
+            try:
+                role_config = bundle.get("role_config")
+                _norm_user = (user or "").strip().lower()
+                follow_up_context = self._build_follow_up_patient_context(
+                    vitals=UserStore.get_vitals(_norm_user, limit=None),
+                    medications=UserStore.get_medications(_norm_user),
+                    allergies=UserStore.get_allergies(_norm_user),
+                    conditions=UserStore.get_conditions(_norm_user),
+                    symptom_logs=UserStore.get_symptom_logs(_norm_user, limit=None),
+                )
+                follow_up_questions = self.llm.generate_follow_up_questions(
+                    question=question,
+                    answer=raw_answer,
+                    chat_history=chat_history,
+                    user_profile=bundle.get("user_profile", {}),
+                    patient_context=follow_up_context,
+                    role_key=role_config.role_key if role_config else "patient",
+                )
+                payload["follow_up_questions"] = follow_up_questions
+            except Exception as exc:
+                print(f"Follow-up generation failed: {exc}")
+                payload["follow_up_questions"] = []
 
         yield {"type": "final", "payload": payload}
 
@@ -690,7 +808,10 @@ class RAGEngine:
         workflow as chat, after a strict medical-image intake screen.
         """
         normalized_user = user.strip().lower() if user else None
-        yield {"type": "status", "message": "Checking whether the image is clinically relevant..."}
+        yield {
+            "type": "status",
+            "message": "Checking whether the image is clinically relevant...",
+        }
 
         profile = UserStore.get_user_profile(normalized_user) if normalized_user else {}
         try:
@@ -717,7 +838,10 @@ class RAGEngine:
             }
             return
 
-        yield {"type": "status", "message": "Searching clinical guidance and research for the image findings..."}
+        yield {
+            "type": "status",
+            "message": "Searching clinical guidance and research for the image findings...",
+        }
         clinical_question = self._image_analysis_agent.build_clinical_question(
             visual_result=visual_result,
             user_note=user_note,
@@ -760,15 +884,51 @@ class RAGEngine:
         # (~2-3 s later), so restoration is always complete in time.
         with ThreadPoolExecutor(max_workers=9) as _pre_exec:
             _restore_f = _pre_exec.submit(self.restore_user_context, normalized_user)
-            _memory_f = _pre_exec.submit(self.get_combined_longitudinal_memory, normalized_user) if normalized_user else None
-            _profile_f = _pre_exec.submit(UserStore.get_user_profile, normalized_user) if normalized_user else None
-            _med_f = _pre_exec.submit(UserStore.get_medications, normalized_user) if normalized_user else None
-            _symptom_f = _pre_exec.submit(UserStore.get_symptom_logs, normalized_user, None) if normalized_user else None
-            _triage_f = _pre_exec.submit(UserStore.get_triage_summaries, normalized_user, None) if normalized_user else None
-            _allergy_f = _pre_exec.submit(UserStore.get_allergies, normalized_user) if normalized_user else None
-            _condition_f = _pre_exec.submit(UserStore.get_conditions, normalized_user) if normalized_user else None
-            _vitals_f = _pre_exec.submit(UserStore.get_vitals, normalized_user) if normalized_user else None
-            _docs_f = _pre_exec.submit(UserStore.get_document_summaries, normalized_user) if normalized_user else None
+            _memory_f = (
+                _pre_exec.submit(self.get_combined_longitudinal_memory, normalized_user)
+                if normalized_user
+                else None
+            )
+            _profile_f = (
+                _pre_exec.submit(UserStore.get_user_profile, normalized_user)
+                if normalized_user
+                else None
+            )
+            _med_f = (
+                _pre_exec.submit(UserStore.get_medications, normalized_user)
+                if normalized_user
+                else None
+            )
+            _symptom_f = (
+                _pre_exec.submit(UserStore.get_symptom_logs, normalized_user, None)
+                if normalized_user
+                else None
+            )
+            _triage_f = (
+                _pre_exec.submit(UserStore.get_triage_summaries, normalized_user, None)
+                if normalized_user
+                else None
+            )
+            _allergy_f = (
+                _pre_exec.submit(UserStore.get_allergies, normalized_user)
+                if normalized_user
+                else None
+            )
+            _condition_f = (
+                _pre_exec.submit(UserStore.get_conditions, normalized_user)
+                if normalized_user
+                else None
+            )
+            _vitals_f = (
+                _pre_exec.submit(UserStore.get_vitals, normalized_user)
+                if normalized_user
+                else None
+            )
+            _docs_f = (
+                _pre_exec.submit(UserStore.get_document_summaries, normalized_user)
+                if normalized_user
+                else None
+            )
 
             _restore_f.result()
             longitudinal_memory_summary = _memory_f.result() if _memory_f else ""
@@ -783,6 +943,7 @@ class RAGEngine:
 
         # Build a fast relevance graph from prior records (< 50 ms, no LLM).
         from backend.context_graph import build_context_graph
+
         context_graph = build_context_graph(
             question=question,
             conditions=conditions,
@@ -936,20 +1097,27 @@ class RAGEngine:
         bundle: Dict,
         run_claim_check: bool = True,
     ) -> Dict:
-        clinical_context: Optional[ClinicalContextDecision] = bundle.get("clinical_context")
+        clinical_context: Optional[ClinicalContextDecision] = bundle.get(
+            "clinical_context"
+        )
+        task_mode = bundle.get("task_mode")
         context_validation = validate_generated_answer(raw_answer, clinical_context)
         if not context_validation["valid"] and clinical_context:
             raw_answer = clinical_context.correction_message()
 
         # Citation existence is a pre-display requirement, not merely an audit.
         # Unknown model-generated markers are removed before links are rendered.
-        source_ids = [source.get("source_id", "") for source in bundle.get("combined_sources", [])]
+        source_ids = [
+            source.get("source_id", "") for source in bundle.get("combined_sources", [])
+        ]
         raw_answer = remove_unknown_citations(raw_answer, source_ids)
 
         language_valid, language_violations = validate_user_facing_language(raw_answer)
         if not language_valid:
             raw_answer = remove_internal_language(raw_answer)
-            language_valid, remaining_violations = validate_user_facing_language(raw_answer)
+            language_valid, remaining_violations = validate_user_facing_language(
+                raw_answer
+            )
             if remaining_violations or not raw_answer:
                 raw_answer = (
                     "I need a little more information to answer safely. Please provide the specific "
@@ -988,16 +1156,21 @@ class RAGEngine:
         evidence_quality_report = bundle.get("evidence_quality_report", {})
 
         # Build triage summary first so safety netting can use its LLM-derived triggers
-        triage_summary = self._build_triage_summary(
-            question=question,
-            answer_markdown=answer_markdown,
-            intent=intent,
-            policy_decision=policy_decision,
-            clinical_decision=clinical_decision,
-        )
+        if task_mode and task_mode.is_transformation:
+            triage_summary = build_default_triage(intent, policy_decision)
+        else:
+            triage_summary = self._build_triage_summary(
+                question=question,
+                answer_markdown=answer_markdown,
+                intent=intent,
+                policy_decision=policy_decision,
+                clinical_decision=clinical_decision,
+            )
 
         # Append structured safety netting block -- triggers come from triage_summary, no hardcoding
-        safety_net = self._build_safety_net_block(risk_level, triage_summary, role_config)
+        safety_net = self._build_safety_net_block(
+            risk_level, triage_summary, role_config
+        )
         if safety_net and "**Return immediately if**" not in answer_markdown:
             answer_markdown = answer_markdown + safety_net
 
@@ -1014,6 +1187,7 @@ class RAGEngine:
 
         trace_id = f"trace-{uuid4().hex[:12]}"
         from backend.evidence_ranker import EvidenceRanker
+
         tiers_present = EvidenceRanker.get_tiers_present(combined_sources)
 
         trace = {
@@ -1031,21 +1205,31 @@ class RAGEngine:
             "role_key": role_config.role_key if role_config else "patient",
             "intent_category": intent.intent_category if intent else "",
             "risk_level": intent.risk_level if intent else "routine",
-            "escalation_triggered": bool(policy_decision and policy_decision.action != "allow"),
+            "escalation_triggered": bool(
+                policy_decision and policy_decision.action != "allow"
+            ),
             "crisis_detected": intent.crisis_detected if intent else False,
             "evidence_tiers_present": tiers_present,
             "pathway_used": intent.pathway_hint if intent else "",
             "vulnerable_flags": intent.vulnerable_flags if intent else [],
-            "policy_gates_applied": policy_decision.gates_as_dicts() if policy_decision else [],
+            "policy_gates_applied": policy_decision.gates_as_dicts()
+            if policy_decision
+            else [],
             "medication_alert_count": len(medication_check.get("alerts", [])),
-            "decision_logic_version": clinical_decision.logic_version if clinical_decision else "",
-            "pathway_decision": clinical_decision.as_dict() if clinical_decision else {},
-            "rule_hits": [
-                item.as_dict() for item in clinical_decision.triggered_rules
-            ] if clinical_decision else [],
+            "decision_logic_version": clinical_decision.logic_version
+            if clinical_decision
+            else "",
+            "pathway_decision": clinical_decision.as_dict()
+            if clinical_decision
+            else {},
+            "rule_hits": [item.as_dict() for item in clinical_decision.triggered_rules]
+            if clinical_decision
+            else [],
             "guideline_references": [
                 item.as_dict() for item in clinical_decision.guideline_references
-            ] if clinical_decision else [],
+            ]
+            if clinical_decision
+            else [],
             "evidence_quality": evidence_quality_report,
             "claim_alignment": claim_alignment,
             "clinical_context": clinical_context.as_dict() if clinical_context else {},
@@ -1054,6 +1238,13 @@ class RAGEngine:
                 "valid": language_valid,
                 "violations": language_violations,
             },
+            "task_mode": task_mode.mode if task_mode else "clinical_answer",
+            "presentation_audience": (
+                task_mode.presentation_audience
+                if task_mode
+                else (role_config.role_key if role_config else "patient")
+            ),
+            "task_mode_reason": task_mode.reason if task_mode else "",
         }
         extra_trace_metadata = bundle.get("extra_trace_metadata")
         if isinstance(extra_trace_metadata, dict):
@@ -1166,11 +1357,15 @@ class RAGEngine:
 
         user_profile = UserStore.get_user_profile(normalized_user)
         from backend.role_router import RoleRouter
-        role_key = RoleRouter().resolve(
-            user_profile.get("clinical_role") or user_profile.get("role", "")
-        ).role_key
+
+        role_key = (
+            RoleRouter()
+            .resolve(user_profile.get("clinical_role") or user_profile.get("role", ""))
+            .role_key
+        )
 
         from backend.gp_summary import build_summary_pdf
+
         return build_summary_pdf(
             user_profile=user_profile,
             symptom_logs=UserStore.get_symptom_logs(normalized_user, limit=None),
@@ -1178,7 +1373,9 @@ class RAGEngine:
             uploads=UserStore.get_uploads(normalized_user),
             longitudinal_memory=self.get_combined_longitudinal_memory(normalized_user),
             role_key=role_key,
-            triage_summaries=UserStore.get_triage_summaries(normalized_user, limit=None),
+            triage_summaries=UserStore.get_triage_summaries(
+                normalized_user, limit=None
+            ),
             recent_chats=UserStore.get_chat_history(normalized_user),
             allergies=UserStore.get_allergies(normalized_user),
             conditions=UserStore.get_conditions(normalized_user),
@@ -1207,7 +1404,9 @@ class RAGEngine:
             user_profile=UserStore.get_user_profile(user),
             source_label=source_label,
         )
-        normalized_summary = self._normalize_longitudinal_memory_summary(updated_summary)
+        normalized_summary = self._normalize_longitudinal_memory_summary(
+            updated_summary
+        )
         UserStore.save_longitudinal_memory(
             user,
             normalized_summary,
@@ -1227,7 +1426,9 @@ class RAGEngine:
             return []
         return sorted(self.embedding_dir.glob("*.pdf"))
 
-    def _retrieve_pubmed_for_queries(self, queries: List[str], user: Optional[str]) -> None:
+    def _retrieve_pubmed_for_queries(
+        self, queries: List[str], user: Optional[str]
+    ) -> None:
         pending_entries = []
         article_batches: List[Tuple[str, List[Dict[str, str]]]] = []
 
@@ -1247,9 +1448,14 @@ class RAGEngine:
             for record in records:
                 article_records.append((query, record))
 
-        with ThreadPoolExecutor(max_workers=min(6, max(1, len(article_records)))) as executor:
+        with ThreadPoolExecutor(
+            max_workers=min(6, max(1, len(article_records)))
+        ) as executor:
             section_futures = {
-                executor.submit(self.pubmed.fetch_article_sections, record["pmcid"]): (query, record)
+                executor.submit(self.pubmed.fetch_article_sections, record["pmcid"]): (
+                    query,
+                    record,
+                )
                 for query, record in article_records
             }
             for future, payload in section_futures.items():
@@ -1257,12 +1463,18 @@ class RAGEngine:
                 try:
                     sections = future.result()
                 except Exception as exc:
-                    print(f"PubMed full-text fetch failed for {record.get('pmcid', '')}: {exc}")
+                    print(
+                        f"PubMed full-text fetch failed for {record.get('pmcid', '')}: {exc}"
+                    )
                     sections = {}
 
-                best_section_name, best_section_text = self._select_best_pubmed_section(sections)
+                best_section_name, best_section_text = self._select_best_pubmed_section(
+                    sections
+                )
                 if best_section_text:
-                    entry_key = f"{user or 'global'}:pmc:{record['pmcid']}:{best_section_name}"
+                    entry_key = (
+                        f"{user or 'global'}:pmc:{record['pmcid']}:{best_section_name}"
+                    )
                     pending_entries.append(
                         {
                             "text": best_section_text,
@@ -1310,7 +1522,9 @@ class RAGEngine:
 
         self.memory.add_entries(pending_entries)
 
-    def _split_matches(self, matches: List[Tuple[Dict, float]]) -> Tuple[List[Dict], List[Tuple[Dict, float]]]:
+    def _split_matches(
+        self, matches: List[Tuple[Dict, float]]
+    ) -> Tuple[List[Dict], List[Tuple[Dict, float]]]:
         personal_context = []
         pubmed_matches = []
 
@@ -1319,7 +1533,9 @@ class RAGEngine:
             if metadata.get("type") == "user_summary":
                 personal_context.append(
                     {
-                        "title": metadata.get("title", metadata.get("source", "Uploaded document")),
+                        "title": metadata.get(
+                            "title", metadata.get("source", "Uploaded document")
+                        ),
                         "source": metadata.get("source", ""),
                         "snippet": build_excerpt(entry.get("text", "")),
                         "score": round(score, 3),
@@ -1349,12 +1565,16 @@ class RAGEngine:
                     "journal": metadata.get("journal", ""),
                     "year": metadata.get("year", ""),
                     "authors": metadata.get("authors", ""),
-                    "section": metadata.get("section", "retrieved text").replace("_", " ").title(),
+                    "section": metadata.get("section", "retrieved text")
+                    .replace("_", " ")
+                    .title(),
                     "url": metadata.get("url", ""),
                     "query": metadata.get("query", ""),
                     "similarity": round(score, 3),
                     "snippet": build_excerpt(entry.get("text", "")),
-                    "detail_snippet": build_excerpt(entry.get("text", ""), max_chars=800),
+                    "detail_snippet": build_excerpt(
+                        entry.get("text", ""), max_chars=800
+                    ),
                     "source_type": metadata.get("source_type", "pubmed_literature"),
                     "provider": "Europe PMC / PubMed Central",
                 }
@@ -1363,7 +1583,9 @@ class RAGEngine:
         return sources
 
     @staticmethod
-    def _combine_sources(pubmed_sources: List[Dict], official_sources: List[Dict]) -> List[Dict]:
+    def _combine_sources(
+        pubmed_sources: List[Dict], official_sources: List[Dict]
+    ) -> List[Dict]:
         combined = []
         seen = set()
 
@@ -1378,7 +1600,9 @@ class RAGEngine:
             source["source_id"] = f"S{index}"
         return combined
 
-    def _rank_sources(self, question: str, sources: List[Dict], top_k: int = 6) -> List[Dict]:
+    def _rank_sources(
+        self, question: str, sources: List[Dict], top_k: int = 6
+    ) -> List[Dict]:
         if not sources:
             return []
 
@@ -1439,7 +1663,10 @@ class RAGEngine:
                 if item.get("snippet", "").strip()
             ]
             if context_lines:
-                parts.append("Relevant patient-specific context already on file:\n" + "\n".join(context_lines))
+                parts.append(
+                    "Relevant patient-specific context already on file:\n"
+                    + "\n".join(context_lines)
+                )
 
         return "\n\n".join(parts)
 
@@ -1497,7 +1724,9 @@ class RAGEngine:
             condition_lines.append(line)
         if not condition_lines:
             return ""
-        return "Conditions and history:\n" + "\n".join(f"- {item}" for item in condition_lines[:10])
+        return "Conditions and history:\n" + "\n".join(
+            f"- {item}" for item in condition_lines[:10]
+        )
 
     @staticmethod
     def _build_medication_memory_summary(medications: List[Dict]) -> str:
@@ -1508,7 +1737,8 @@ class RAGEngine:
                 continue
             line = name
             extras = [
-                part for part in (
+                part
+                for part in (
                     medication.get("dose", "").strip(),
                     medication.get("schedule", "").strip(),
                 )
@@ -1519,7 +1749,9 @@ class RAGEngine:
             medication_lines.append(line)
         if not medication_lines:
             return ""
-        return "Current medication list:\n" + "\n".join(f"- {item}" for item in medication_lines[:8])
+        return "Current medication list:\n" + "\n".join(
+            f"- {item}" for item in medication_lines[:8]
+        )
 
     @staticmethod
     def _build_vitals_memory_summary(vitals: List[Dict]) -> str:
@@ -1532,12 +1764,16 @@ class RAGEngine:
             vtype = (entry.get("type") or "").strip().lower()
             if not vtype:
                 continue
-            recorded = (entry.get("recorded_on") or entry.get("created_at") or "").strip()
+            recorded = (
+                entry.get("recorded_on") or entry.get("created_at") or ""
+            ).strip()
             existing = latest.get(vtype)
             if existing is None:
                 latest[vtype] = entry
             else:
-                existing_date = (existing.get("recorded_on") or existing.get("created_at") or "").strip()
+                existing_date = (
+                    existing.get("recorded_on") or existing.get("created_at") or ""
+                ).strip()
                 if recorded > existing_date:
                     latest[vtype] = entry
 
@@ -1553,7 +1789,9 @@ class RAGEngine:
 
         if not lines:
             return ""
-        return "Recent vitals and lab results:\n" + "\n".join(f"- {item}" for item in lines[:20])
+        return "Recent vitals and lab results:\n" + "\n".join(
+            f"- {item}" for item in lines[:20]
+        )
 
     @staticmethod
     def _build_allergies_memory_summary(allergies: List[Dict]) -> str:
@@ -1572,7 +1810,9 @@ class RAGEngine:
             lines.append(line)
         if not lines:
             return ""
-        return "Known allergies and adverse reactions:\n" + "\n".join(f"- {item}" for item in lines[:10])
+        return "Known allergies and adverse reactions:\n" + "\n".join(
+            f"- {item}" for item in lines[:10]
+        )
 
     @staticmethod
     def _build_follow_up_patient_context(
@@ -1615,7 +1855,9 @@ class RAGEngine:
                 continue
             try:
                 if date.fromisoformat(recorded_str) >= cutoff:
-                    vital_lines.append(render_vital_for_prompt(entry, date_prefix="recorded "))
+                    vital_lines.append(
+                        render_vital_for_prompt(entry, date_prefix="recorded ")
+                    )
             except (ValueError, TypeError):
                 pass
 
@@ -1625,7 +1867,9 @@ class RAGEngine:
                 + "\n".join(f"- {line}" for line in vital_lines)
             )
         else:
-            sections.append("RECENT VITALS AND LABS: None recorded in the last 30 days -- do not reference vitals.")
+            sections.append(
+                "RECENT VITALS AND LABS: None recorded in the last 30 days -- do not reference vitals."
+            )
 
         # --- MEDICATIONS: all, no date filter ---
         med_lines: List[str] = []
@@ -1727,7 +1971,9 @@ class RAGEngine:
         return "\n\n".join(sections)
 
     @staticmethod
-    def _build_safety_net_block(risk_level: str, triage_summary: dict, role_config) -> str:
+    def _build_safety_net_block(
+        risk_level: str, triage_summary: dict, role_config
+    ) -> str:
         """
         Appends a structured safety netting block for elevated/urgent/crisis answers.
         Escalation triggers come entirely from the LLM-generated triage_summary -- no
@@ -1737,7 +1983,10 @@ class RAGEngine:
             return ""
 
         is_clinical = role_config and role_config.role_key in (
-            "doctor", "nurse", "midwife", "physiotherapist"
+            "doctor",
+            "nurse",
+            "midwife",
+            "physiotherapist",
         )
 
         # Use LLM-generated escalation triggers; fall back to what_to_monitor if absent
@@ -1793,8 +2042,7 @@ class RAGEngine:
             print(f"Medication extraction failed: {exc}")
 
         names_in_question = [
-            name for name in stored_names
-            if name.lower() in question_lower
+            name for name in stored_names if name.lower() in question_lower
         ]
 
         candidate_names: List[str] = []
@@ -1823,8 +2071,7 @@ class RAGEngine:
         if not alerts:
             return context
         alert_lines = [
-            f"- {alert.get('pair')}: {alert.get('summary')}"
-            for alert in alerts[:3]
+            f"- {alert.get('pair')}: {alert.get('summary')}" for alert in alerts[:3]
         ]
         return (
             context
@@ -1883,13 +2130,18 @@ class RAGEngine:
     ) -> Dict:
         enriched = dict(payload)
         trace = enriched.get("trace", {})
-        risk_level = trace.get("risk_level") or ("crisis" if trace.get("crisis_detected") else "routine")
+        risk_level = trace.get("risk_level") or (
+            "crisis" if trace.get("crisis_detected") else "routine"
+        )
         intent = SimpleNamespace(
             risk_level=risk_level,
             crisis_detected=trace.get("crisis_detected", False),
-            escalation_reason=trace.get("moderation_category") or trace.get("retrieval_mode", ""),
+            escalation_reason=trace.get("moderation_category")
+            or trace.get("retrieval_mode", ""),
         )
-        policy = SimpleNamespace(action="escalate_only" if risk_level in ("urgent", "crisis") else "allow")
+        policy = SimpleNamespace(
+            action="escalate_only" if risk_level in ("urgent", "crisis") else "allow"
+        )
         triage_summary = build_default_triage(intent, policy)
         enriched["triage_summary"] = triage_summary
         enriched.setdefault("medication_alerts", [])
@@ -1912,8 +2164,7 @@ class RAGEngine:
             return ""
 
         return "\n".join(
-            f"- {item['title']}: {item['snippet']}"
-            for item in personal_context
+            f"- {item['title']}: {item['snippet']}" for item in personal_context
         )
 
     @staticmethod
@@ -1938,9 +2189,8 @@ class RAGEngine:
     def _build_limited_evidence_response(personal_context: List[Dict]) -> str:
         personal_note = ""
         if personal_context:
-            personal_note = (
-                "\n\n## Available Personal Context\n"
-                + "\n".join(f"- {item['title']}: {item['snippet']}" for item in personal_context)
+            personal_note = "\n\n## Available Personal Context\n" + "\n".join(
+                f"- {item['title']}: {item['snippet']}" for item in personal_context
             )
 
         return (

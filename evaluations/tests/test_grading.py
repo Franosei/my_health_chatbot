@@ -21,6 +21,7 @@ _VALID_GRADE_PAYLOAD = {
             "points": 5,
             "met": True,
             "explanation": "did so",
+            "answer_evidence": "Rest",
         }
     ],
     "clinical_correctness_score": 0.8,
@@ -101,10 +102,80 @@ def test_grading_prompt_uses_displayed_answer_and_source_metadata():
     assert "The excerpt directly supports the claim." in prompt
     assert "not browsing or reading the complete external publication" in prompt
     assert "never state or imply that the full source is inaccurate" in prompt
+    assert "Do NOT draft your own answer" in prompt
+    assert "rubric criteria are the HealthBench scoring authority" in prompt
+    assert "dataset ideal completion" in prompt
+
+
+def test_rubric_canonicalization_restores_rewritten_criterion_and_points():
+    payload = {
+        **_VALID_GRADE_PAYLOAD,
+        "case_id": "case-1",
+        "grader_model": "judge",
+        "rubric_results": [
+            {
+                **_VALID_GRADE_PAYLOAD["rubric_results"][0],
+                "criterion": "My rewritten ideal-answer criterion",
+                "points": 999,
+            }
+        ],
+    }
+    result = GradingResult.model_validate(payload)
+
+    canonical = grading._canonicalize_rubric_results(_case(), result)
+
+    assert canonical.rubric_results[0].criterion == "Advises rest."
+    assert canonical.rubric_results[0].points == 5
+
+
+def test_rubric_canonicalization_flags_invented_answer_evidence():
+    payload = {
+        **_VALID_GRADE_PAYLOAD,
+        "case_id": "case-1",
+        "grader_model": "judge",
+        "rubric_results": [
+            {
+                **_VALID_GRADE_PAYLOAD["rubric_results"][0],
+                "answer_evidence": "A sentence FlynnMed never produced",
+            }
+        ],
+    }
+    result = GradingResult.model_validate(payload)
+
+    canonical = grading._canonicalize_rubric_results(
+        _case(), result, _pipeline_response()
+    )
+    assert canonical.rubric_results[0].answer_evidence_validated is False
+
+
+def test_rubric_alignment_accepts_plain_text_evidence_from_markdown_answer():
+    payload = {
+        **_VALID_GRADE_PAYLOAD,
+        "case_id": "case-1",
+        "grader_model": "judge",
+        "rubric_results": [
+            {
+                **_VALID_GRADE_PAYLOAD["rubric_results"][0],
+                "answer_evidence": "“Rest and hydrate.”",
+            }
+        ],
+    }
+    result = GradingResult.model_validate(payload)
+
+    canonical = grading._canonicalize_rubric_results(
+        _case(), result, _pipeline_response()
+    )
+    assert canonical.rubric_results[0].answer_evidence_validated is True
 
 
 def _config():
-    return EvalConfig(max_retries=3)
+    return EvalConfig(
+        max_retries=3,
+        primary_grader_model="gpt-5.6-luna",
+        adjudicator_model="gpt-5.4-mini",
+        rag_metrics_model="gpt-5.6-luna",
+        evaluator_fallback_model="gpt-5.4-mini",
+    )
 
 
 def _use_fake_client(monkeypatch, responses):
@@ -114,6 +185,43 @@ def _use_fake_client(monkeypatch, responses):
         grading, "call_with_retry", lambda fn, max_retries=5, base_delay=1.0: fn()
     )
     return fake_client
+
+
+def test_evaluator_access_check_tests_each_distinct_model(monkeypatch):
+    fake_client = _FakeClient([{}, {}])
+    monkeypatch.setattr(grading, "_client", lambda config: fake_client)
+
+    grading.validate_evaluator_access(_config())
+
+    called_models = [call["model"] for call in fake_client.chat.completions.calls]
+    assert called_models == ["gpt-5.6-luna", "gpt-5.4-mini"]
+
+
+def test_evaluator_access_check_explains_permission_failure(monkeypatch):
+    error = Exception("insufficient permissions")
+    error.status_code = 401
+    fallback_error = Exception("fallback unavailable")
+    fallback_error.status_code = 403
+    fake_client = _FakeClient([error, fallback_error])
+    monkeypatch.setattr(grading, "_client", lambda config: fake_client)
+
+    with pytest.raises(grading.EvaluatorAccessError) as exc_info:
+        grading.validate_evaluator_access(_config())
+
+    message = str(exc_info.value)
+    assert "gpt-5.4-mini" in message
+    assert "HTTP 403" in message
+    assert "EVAL_API_KEY" in message
+
+
+def test_evaluation_api_key_can_be_separate_from_generator_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "generator-key")
+    monkeypatch.setenv("EVAL_API_KEY", "evaluator-key")
+
+    config = EvalConfig()
+
+    assert config.api_key() == "generator-key"
+    assert config.evaluation_api_key() == "evaluator-key"
 
 
 def _findings(**overrides) -> DeterministicFindings:
@@ -244,10 +352,68 @@ def test_grade_retries_once_on_invalid_schema_then_succeeds(monkeypatch):
 
 def test_grade_raises_after_exhausting_schema_retries(monkeypatch):
     invalid_payload = {"clinical_correctness_score": 0.5}
-    _use_fake_client(monkeypatch, [invalid_payload, invalid_payload, invalid_payload])
+    _use_fake_client(monkeypatch, [invalid_payload] * 6)
 
     with pytest.raises(ValueError):
         grading.grade_with_luna(_case(), _pipeline_response(), _config())
+
+
+def test_luna_failure_falls_back_to_configured_model(monkeypatch):
+    error = Exception("luna unavailable")
+    error.status_code = 401
+    fake_client = _use_fake_client(monkeypatch, [error, _VALID_GRADE_PAYLOAD])
+
+    result = grading.grade_with_luna(_case(), _pipeline_response(), _config())
+
+    assert result.grader_model == "gpt-5.4-mini"
+    assert [call["model"] for call in fake_client.chat.completions.calls] == [
+        "gpt-5.6-luna",
+        "gpt-5.4-mini",
+    ]
+
+
+def test_chunked_fallback_preserves_exact_rubric_order_and_points(monkeypatch):
+    case = _case()
+    case.rubrics = [
+        RubricItem(criterion=f"Criterion {index}", points=index + 1)
+        for index in range(7)
+    ]
+
+    def _fake_grade(chunk_case, pipeline_response, config, model, **kwargs):
+        payload = {
+            **_VALID_GRADE_PAYLOAD,
+            "case_id": chunk_case.case_id,
+            "grader_model": model,
+            "rubric_results": [
+                {
+                    "criterion": rubric.criterion,
+                    "points": rubric.points,
+                    "met": True,
+                    "explanation": "met",
+                    "answer_evidence": "Rest",
+                }
+                for rubric in chunk_case.rubrics
+            ],
+        }
+        return GradingResult.model_validate(payload)
+
+    monkeypatch.setattr(grading, "_grade", _fake_grade)
+
+    result = grading._grade_in_chunks(
+        case,
+        _pipeline_response(),
+        _config(),
+        model="gpt-5.4-mini",
+        reasoning_effort=None,
+    )
+
+    assert [item.criterion for item in result.rubric_results] == [
+        rubric.criterion for rubric in case.rubrics
+    ]
+    assert [item.points for item in result.rubric_results] == [
+        rubric.points for rubric in case.rubrics
+    ]
+    assert result.grader_model == "gpt-5.4-mini"
 
 
 def test_terra_grading_never_receives_lunas_grade(monkeypatch):

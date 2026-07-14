@@ -20,7 +20,8 @@ load_dotenv()
 # Bumped by hand when the harness's own grading prompt templates change
 # materially (not FlynnMed's internal prompts, which this harness doesn't
 # own or version -- see reporting.py's pipeline_version for that).
-GRADING_PROMPT_VERSION = "v2"
+HEALTHBENCH_GRADING_PROMPT_VERSION = "healthbench-rubric-v2"
+RAG_METRICS_PROMPT_VERSION = "rag-claim-audit-v4"
 
 DATASET_URLS = {
     "healthbench": "https://openaipublic.blob.core.windows.net/simple-evals/healthbench/2025-05-07-06-14-12_oss_eval.jsonl",
@@ -65,11 +66,19 @@ class EvalConfig:
             or os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
         )
     )
+    # HealthBench rubric graders. A second call is skipped automatically when
+    # primary and adjudicator resolve to the same model.
     primary_grader_model: str = field(
-        default_factory=lambda: os.getenv("EVAL_PRIMARY_GRADER_MODEL", "gpt-5.6-luna")
+        default_factory=lambda: os.getenv("EVAL_PRIMARY_GRADER_MODEL", "gpt-5.4-mini")
     )
     adjudicator_model: str = field(
-        default_factory=lambda: os.getenv("EVAL_ADJUDICATOR_MODEL", "gpt-5.6-terra")
+        default_factory=lambda: os.getenv("EVAL_ADJUDICATOR_MODEL", "gpt-5.4-mini")
+    )
+    rag_metrics_model: str = field(
+        default_factory=lambda: os.getenv("EVAL_RAG_METRICS_MODEL", "gpt-5.4-mini")
+    )
+    evaluator_fallback_model: str = field(
+        default_factory=lambda: os.getenv("EVAL_FALLBACK_MODEL", "gpt-5.4-mini")
     )
 
     generator_reasoning_effort: Optional[str] = field(
@@ -98,6 +107,22 @@ class EvalConfig:
     request_timeout_seconds: float = field(
         default_factory=lambda: _env_float("EVAL_REQUEST_TIMEOUT_SECONDS", 120.0)
     )
+    document_relevance_threshold: float = field(
+        default_factory=lambda: _env_float("EVAL_DOCUMENT_RELEVANCE_THRESHOLD", 0.6)
+    )
+    minimum_reliable_sample_size: int = field(
+        default_factory=lambda: _env_int("EVAL_MINIMUM_RELIABLE_SAMPLE_SIZE") or 5
+    )
+    consistency_repeats: int = field(
+        default_factory=lambda: _env_int("EVAL_CONSISTENCY_REPEATS") or 0
+    )
+    gold_answers_path: Optional[Path] = field(
+        default_factory=lambda: (
+            Path(raw)
+            if (raw := os.getenv("EVAL_GOLD_ANSWERS_PATH", "").strip())
+            else None
+        )
+    )
 
     def api_key(self) -> str:
         key = os.getenv("OPENAI_API_KEY", "")
@@ -105,6 +130,11 @@ class EvalConfig:
             raise ValueError(
                 "OPENAI_API_KEY not set. Required for anything other than --dry-run."
             )
+        return key
+
+    def evaluation_api_key(self) -> str:
+        """Allow evaluation judges to use a separately permissioned project key."""
+        key = os.getenv("EVAL_API_KEY", "").strip() or self.api_key()
         return key
 
     def base_url(self) -> str:

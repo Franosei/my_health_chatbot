@@ -164,6 +164,22 @@ def test_active_clinician_emergency_still_triggers_crisis_prescreen():
     assert classifier._crisis_prescreen(question, role_key="doctor") is True
 
 
+def test_witnessed_collapse_triggers_active_emergency_prescreen():
+    classifier = object.__new__(IntentRiskClassifier)
+
+    assert classifier._crisis_prescreen(
+        "On the dance floor I saw someone collapse.", role_key="patient"
+    ) is True
+
+
+def test_general_education_about_collapse_is_not_an_active_emergency():
+    classifier = object.__new__(IntentRiskClassifier)
+
+    assert classifier._crisis_prescreen(
+        "What are common reasons someone might collapse?", role_key="patient"
+    ) is False
+
+
 def test_patient_general_emergency_education_is_not_a_personal_crisis():
     classifier = IntentRiskClassifier.__new__(IntentRiskClassifier)
 

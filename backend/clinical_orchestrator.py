@@ -28,13 +28,17 @@ Agentic retrieval layer (LLM drives this):
   11. Evidence dossier (anti-hallucination extraction)
   12. Context assembly for the final LLM answer
 """
+
 from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from backend.clinical_decision_support import ClinicalDecision, ClinicalDecisionSupportEngine
+from backend.clinical_decision_support import (
+    ClinicalDecision,
+    ClinicalDecisionSupportEngine,
+)
 from backend.clinical_context_guard import (
     ClinicalContextDecision,
     adjudicate_patient_context,
@@ -51,6 +55,7 @@ from backend.agentic_health_contract import (
     select_skills,
 )
 from backend.role_router import RoleConfig, RoleRouter
+from backend.task_mode import TaskModeDecision, decide_task_mode
 from backend.utils import build_excerpt
 
 if TYPE_CHECKING:
@@ -66,6 +71,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Agentic retrieval loop
 # ---------------------------------------------------------------------------
+
 
 class AgenticRetrievalLoop:
     """
@@ -248,7 +254,10 @@ class AgenticRetrievalLoop:
                 "Prioritise NICE chronic disease guidelines. "
                 "Focus on long-term management and patient-specific risks."
             ),
-        }.get(pathway_hint, "Search current official guidance first, then research evidence if needed.")
+        }.get(
+            pathway_hint,
+            "Search current official guidance first, then research evidence if needed.",
+        )
 
         med_hint = ""
         if patient_medications:
@@ -341,11 +350,13 @@ class AgenticRetrievalLoop:
                 except Exception:
                     args = {}
 
-                tool_calls_made.append({
-                    "tool": fn_name,
-                    "args": args,
-                    "iteration": iteration,
-                })
+                tool_calls_made.append(
+                    {
+                        "tool": fn_name,
+                        "args": args,
+                        "iteration": iteration,
+                    }
+                )
                 print(f"[AgenticLoop] {fn_name}({args})")
 
                 result = self._execute_tool(fn_name, args)
@@ -357,11 +368,13 @@ class AgenticRetrievalLoop:
                 if "trials" in result:
                     trial_results.extend(result["trials"])
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result.get("summary", "No results.")[:2000],
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result.get("summary", "No results.")[:2000],
+                    }
+                )
 
         return {
             "collected_sources": collected_sources,
@@ -427,77 +440,85 @@ class AgenticRetrievalLoop:
 
             if section_text:
                 entry_key = f"{self.user or 'global'}:pmc:{pmcid}:{section_name}"
-                sources.append({
-                    "source_id": f"pmc-{pmcid}",
-                    "title": record.get("title", "Untitled"),
-                    "journal": record.get("journal", ""),
-                    "year": record.get("year", ""),
-                    "authors": record.get("authors", ""),
-                    "url": record.get("url", ""),
-                    "pmcid": pmcid,
-                    "section": section_name,
-                    "snippet": section_text[:300],
-                    "detail_snippet": section_text[:800],
-                    "source_type": "pubmed_literature",
-                    "provider": "Europe PMC / PubMed Central",
-                    "query": query,
-                })
-                memory_entries.append({
-                    "text": section_text,
-                    "metadata": {
-                        "type": "pubmed",
-                        "source_type": "pubmed_literature",
-                        "pmcid": pmcid,
-                        "section": section_name,
+                sources.append(
+                    {
+                        "source_id": f"pmc-{pmcid}",
                         "title": record.get("title", "Untitled"),
                         "journal": record.get("journal", ""),
                         "year": record.get("year", ""),
                         "authors": record.get("authors", ""),
                         "url": record.get("url", ""),
+                        "pmcid": pmcid,
+                        "section": section_name,
+                        "snippet": section_text[:300],
+                        "detail_snippet": section_text[:800],
+                        "source_type": "pubmed_literature",
+                        "provider": "Europe PMC / PubMed Central",
                         "query": query,
+                    }
+                )
+                memory_entries.append(
+                    {
+                        "text": section_text,
+                        "metadata": {
+                            "type": "pubmed",
+                            "source_type": "pubmed_literature",
+                            "pmcid": pmcid,
+                            "section": section_name,
+                            "title": record.get("title", "Untitled"),
+                            "journal": record.get("journal", ""),
+                            "year": record.get("year", ""),
+                            "authors": record.get("authors", ""),
+                            "url": record.get("url", ""),
+                            "query": query,
+                            "entry_key": entry_key,
+                        },
+                        "user": self.user,
                         "entry_key": entry_key,
-                    },
-                    "user": self.user,
-                    "entry_key": entry_key,
-                })
+                    }
+                )
 
             # Also store the abstract
             abstract = record.get("abstract", "")
             if abstract:
                 abs_key = f"{self.user or 'global'}:pmc:{pmcid}:abstract"
-                sources.append({
-                    "source_id": f"pmc-{pmcid}-abs",
-                    "title": record.get("title", "Untitled"),
-                    "journal": record.get("journal", ""),
-                    "year": record.get("year", ""),
-                    "authors": record.get("authors", ""),
-                    "url": record.get("url", ""),
-                    "pmcid": pmcid,
-                    "section": "abstract",
-                    "snippet": abstract[:300],
-                    "detail_snippet": abstract[:800],
-                    "source_type": "pubmed_literature",
-                    "provider": "Europe PMC / PubMed Central",
-                    "query": query,
-                })
-                memory_entries.append({
-                    "text": abstract,
-                    "metadata": {
-                        "type": "pubmed",
-                        "source_type": "pubmed_literature",
-                        "pmcid": pmcid,
-                        "section": "abstract",
+                sources.append(
+                    {
+                        "source_id": f"pmc-{pmcid}-abs",
                         "title": record.get("title", "Untitled"),
                         "journal": record.get("journal", ""),
                         "year": record.get("year", ""),
                         "authors": record.get("authors", ""),
                         "url": record.get("url", ""),
+                        "pmcid": pmcid,
+                        "section": "abstract",
+                        "snippet": abstract[:300],
+                        "detail_snippet": abstract[:800],
+                        "source_type": "pubmed_literature",
+                        "provider": "Europe PMC / PubMed Central",
                         "query": query,
+                    }
+                )
+                memory_entries.append(
+                    {
+                        "text": abstract,
+                        "metadata": {
+                            "type": "pubmed",
+                            "source_type": "pubmed_literature",
+                            "pmcid": pmcid,
+                            "section": "abstract",
+                            "title": record.get("title", "Untitled"),
+                            "journal": record.get("journal", ""),
+                            "year": record.get("year", ""),
+                            "authors": record.get("authors", ""),
+                            "url": record.get("url", ""),
+                            "query": query,
+                            "entry_key": abs_key,
+                        },
+                        "user": self.user,
                         "entry_key": abs_key,
-                    },
-                    "user": self.user,
-                    "entry_key": abs_key,
-                })
+                    }
+                )
 
         if memory_entries:
             try:
@@ -515,6 +536,7 @@ class AgenticRetrievalLoop:
             return {"summary": "No medications provided.", "sources": []}
         try:
             from backend.medication_checker import MedicationChecker
+
             checker = MedicationChecker()
             result = checker.check_interactions(medications)
             alerts = result.get("alerts", [])
@@ -523,16 +545,18 @@ class AgenticRetrievalLoop:
                 pair = alert.get("pair", "medication pair")
                 summary_text = alert.get("summary", "")
                 if summary_text:
-                    sources.append({
-                        "source_id": f"fda-{pair.replace(' ', '-')[:40]}",
-                        "title": f"Drug interaction: {pair}",
-                        "snippet": str(summary_text)[:300],
-                        "detail_snippet": str(summary_text)[:800],
-                        "source_type": "official_guidance",
-                        "provider": "openFDA",
-                        "url": "https://open.fda.gov/",
-                        "query": f"drug interactions {' '.join(medications)}",
-                    })
+                    sources.append(
+                        {
+                            "source_id": f"fda-{pair.replace(' ', '-')[:40]}",
+                            "title": f"Drug interaction: {pair}",
+                            "snippet": str(summary_text)[:300],
+                            "detail_snippet": str(summary_text)[:800],
+                            "source_type": "official_guidance",
+                            "provider": "openFDA",
+                            "url": "https://open.fda.gov/",
+                            "query": f"drug interactions {' '.join(medications)}",
+                        }
+                    )
             msg = (
                 f"Drug interaction check for {', '.join(medications)}: "
                 f"{len(alerts)} alert(s), {len(result.get('resolved_medications', []))} resolved, "
@@ -550,12 +574,16 @@ class AgenticRetrievalLoop:
         for entry, score in matches[:4]:
             meta = entry.get("metadata", {})
             if meta.get("type") == "user_summary":
-                personal.append({
-                    "title": meta.get("title", meta.get("source", "Uploaded document")),
-                    "source": meta.get("source", ""),
-                    "snippet": build_excerpt(entry.get("text", "")),
-                    "score": round(score, 3),
-                })
+                personal.append(
+                    {
+                        "title": meta.get(
+                            "title", meta.get("source", "Uploaded document")
+                        ),
+                        "source": meta.get("source", ""),
+                        "snippet": build_excerpt(entry.get("text", "")),
+                        "score": round(score, 3),
+                    }
+                )
         return {
             "personal_matches": personal,
             "summary": f"Found {len(personal)} matches in patient documents.",
@@ -567,9 +595,11 @@ class AgenticRetrievalLoop:
         try:
             from backend.clinical_trials import TrialSearchProfile, find_matching_trials
             from backend.user_store import UserStore
+
             if self.user:
                 profile = UserStore.get_user_profile(self.user)
                 from backend.clinical_trials import build_trial_search_profile
+
                 search_profile = build_trial_search_profile(
                     profile=profile,
                     memory=UserStore.get_longitudinal_memory(self.user),
@@ -578,19 +608,33 @@ class AgenticRetrievalLoop:
                     allergies=UserStore.get_allergies(self.user),
                     conditions=UserStore.get_conditions(self.user),
                     vitals=UserStore.get_vitals(self.user, limit=None),
-                    triage_summaries=UserStore.get_triage_summaries(self.user, limit=None),
+                    triage_summaries=UserStore.get_triage_summaries(
+                        self.user, limit=None
+                    ),
                     document_summaries=UserStore.get_document_summaries(self.user),
                 )
-                search_profile.conditions = list(dict.fromkeys(search_profile.conditions + [condition]))
-                search_profile.raw_context += f"\nExplicit trial topic requested by patient: {condition}"
+                search_profile.conditions = list(
+                    dict.fromkeys(search_profile.conditions + [condition])
+                )
+                search_profile.raw_context += (
+                    f"\nExplicit trial topic requested by patient: {condition}"
+                )
             else:
                 search_profile = TrialSearchProfile(
-                    conditions=[condition], symptoms=[], medications=[], age=None,
-                    biological_sex="", raw_context=f"Requested condition: {condition}",
+                    conditions=[condition],
+                    symptoms=[],
+                    medications=[],
+                    age=None,
+                    biological_sex="",
+                    raw_context=f"Requested condition: {condition}",
                 )
-            results = find_matching_trials(search_profile, location_query=location, max_results=5)
+            results = find_matching_trials(
+                search_profile, location_query=location, max_results=5
+            )
             return {
-                "trials": results.get("trials", []) if isinstance(results, dict) else [],
+                "trials": results.get("trials", [])
+                if isinstance(results, dict)
+                else [],
                 "summary": f"Found {len(results.get('trials', []) if isinstance(results, dict) else [])} trials for '{condition}' in {location}.",
             }
         except Exception as exc:
@@ -600,6 +644,7 @@ class AgenticRetrievalLoop:
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
+
 
 class ClinicalOrchestrator:
     """
@@ -653,8 +698,11 @@ class ClinicalOrchestrator:
         current_location = current_location_from_profile(user_profile)
 
         # -- Step 1: Role resolution (instant) --------------------------------
-        clinical_role = user_profile.get("clinical_role") or user_profile.get("role", "")
+        clinical_role = user_profile.get("clinical_role") or user_profile.get(
+            "role", ""
+        )
         role_config = self.role_router.resolve(clinical_role)
+        task_mode = decide_task_mode(question, chat_history, role_config.role_key)
 
         # -- Step 2: Patient history context ----------------------------------
         patient_history: PatientHistoryContext = build_patient_history_context(
@@ -686,8 +734,14 @@ class ClinicalOrchestrator:
             ),
         )
 
-        # -- Step 3: Crisis pre-screen (regex, instant, before any LLM call) --
-        if self.intent_classifier._crisis_prescreen(question, role_key=role_config.role_key):
+        # Literal transformations operate on quoted/supplied text and do not
+        # assert that embedded clinical content is an active event.
+        if (
+            not task_mode.literal_transformation
+            and self.intent_classifier._crisis_prescreen(
+                question, role_key=role_config.role_key
+            )
+        ):
             return self._build_crisis_bundle(question, normalized_user, role_config)
 
         # -- Step 4: Moderation -----------------------------------------------
@@ -699,13 +753,31 @@ class ClinicalOrchestrator:
                 question, normalized_user, safe_msg, category, details, role_config
             )
 
+        if task_mode.is_transformation:
+            return self._build_transformation_bundle(
+                question=question,
+                normalized_user=normalized_user,
+                user_profile=user_profile,
+                role_config=role_config,
+                task_mode=task_mode,
+                current_location=current_location,
+            )
+
         # -- Step 5: Intent classification (needed for policy gate) -----------
-        history_context = patient_history.as_prompt_block() if not patient_history.is_empty() else ""
-        graph_hints: List[str] = list(context_graph.search_hints) if context_graph else []
+        history_context = (
+            patient_history.as_prompt_block() if not patient_history.is_empty() else ""
+        )
+        graph_hints: List[str] = (
+            list(context_graph.search_hints) if context_graph else []
+        )
 
         try:
             intent = self.intent_classifier.classify(
-                question, user_profile, role_config.role_key, patient_history, chat_history
+                question,
+                user_profile,
+                role_config.role_key,
+                patient_history,
+                chat_history,
             )
         except Exception as exc:
             print(f"[Orchestrator] Intent classification failed: {exc}")
@@ -717,8 +789,13 @@ class ClinicalOrchestrator:
         clinical_decision = self.decision_support.assess(question, intent, role_config)
         intent = self.decision_support.apply_to_intent(intent, clinical_decision)
 
-        policy_decision = self.policy_engine.gate(intent, role_config, question, patient_history)
-        if policy_decision.action == "escalate_only" and policy_decision.crisis_response:
+        policy_decision = self.policy_engine.gate(
+            intent, role_config, question, patient_history
+        )
+        if (
+            policy_decision.action == "escalate_only"
+            and policy_decision.crisis_response
+        ):
             return self._build_crisis_bundle(question, normalized_user, role_config)
 
         # -- Step 6b: Ambiguity gate -- ask before answering when a term has
@@ -731,7 +808,9 @@ class ClinicalOrchestrator:
             and intent.risk_level not in ("urgent", "crisis")
             and policy_decision.action == "allow"
         ):
-            return self._build_clarification_bundle(question, normalized_user, role_config, intent)
+            return self._build_clarification_bundle(
+                question, normalized_user, role_config, intent
+            )
 
         if (
             clinical_context.requires_clarification
@@ -751,7 +830,7 @@ class ClinicalOrchestrator:
         patient_summary += "\n\n" + clinical_context.as_prompt_block()
         if graph_hints:
             patient_summary += "\nRelevant health terms: " + ", ".join(graph_hints[:6])
-        retrieval_question = question
+        retrieval_question = task_mode.retrieval_question(question)
         if clinical_context.query_terms:
             retrieval_question = (
                 f"{question}\n\nConfirmed clinical search topic: "
@@ -794,17 +873,25 @@ class ClinicalOrchestrator:
         tool_calls_made: List[Dict] = agent_result.get("tool_calls_made", [])
 
         # Derive expanded_queries from what the agent actually searched
-        expanded_queries: List[str] = list(dict.fromkeys(
-            tc["args"].get("query", tc["args"].get("condition", ""))
-            for tc in tool_calls_made
-            if tc.get("tool") in ("search_nhs_guidance", "search_pubmed", "search_clinical_trials")
-            and tc.get("args", {}).get("query") or tc.get("args", {}).get("condition")
-        )) or [question]
+        expanded_queries: List[str] = list(
+            dict.fromkeys(
+                tc["args"].get("query", tc["args"].get("condition", ""))
+                for tc in tool_calls_made
+                if tc.get("tool")
+                in ("search_nhs_guidance", "search_pubmed", "search_clinical_trials")
+                and tc.get("args", {}).get("query")
+                or tc.get("args", {}).get("condition")
+            )
+        ) or [question]
 
         # -- Step 9: Fallback retrieval if agent returned nothing -------------
         if not collected_sources:
-            print("[Orchestrator] Agent found no sources -- falling back to direct retrieval.")
-            fallback_queries = self._build_search_queries(retrieval_question, history_context, graph_hints)
+            print(
+                "[Orchestrator] Agent found no sources -- falling back to direct retrieval."
+            )
+            fallback_queries = self._build_search_queries(
+                retrieval_question, history_context, graph_hints
+            )
             search_queries = self._augment_queries_with_pathway(
                 fallback_queries, pathway_context, clinical_decision
             )
@@ -837,19 +924,23 @@ class ClinicalOrchestrator:
             raw_sources, clinical_context
         )
 
-        combined_sources, evidence_quality_report = self.evidence_ranker.rank_and_tier_with_report(
-            sources=raw_sources,
-            question=question,
-            role_config=role_config,
-            intent=intent,
-            memory_store=self.memory,
-            top_k=6,
-            patient_history=patient_history,
-            context_graph=context_graph,
+        combined_sources, evidence_quality_report = (
+            self.evidence_ranker.rank_and_tier_with_report(
+                sources=raw_sources,
+                question=question,
+                role_config=role_config,
+                intent=intent,
+                memory_store=self.memory,
+                top_k=6,
+                patient_history=patient_history,
+                context_graph=context_graph,
+            )
         )
 
         if combined_sources:
-            retrieval_mode = "agentic_multi_source" if tool_calls_made else "live_multi_source"
+            retrieval_mode = (
+                "agentic_multi_source" if tool_calls_made else "live_multi_source"
+            )
         elif raw_sources:
             retrieval_mode = "evidence_quality_filtered"
         else:
@@ -860,6 +951,7 @@ class ClinicalOrchestrator:
         if combined_sources:
             try:
                 from backend.evidence_extractor import build_evidence_dossier
+
                 evidence_dossier = build_evidence_dossier(
                     llm=self.llm,
                     sources=combined_sources,
@@ -870,7 +962,9 @@ class ClinicalOrchestrator:
                     conditions=conditions or [],
                 )
             except Exception as exc:
-                print(f"[Orchestrator] Evidence dossier build failed (non-fatal): {exc}")
+                print(
+                    f"[Orchestrator] Evidence dossier build failed (non-fatal): {exc}"
+                )
 
         # -- Step 11b: Reconcile specialty-mismatch exclusions -----------------
         # The dossier's per-article LLM extraction is the only stage that checks for
@@ -882,8 +976,12 @@ class ClinicalOrchestrator:
         # otherwise the "use ... for general context" permission in the quality gate
         # text stays open for a source the dossier already rejected.
         if evidence_dossier and evidence_dossier.excluded_source_ids:
-            combined_sources, evidence_quality_report = self._exclude_mismatched_sources(
-                combined_sources, evidence_quality_report, evidence_dossier.excluded_source_ids
+            combined_sources, evidence_quality_report = (
+                self._exclude_mismatched_sources(
+                    combined_sources,
+                    evidence_quality_report,
+                    evidence_dossier.excluded_source_ids,
+                )
             )
 
         # -- Step 12: Build role-aware LLM context ----------------------------
@@ -898,6 +996,11 @@ class ClinicalOrchestrator:
             evidence_dossier=evidence_dossier,
             clinical_context=clinical_context,
         )
+        completion_block = task_mode.completion_block(
+            intent.intent_category, intent.vulnerable_flags
+        )
+        if completion_block:
+            full_context = f"{full_context}\n\n{completion_block}".strip()
 
         return {
             "kind": "answer",
@@ -911,6 +1014,7 @@ class ClinicalOrchestrator:
             "matches": [],
             "retrieval_mode": retrieval_mode,
             "full_context": full_context,
+            "response_completion_guidance": completion_block,
             "evidence_quality_report": evidence_quality_report,
             # Clinical governance
             "role_config": role_config,
@@ -925,9 +1029,51 @@ class ClinicalOrchestrator:
             "agentic_tool_calls": tool_calls_made,
             "selected_skills": selected_skills,
             "current_location": current_location,
+            "task_mode": task_mode,
         }
 
     # -- Bundle builders ------------------------------------------------------
+
+    @staticmethod
+    def _build_transformation_bundle(
+        question: str,
+        normalized_user: Optional[str],
+        user_profile: dict,
+        role_config: RoleConfig,
+        task_mode: TaskModeDecision,
+        current_location: str,
+    ) -> Dict:
+        intent = IntentClassification(
+            intent_category="administrative",
+            risk_level="routine",
+            pathway_hint="general_triage",
+            confidence=1.0,
+        )
+        return {
+            "kind": "answer",
+            "normalized_user": normalized_user,
+            "user_profile": user_profile,
+            "combined_sources": [],
+            "personal_context": [],
+            "longitudinal_memory_summary": "",
+            "expanded_queries": [],
+            "matches": [],
+            "retrieval_mode": "controlled_transformation",
+            "full_context": task_mode.prompt_block(),
+            "response_completion_guidance": "",
+            "evidence_quality_report": {},
+            "role_config": role_config,
+            "intent": intent,
+            "policy_decision": PolicyDecision(),
+            "pathway_context": None,
+            "clinical_decision": None,
+            "clinical_context": None,
+            "evidence_dossier": None,
+            "agentic_tool_calls": [],
+            "selected_skills": ["response_validation"],
+            "current_location": current_location,
+            "task_mode": task_mode,
+        }
 
     def _build_crisis_bundle(
         self,
@@ -1062,7 +1208,9 @@ class ClinicalOrchestrator:
         intent: IntentClassification,
         policy_decision: PolicyDecision,
     ) -> Dict:
-        limited_answer = self._build_limited_evidence_response(personal_context, role_config)
+        limited_answer = self._build_limited_evidence_response(
+            personal_context, role_config
+        )
         return {
             "kind": "final",
             "payload": {
@@ -1105,7 +1253,9 @@ class ClinicalOrchestrator:
         excluded_ids = set(excluded_source_ids)
         kept, dropped = [], []
         for source in combined_sources:
-            (dropped if source.get("source_id") in excluded_ids else kept).append(source)
+            (dropped if source.get("source_id") in excluded_ids else kept).append(
+                source
+            )
         if not dropped:
             return combined_sources, evidence_quality_report
 
@@ -1125,16 +1275,22 @@ class ClinicalOrchestrator:
                     "provider": source.get("provider", ""),
                     "query": source.get("query", ""),
                     "quality_score": source.get("evidence_quality_score", 0),
-                    "reasons": ["Confirmed by evidence extraction to concern a different "
-                                "specialty/measurement meaning than this patient's profile."],
+                    "reasons": [
+                        "Confirmed by evidence extraction to concern a different "
+                        "specialty/measurement meaning than this patient's profile."
+                    ],
                     "mismatch_flags": ["specialty_mismatch"],
                 }
             )
 
         report["status_counts"] = status_counts
         report["accepted_source_count"] = len(kept)
-        report["excluded_source_count"] = report.get("excluded_source_count", 0) + len(newly_excluded)
-        report["excluded_sources"] = (newly_excluded + list(report.get("excluded_sources") or []))[:5]
+        report["excluded_source_count"] = report.get("excluded_source_count", 0) + len(
+            newly_excluded
+        )
+        report["excluded_sources"] = (
+            newly_excluded + list(report.get("excluded_sources") or [])
+        )[:5]
 
         patient_aligned = status_counts.get("patient_aligned", 0)
         if kept and patient_aligned:
@@ -1213,7 +1369,8 @@ class ClinicalOrchestrator:
             profile_facts = evidence_quality_report.get("profile_facts_checked") or []
             if profile_facts:
                 quality_lines.append(
-                    "- Profile facts checked: " + "; ".join(str(f) for f in profile_facts[:8])
+                    "- Profile facts checked: "
+                    + "; ".join(str(f) for f in profile_facts[:8])
                 )
             status_counts = evidence_quality_report.get("status_counts") or {}
             if status_counts:
@@ -1245,7 +1402,9 @@ class ClinicalOrchestrator:
                 tier = source.get("evidence_tier", 3)
                 tier_label = source.get("tier_label", f"Tier {tier}")
                 snippet = source.get("detail_snippet") or source.get("snippet", "")
-                quality_status = source.get("evidence_quality_status", "question_aligned")
+                quality_status = source.get(
+                    "evidence_quality_status", "question_aligned"
+                )
                 use_label = (
                     "patient-specific guidance"
                     if source.get("usable_for_patient_specific_guidance")
@@ -1260,12 +1419,14 @@ class ClinicalOrchestrator:
                     + (f"\nQuality notes: {quality_notes}" if quality_notes else "")
                 )
             parts.append(
-                "Biomedical evidence (tiered by source authority):\n" + "\n\n".join(evidence_parts)
+                "Biomedical evidence (tiered by source authority):\n"
+                + "\n\n".join(evidence_parts)
             )
         elif no_sources:
             filtered = (
                 evidence_quality_report
-                and evidence_quality_report.get("overall_status") == "no_sources_passed_quality_gate"
+                and evidence_quality_report.get("overall_status")
+                == "no_sources_passed_quality_gate"
             )
             if filtered:
                 parts.append(
@@ -1304,7 +1465,9 @@ class ClinicalOrchestrator:
 
     # -- Pathway routing ------------------------------------------------------
 
-    def _get_pathway_context(self, intent: IntentClassification, role_config: RoleConfig):
+    def _get_pathway_context(
+        self, intent: IntentClassification, role_config: RoleConfig
+    ):
         hint = intent.pathway_hint or "general_triage"
         try:
             if hint == "maternity":
@@ -1321,6 +1484,7 @@ class ClinicalOrchestrator:
         except Exception as exc:
             print(f"[Orchestrator] Pathway load failed ({hint}): {exc}")
             from backend.pathways.general_triage import get_pathway_context
+
             return get_pathway_context(intent, role_config)
 
     # -- Fallback query helpers -----------------------------------------------
@@ -1335,13 +1499,15 @@ class ClinicalOrchestrator:
         try:
             if patient_history_context:
                 queries.extend(
-                    self.query_expander.expand_with_patient_context(question, patient_history_context)
+                    self.query_expander.expand_with_patient_context(
+                        question, patient_history_context
+                    )
                 )
             else:
                 queries.extend(self.query_expander.expand(question))
         except Exception as exc:
             print(f"[Orchestrator] Query expansion failed: {exc}")
-        for hint in (graph_hints or []):
+        for hint in graph_hints or []:
             if hint and hint not in queries:
                 queries.append(hint)
         return list(dict.fromkeys(q for q in queries if q))[:5]
@@ -1404,14 +1570,17 @@ class ClinicalOrchestrator:
                     print(f"[Orchestrator] PubMed search failed for '{query}': {exc}")
 
         article_records = [
-            (query, record)
-            for query, records in article_batches
-            for record in records
+            (query, record) for query, records in article_batches for record in records
         ]
 
-        with ThreadPoolExecutor(max_workers=min(6, max(1, len(article_records)))) as executor:
+        with ThreadPoolExecutor(
+            max_workers=min(6, max(1, len(article_records)))
+        ) as executor:
             section_futures = {
-                executor.submit(self.pubmed.fetch_article_sections, record["pmcid"]): (query, record)
+                executor.submit(self.pubmed.fetch_article_sections, record["pmcid"]): (
+                    query,
+                    record,
+                )
                 for query, record in article_records
             }
             for future, (query, record) in section_futures.items():
@@ -1424,46 +1593,50 @@ class ClinicalOrchestrator:
                 best_name, best_text = self._select_best_pubmed_section(sections)
                 if best_text:
                     entry_key = f"{user or 'global'}:pmc:{record['pmcid']}:{best_name}"
-                    pending_entries.append({
-                        "text": best_text,
-                        "metadata": {
-                            "type": "pubmed",
-                            "source_type": "pubmed_literature",
-                            "pmcid": record["pmcid"],
-                            "section": best_name,
-                            "title": record.get("title", "Untitled article"),
-                            "journal": record.get("journal", ""),
-                            "year": record.get("year", ""),
-                            "authors": record.get("authors", ""),
-                            "url": record.get("url", ""),
-                            "query": query,
+                    pending_entries.append(
+                        {
+                            "text": best_text,
+                            "metadata": {
+                                "type": "pubmed",
+                                "source_type": "pubmed_literature",
+                                "pmcid": record["pmcid"],
+                                "section": best_name,
+                                "title": record.get("title", "Untitled article"),
+                                "journal": record.get("journal", ""),
+                                "year": record.get("year", ""),
+                                "authors": record.get("authors", ""),
+                                "url": record.get("url", ""),
+                                "query": query,
+                                "entry_key": entry_key,
+                            },
+                            "user": user,
                             "entry_key": entry_key,
-                        },
-                        "user": user,
-                        "entry_key": entry_key,
-                    })
+                        }
+                    )
 
                 abstract = record.get("abstract", "")
                 if abstract:
                     entry_key = f"{user or 'global'}:pmc:{record['pmcid']}:abstract"
-                    pending_entries.append({
-                        "text": abstract,
-                        "metadata": {
-                            "type": "pubmed",
-                            "source_type": "pubmed_literature",
-                            "pmcid": record["pmcid"],
-                            "section": "abstract",
-                            "title": record.get("title", "Untitled article"),
-                            "journal": record.get("journal", ""),
-                            "year": record.get("year", ""),
-                            "authors": record.get("authors", ""),
-                            "url": record.get("url", ""),
-                            "query": query,
+                    pending_entries.append(
+                        {
+                            "text": abstract,
+                            "metadata": {
+                                "type": "pubmed",
+                                "source_type": "pubmed_literature",
+                                "pmcid": record["pmcid"],
+                                "section": "abstract",
+                                "title": record.get("title", "Untitled article"),
+                                "journal": record.get("journal", ""),
+                                "year": record.get("year", ""),
+                                "authors": record.get("authors", ""),
+                                "url": record.get("url", ""),
+                                "query": query,
+                                "entry_key": entry_key,
+                            },
+                            "user": user,
                             "entry_key": entry_key,
-                        },
-                        "user": user,
-                        "entry_key": entry_key,
-                    })
+                        }
+                    )
 
         self.memory.add_entries(pending_entries)
 
@@ -1475,19 +1648,21 @@ class ClinicalOrchestrator:
         for entry, score in matches:
             metadata = entry.get("metadata", {})
             if metadata.get("type") == "user_summary":
-                personal_context.append({
-                    "title": metadata.get("title", metadata.get("source", "Uploaded document")),
-                    "source": metadata.get("source", ""),
-                    "snippet": build_excerpt(entry.get("text", "")),
-                    "score": round(score, 3),
-                })
+                personal_context.append(
+                    {
+                        "title": metadata.get(
+                            "title", metadata.get("source", "Uploaded document")
+                        ),
+                        "source": metadata.get("source", ""),
+                        "snippet": build_excerpt(entry.get("text", "")),
+                        "score": round(score, 3),
+                    }
+                )
             elif metadata.get("type") == "pubmed":
                 pubmed_matches.append((entry, score))
         return personal_context[:2], pubmed_matches[:4]
 
-    def _build_source_briefings(
-        self, matches: List[Tuple[Dict, float]]
-    ) -> List[Dict]:
+    def _build_source_briefings(self, matches: List[Tuple[Dict, float]]) -> List[Dict]:
         sources = []
         seen: set = set()
         for entry, score in matches:
@@ -1497,22 +1672,28 @@ class ClinicalOrchestrator:
                 continue
             seen.add(key)
             source_id = f"S{len(sources) + 1}"
-            sources.append({
-                "source_id": source_id,
-                "pmcid": metadata.get("pmcid", ""),
-                "title": metadata.get("title", "Untitled article"),
-                "journal": metadata.get("journal", ""),
-                "year": metadata.get("year", ""),
-                "authors": metadata.get("authors", ""),
-                "section": metadata.get("section", "retrieved text").replace("_", " ").title(),
-                "url": metadata.get("url", ""),
-                "query": metadata.get("query", ""),
-                "similarity": round(score, 3),
-                "snippet": build_excerpt(entry.get("text", "")),
-                "detail_snippet": build_excerpt(entry.get("text", ""), max_chars=800),
-                "source_type": metadata.get("source_type", "pubmed_literature"),
-                "provider": "Europe PMC / PubMed Central",
-            })
+            sources.append(
+                {
+                    "source_id": source_id,
+                    "pmcid": metadata.get("pmcid", ""),
+                    "title": metadata.get("title", "Untitled article"),
+                    "journal": metadata.get("journal", ""),
+                    "year": metadata.get("year", ""),
+                    "authors": metadata.get("authors", ""),
+                    "section": metadata.get("section", "retrieved text")
+                    .replace("_", " ")
+                    .title(),
+                    "url": metadata.get("url", ""),
+                    "query": metadata.get("query", ""),
+                    "similarity": round(score, 3),
+                    "snippet": build_excerpt(entry.get("text", "")),
+                    "detail_snippet": build_excerpt(
+                        entry.get("text", ""), max_chars=800
+                    ),
+                    "source_type": metadata.get("source_type", "pubmed_literature"),
+                    "provider": "Europe PMC / PubMed Central",
+                }
+            )
         return sources
 
     @staticmethod
@@ -1529,11 +1710,8 @@ class ClinicalOrchestrator:
     ) -> str:
         personal_note = ""
         if personal_context:
-            personal_note = (
-                "\n\n## Available Personal Context\n"
-                + "\n".join(
-                    f"- {item['title']}: {item['snippet']}" for item in personal_context
-                )
+            personal_note = "\n\n## Available Personal Context\n" + "\n".join(
+                f"- {item['title']}: {item['snippet']}" for item in personal_context
             )
         if role_config.role_key in ("doctor", "nurse", "midwife", "physiotherapist"):
             return (
@@ -1557,4 +1735,5 @@ class ClinicalOrchestrator:
 
 def _utc_now() -> str:
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc).isoformat()

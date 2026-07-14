@@ -3,7 +3,7 @@
     python -m evaluations.runner --dataset healthbench --dry-run
     python -m evaluations.runner --dataset healthbench_hard --sample 8
     python -m evaluations.runner --dataset healthbench_consensus --resume --run-id my-run
-    python -m evaluations.runner --dataset all --batch
+    python -m evaluations.runner --dataset all
 
 See evaluations/README.md for full documentation.
 """
@@ -15,6 +15,7 @@ import json
 import random
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Set
@@ -23,6 +24,7 @@ from evaluations.config import (
     DATASET_URLS,
     DOWNLOADED_DIR,
     NORMALIZED_DIR,
+    RAG_METRICS_PROMPT_VERSION,
     EvalConfig,
     load_config,
 )
@@ -31,17 +33,36 @@ from evaluations.datasets.download import dataset_path, download_dataset
 from evaluations.deterministic_metrics import compute_deterministic_findings
 from evaluations.grading import (
     agreement_between,
-    call_with_retry,
-    grade_with_luna,
+    grade_with_primary,
     grade_with_terra,
     should_adjudicate,
 )
 from evaluations.models import AdjudicationDecision, CaseResult, EvalCase
 from evaluations.reporting import write_report
+from evaluations.retry import call_with_retry
 
 
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def warn_if_adjudication_disabled(config: EvalConfig) -> None:
+    """Adjudication is silently skipped whenever the primary grader and the
+    adjudicator resolve to the same model (see finalize_healthbench_result).
+    That's an intentional cost-saving default, not a bug -- but it means every
+    case flagged for a second opinion this run will get none, so results
+    should not be treated as independently cross-checked. Print this loudly
+    before any case runs rather than letting it hide in per-case trigger
+    reasons."""
+    if config.primary_grader_model == config.adjudicator_model:
+        print(
+            "[runner] WARNING: EVAL_PRIMARY_GRADER_MODEL and EVAL_ADJUDICATOR_MODEL "
+            f"are both '{config.primary_grader_model}'. Every case that triggers "
+            "adjudication this run will be skipped (no independent second opinion) "
+            "-- results should not be treated as cross-checked. Set "
+            "EVAL_ADJUDICATOR_MODEL to a different model to enable it.",
+            file=sys.stderr,
+        )
 
 
 def _prepare_cases(dataset_name: str, force_download: bool) -> List[EvalCase]:
@@ -66,7 +87,14 @@ def _load_completed_case_ids(raw_path: Path) -> Set[str]:
             if not line:
                 continue
             try:
-                completed.add(json.loads(line)["case"]["case_id"])
+                payload = json.loads(line)
+                if (
+                    payload.get("rag_metrics")
+                    and payload.get("adjudication")
+                    and payload.get("deterministic")
+                    and payload.get("weighted_score") is not None
+                ):
+                    completed.add(payload["case"]["case_id"])
             except Exception:
                 continue
     return completed
@@ -76,9 +104,6 @@ def dry_run(cases: List[EvalCase], config: EvalConfig) -> None:
     """Validates data and prompts without calling any model. Also reports the
     role each case would be routed as (see resolve_case_user/role_detection.py)
     without actually creating any eval account -- purely informational."""
-    from evaluations.grading import (
-        _build_grading_prompt,
-    )  # local import: internal helper, dry-run only
     from evaluations.role_detection import detect_stated_role
 
     errors = 0
@@ -88,7 +113,6 @@ def dry_run(cases: List[EvalCase], config: EvalConfig) -> None:
         role_counts[role] = role_counts.get(role, 0) + 1
         try:
             case.last_user_turn()
-            _build_grading_prompt(case, _FakeDryRunResponse(case))
         except Exception as exc:
             errors += 1
             print(
@@ -99,19 +123,12 @@ def dry_run(cases: List[EvalCase], config: EvalConfig) -> None:
     print(f"[dry-run] {len(cases)} cases loaded, {errors} failed validation.")
     print(f"[dry-run] detected roles: {role_counts}")
     print(
-        f"[dry-run] generator_model={config.generator_model} primary_grader_model={config.primary_grader_model} adjudicator_model={config.adjudicator_model}"
+        f"[dry-run] generator_model={config.generator_model} "
+        f"primary_grader_model={config.primary_grader_model} "
+        f"adjudicator_model={config.adjudicator_model} "
+        f"rag_metrics_model={config.rag_metrics_model}"
     )
     print("[dry-run] no models were called.")
-
-
-class _FakeDryRunResponse:
-    """Minimal stand-in so dry-run can build a real grading prompt string
-    without running the actual pipeline (which requires an API key)."""
-
-    def __init__(self, case: EvalCase) -> None:
-        self.answer_text = "[dry-run placeholder response]"
-        self.answer_markdown = self.answer_text
-        self.sources = []
 
 
 def resolve_case_user(case: EvalCase) -> tuple[str, Optional[str]]:
@@ -137,12 +154,43 @@ def run_case_pipeline(case: EvalCase, rag_engine, config: EvalConfig):
     )
 
 
-def finalize_case_result(
+def _add_consistency_repeats(
+    case: EvalCase, pipeline_response, rag_engine, config: EvalConfig
+):
+    """Periodically repeat the exact production call when explicitly enabled."""
+
+    for _ in range(config.consistency_repeats):
+        repeated = run_case_pipeline(case, rag_engine, config)
+        pipeline_response.consistency_answers.append(repeated.answer_text)
+    return pipeline_response
+
+
+def _attach_rag_metrics(case_result: CaseResult, config: EvalConfig) -> CaseResult:
+    from evaluations.rag_metrics import grade_rag_metrics, unavailable_rag_metrics
+
+    try:
+        case_result.rag_metrics = call_with_retry(
+            lambda: grade_rag_metrics(
+                case_result.case, case_result.pipeline_response, config
+            ),
+            max_retries=config.max_retries,
+        )
+    except Exception as exc:  # metric failure must not discard the core grade
+        case_result.rag_metrics = unavailable_rag_metrics(
+            case_result.case.case_id, config, exc
+        )
+    return case_result
+
+
+def finalize_healthbench_result(
     case: EvalCase, pipeline_response, luna_grade, config: EvalConfig
 ) -> CaseResult:
-    """Shared adjudication + scoring logic, used by both the synchronous
-    per-case path and the Batch API path (they only differ in how
-    `pipeline_response`/`luna_grade` were obtained)."""
+    """Apply deterministic checks and independent secondary adjudication.
+
+    Both graders receive the same captured FlynnMed answer and physician-authored
+    rubrics. The adjudicator never receives the primary output. The final weighted score is
+    computed locally from exact rubric points, never supplied by either model.
+    """
     preliminary = compute_deterministic_findings(case, pipeline_response, luna_grade)
     triggered, reasons = should_adjudicate(
         case, pipeline_response, luna_grade, preliminary, config
@@ -150,19 +198,29 @@ def finalize_case_result(
 
     terra_grade = None
     agreement = None
+    adjudication_skipped = False
+    adjudication_error = None
     final_grade = luna_grade
     final_findings = preliminary
-
     if triggered:
-        terra_grade = call_with_retry(
-            lambda: grade_with_terra(case, pipeline_response, config),
-            max_retries=config.max_retries,
-        )
-        agreement = agreement_between(luna_grade, terra_grade)
-        final_grade = terra_grade
-        final_findings = compute_deterministic_findings(
-            case, pipeline_response, terra_grade
-        )
+        if config.adjudicator_model == luna_grade.grader_model:
+            adjudication_skipped = True
+            reasons.append("same_model_adjudication_skipped")
+        else:
+            try:
+                terra_grade = call_with_retry(
+                    lambda: grade_with_terra(case, pipeline_response, config),
+                    max_retries=config.max_retries,
+                )
+            except Exception as exc:
+                adjudication_error = f"{type(exc).__name__}: {exc}"
+                reasons.append("adjudicator_failed")
+            else:
+                agreement = agreement_between(luna_grade, terra_grade)
+                final_grade = terra_grade
+                final_findings = compute_deterministic_findings(
+                    case, pipeline_response, terra_grade
+                )
 
     adjudication = AdjudicationDecision(
         case_id=case.case_id,
@@ -171,35 +229,41 @@ def finalize_case_result(
         luna_grade=luna_grade,
         terra_grade=terra_grade,
         agreement=agreement,
+        adjudication_skipped=adjudication_skipped,
+        adjudication_error=adjudication_error,
         final_grade=final_grade,
     )
-
     weighted_score = final_grade.weighted_score(case)
     ai_pass = final_grade.potential_harm_level != "severe" and weighted_score >= 0.5
-    overall_pass = final_findings.deterministic_pass and ai_pass
-
     return CaseResult(
         case=case,
         pipeline_response=pipeline_response,
         adjudication=adjudication,
         deterministic=final_findings,
         weighted_score=weighted_score,
-        overall_pass=overall_pass,
+        overall_pass=final_findings.deterministic_pass and ai_pass,
     )
 
 
 def evaluate_case(case: EvalCase, rag_engine, config: EvalConfig) -> CaseResult:
     pipeline_response = run_case_pipeline(case, rag_engine, config)
+    pipeline_response = _add_consistency_repeats(
+        case, pipeline_response, rag_engine, config
+    )
     luna_grade = call_with_retry(
-        lambda: grade_with_luna(case, pipeline_response, config),
+        lambda: grade_with_primary(case, pipeline_response, config),
         max_retries=config.max_retries,
     )
-    return finalize_case_result(case, pipeline_response, luna_grade, config)
+    result = finalize_healthbench_result(case, pipeline_response, luna_grade, config)
+    return _attach_rag_metrics(result, config)
 
 
 def run_dataset(
     dataset_name: str, args: argparse.Namespace, config: EvalConfig
 ) -> None:
+    if getattr(args, "regrade_rag", False):
+        _regrade_saved_rag_metrics(dataset_name, args, config)
+        return
     cases = _prepare_cases(dataset_name, force_download=args.force_download)
 
     random_seed = getattr(args, "random_seed", None)
@@ -243,15 +307,19 @@ def run_dataset(
             for line in fh:
                 line = line.strip()
                 if line:
-                    results.append(CaseResult.model_validate_json(line))
+                    result = CaseResult.model_validate_json(line)
+                    if (
+                        result.rag_metrics
+                        and result.adjudication
+                        and result.deterministic
+                        and result.weighted_score is not None
+                    ):
+                        results.append(result)
 
     with open(raw_path, "a", encoding="utf-8") as append_fh:
-        if args.batch:
-            _run_batch(dataset_name, remaining, rag_engine, config, results, append_fh)
-        else:
-            _run_synchronous(
-                dataset_name, remaining, rag_engine, config, results, append_fh
-            )
+        _run_synchronous(
+            dataset_name, remaining, rag_engine, config, results, append_fh
+        )
 
     _, summary_json_path, summary_md_path = write_report(
         results,
@@ -260,6 +328,72 @@ def run_dataset(
         run_id=run_id,
     )
     print(f"[{dataset_name}] wrote raw results to {raw_path}")
+    print(f"[{dataset_name}] wrote report to {summary_json_path} and {summary_md_path}")
+
+
+def _regrade_saved_rag_metrics(
+    dataset_name: str, args: argparse.Namespace, config: EvalConfig
+) -> None:
+    """Re-run only RAG metrics against immutable saved answers and sources."""
+    if not args.run_id:
+        raise ValueError("--regrade-rag requires --run-id")
+    raw_path = Path(config.output_path) / "raw" / args.run_id / "cases.jsonl"
+    if not raw_path.exists():
+        raise FileNotFoundError(f"Saved run not found: {raw_path}")
+
+    saved: List[CaseResult] = []
+    with open(raw_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                saved.append(CaseResult.model_validate_json(line))
+    case_ids = [result.case.case_id for result in saved]
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("Saved run contains duplicate case ids; refusing to re-grade.")
+
+    checkpoint_name = f"rag_regrade_{RAG_METRICS_PROMPT_VERSION}.jsonl"
+    checkpoint_path = raw_path.parent / checkpoint_name
+    completed: dict[str, CaseResult] = {}
+    if checkpoint_path.exists():
+        with open(checkpoint_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                result = CaseResult.model_validate_json(line)
+                if result.rag_metrics and not result.rag_metrics.evaluation_error:
+                    completed[result.case.case_id] = result
+        if completed:
+            print(
+                f"[{dataset_name}] loaded {len(completed)} completed RAG re-grades "
+                f"from {checkpoint_path.name}"
+            )
+
+    regraded_by_id = dict(completed)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_mode = "a" if checkpoint_path.exists() else "w"
+    checkpoint_fh = open(checkpoint_path, checkpoint_mode, encoding="utf-8")
+    try:
+        for index, result in enumerate(saved, start=1):
+            case_id = result.case.case_id
+            if case_id in completed:
+                continue
+            print(f"[{dataset_name}] RAG re-grade ({index}/{len(saved)}) {case_id}")
+            regraded = _attach_rag_metrics(result, config)
+            regraded_by_id[case_id] = regraded
+            if regraded.rag_metrics and not regraded.rag_metrics.evaluation_error:
+                checkpoint_fh.write(regraded.model_dump_json() + "\n")
+                checkpoint_fh.flush()
+    finally:
+        checkpoint_fh.close()
+
+    regraded = [regraded_by_id[result.case.case_id] for result in saved]
+
+    _, summary_json_path, summary_md_path = write_report(
+        regraded,
+        config,
+        dataset_version=dataset_name,
+        run_id=args.run_id,
+    )
+    print(f"[{dataset_name}] preserved generation and re-graded {len(regraded)} cases")
     print(f"[{dataset_name}] wrote report to {summary_json_path} and {summary_md_path}")
 
 
@@ -279,82 +413,7 @@ def _run_synchronous(
             print(
                 f"[{dataset_name}] case {case.case_id} FAILED: {exc}", file=sys.stderr
             )
-            continue
-        results.append(case_result)
-        append_fh.write(case_result.model_dump_json() + "\n")
-        append_fh.flush()
-
-
-def _run_batch(
-    dataset_name: str,
-    remaining: List[EvalCase],
-    rag_engine,
-    config: EvalConfig,
-    results: List[CaseResult],
-    append_fh,
-) -> None:
-    """Batch mode: FlynnMed's own pipeline call still runs synchronously per
-    case (it's an in-process call, not an OpenAI batch-eligible endpoint) --
-    only the primary (Luna) grading pass is submitted as one Batch API job.
-    Terra adjudication (a much smaller, filtered subset) still runs
-    synchronously afterward."""
-    from evaluations.grading import (
-        build_batch_requests,
-        parse_batch_output,
-        poll_batch,
-        submit_batch,
-    )
-
-    pairs = []
-    for index, case in enumerate(remaining, start=1):
-        print(f"[{dataset_name}] pipeline ({index}/{len(remaining)}) {case.case_id}")
-        try:
-            pipeline_response = run_case_pipeline(case, rag_engine, config)
-        except Exception as exc:
-            print(
-                f"[{dataset_name}] case {case.case_id} pipeline FAILED: {exc}",
-                file=sys.stderr,
-            )
-            continue
-        pairs.append((case, pipeline_response))
-
-    if not pairs:
-        return
-
-    print(
-        f"[{dataset_name}] submitting {len(pairs)} cases to the Batch API for primary grading..."
-    )
-    requests = build_batch_requests(
-        pairs,
-        config,
-        model=config.primary_grader_model,
-        reasoning_effort=config.grader_reasoning_effort,
-    )
-    batch_id = submit_batch(requests, config)
-    print(
-        f"[{dataset_name}] batch id: {batch_id} -- polling for completion (this can take a while; safe to Ctrl-C and --resume later)"
-    )
-    batch = poll_batch(batch_id, config)
-    cases_by_id = {case.case_id: case for case, _ in pairs}
-    luna_by_id = parse_batch_output(batch, config, cases_by_id)
-
-    for case, pipeline_response in pairs:
-        luna_grade = luna_by_id.get(case.case_id)
-        if luna_grade is None:
-            print(
-                f"[{dataset_name}] case {case.case_id} batch grading FAILED or invalid -- skipping (rerun with --resume, without --batch, to retry synchronously)",
-                file=sys.stderr,
-            )
-            continue
-        try:
-            case_result = finalize_case_result(
-                case, pipeline_response, luna_grade, config
-            )
-        except Exception as exc:
-            print(
-                f"[{dataset_name}] case {case.case_id} adjudication FAILED: {exc}",
-                file=sys.stderr,
-            )
+            traceback.print_exc()
             continue
         results.append(case_result)
         append_fh.write(case_result.model_dump_json() + "\n")
@@ -396,25 +455,41 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="Explicit run id (required to --resume a specific run).",
     )
     parser.add_argument(
+        "--regrade-rag",
+        action="store_true",
+        help="Re-grade only RAG metrics for a saved --run-id without regenerating answers.",
+    )
+    parser.add_argument(
         "--force-download",
         action="store_true",
         help="Re-download the dataset even if a local copy exists.",
     )
     parser.add_argument(
-        "--batch",
-        action="store_true",
-        help="Use the OpenAI Batch API for the primary (Luna) grading pass.",
+        "--consistency-repeats",
+        type=int,
+        default=None,
+        help="Additional identical production calls per case for periodic consistency scoring.",
     )
     args = parser.parse_args(argv)
 
     config = load_config()
     if args.sample is not None:
         config.sample_limit = args.sample
+    if args.consistency_repeats is not None:
+        config.consistency_repeats = max(0, args.consistency_repeats)
 
-    if args.batch and not args.dry_run:
-        print(
-            "[runner] --batch mode affects only the primary grading pass; see evaluations/README.md for details."
-        )
+    warn_if_adjudication_disabled(config)
+
+    if not args.dry_run:
+        from evaluations.grading import EvaluatorAccessError, validate_evaluator_access
+
+        print("[runner] checking access to configured evaluator models...")
+        try:
+            validate_evaluator_access(config)
+        except EvaluatorAccessError as exc:
+            print(f"[runner] evaluator access check FAILED: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+        print("[runner] evaluator model access confirmed.")
 
     dataset_names = (
         list(DATASET_URLS.keys()) if args.dataset == "all" else [args.dataset]

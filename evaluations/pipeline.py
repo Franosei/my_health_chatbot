@@ -78,6 +78,7 @@ def build_rag_engine(config: EvalConfig):
     from backend.summarizer import LLMHelper
 
     LLMHelper.ANSWER_MODEL = config.generator_model
+    LLMHelper.REQUEST_TIMEOUT_SECONDS = config.request_timeout_seconds
 
     return RAGEngine()
 

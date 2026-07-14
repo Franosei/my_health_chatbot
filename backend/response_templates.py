@@ -16,6 +16,7 @@ Based on what you have described, this may be an emergency situation.
 
 **Please act immediately:**
 - **Call your local emergency number now**
+- If someone is unresponsive and not breathing normally, start CPR and use an AED if available, following the emergency dispatcher's instructions
 - If you can do so safely, go to the nearest emergency department
 - Tell them exactly what you have told me
 
