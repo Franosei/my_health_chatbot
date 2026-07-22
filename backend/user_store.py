@@ -1,4 +1,6 @@
+import functools
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -348,6 +350,9 @@ class _UserBackend(Protocol):
     def save_user(self, username: str, record: Dict) -> None:
         ...
 
+    def list_all_users(self) -> Dict[str, Dict]:
+        ...
+
 
 class _LocalJSONUserBackend:
     def __init__(self) -> None:
@@ -399,6 +404,9 @@ class _LocalJSONUserBackend:
         users = self._load_all_users()
         users[username] = _normalize_user_record(username, record)
         self._save_all_users(users)
+
+    def list_all_users(self) -> Dict[str, Dict]:
+        return self._load_all_users()
 
 
 class _PostgresUserBackend:
@@ -493,6 +501,19 @@ class _PostgresUserBackend:
                     (username, payload),
                 )
             conn.commit()
+
+    def list_all_users(self) -> Dict[str, Dict]:
+        self._ensure_ready()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT username, payload FROM {USER_TABLE_NAME}")
+                rows = cur.fetchall()
+
+        users = {}
+        for username, payload in rows:
+            record = json.loads(payload) if isinstance(payload, str) else payload
+            users[username] = _normalize_user_record(username, record)
+        return users
 
 
 def _get_backend() -> _UserBackend:
@@ -1467,6 +1488,15 @@ class UserStore:
                 _save_user_record(username, user)
                 return
 
+    # ── Migration only (backend/scripts/migrate_json_to_sql.py) ─────────────────
+    # Unlike export_user_snapshot below, this does NOT strip password_hash/salt --
+    # it exists only for the one-time move to the relational schema, which needs
+    # to carry the legacy PBKDF2 hash forward unchanged. Never expose over HTTP.
+
+    @staticmethod
+    def list_all_users_for_migration() -> Dict[str, Dict]:
+        return _get_backend().list_all_users()
+
     # ── Export ──────────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -1479,3 +1509,40 @@ class UserStore:
         exported.pop("password_hash", None)
         exported.pop("salt", None)
         return exported
+
+
+def _use_sql_backend() -> bool:
+    return os.getenv("DATA_BACKEND", "legacy").strip().lower() == "sql"
+
+
+def _install_sql_dispatch(legacy_cls: type, sql_cls_path: str) -> None:
+    """DATA_BACKEND is read once, here, at module import time (not
+    per-call) -- this is a process-startup switch, not a request-time
+    toggle, matching how the env var is actually set/changed (restart the
+    process). When DATA_BACKEND=sql, every UserStore staticmethod that
+    SqlUserStore also implements is replaced in place with the SQL
+    implementation. When DATA_BACKEND=legacy (the default in production
+    until PR6's cutover), this function no-ops and no method body above is
+    modified -- behavior is byte-for-byte what shipped before this dispatch
+    existed, and SqlUserStore/SQLAlchemy/backend.db are never even imported.
+    `list_all_users_for_migration` has no SqlUserStore counterpart by design
+    (its whole purpose is reading the legacy store) and is therefore never
+    wrapped, in either mode.
+    """
+    if not _use_sql_backend():
+        return
+
+    module_name, class_name = sql_cls_path.rsplit(".", 1)
+    sql_cls = getattr(__import__(module_name, fromlist=[class_name]), class_name)
+
+    for name in dir(sql_cls):
+        if name.startswith("_"):
+            continue
+        sql_attr = inspect.getattr_static(sql_cls, name, None)
+        legacy_attr = inspect.getattr_static(legacy_cls, name, None)
+        if not isinstance(sql_attr, staticmethod) or not isinstance(legacy_attr, staticmethod):
+            continue
+        setattr(legacy_cls, name, staticmethod(functools.wraps(legacy_attr.__func__)(sql_attr.__func__)))
+
+
+_install_sql_dispatch(UserStore, "backend.repositories.sql_user_store.SqlUserStore")

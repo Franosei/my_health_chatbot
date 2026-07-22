@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flynnmed
+      POSTGRES_PASSWORD: flynnmed_dev_only
+      POSTGRES_DB: flynnmed
+    ports:
+      - "5432:5432"
+    volumes:
+      - flynnmed_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flynnmed"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://flynnmed:flynnmed_dev_only@db:5432/flynnmed
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+
+volumes:
+  flynnmed_db_data:

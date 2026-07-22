@@ -10,6 +10,23 @@ jobs:
   backend:
     name: Backend (Python)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: flynnmed
+          POSTGRES_PASSWORD: flynnmed_ci
+          POSTGRES_DB: flynnmed
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flynnmed"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://flynnmed:flynnmed_ci@localhost:5432/flynnmed
+      JWT_SECRET_KEY: ci-test-secret-not-for-production
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +44,9 @@ jobs:
 
       - name: Lint
         run: ruff check backend/
+
+      - name: Run database migrations
+        run: alembic upgrade head
 
       - name: Test
         # These three files are live-API manual smoke scripts (no assertions,

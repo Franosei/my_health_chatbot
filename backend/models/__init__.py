@@ -1,0 +1,47 @@
+from backend.models.base import Base, TimestampMixin
+from backend.models.account import Account, AccountKind
+from backend.models.patient import (
+    Allergy,
+    CarePlan,
+    ChatMessage,
+    ClinicalNote,
+    Condition,
+    DocumentSummary,
+    InteractionTrace,
+    Medication,
+    Patient,
+    SymptomLog,
+    TriageSummary,
+    Upload,
+    VitalsEntry,
+)
+from backend.models.consent import ConsentGrant, ConsentScope, ConsentStatus
+from backend.models.audit import AuditAction, AuditLogEntry, AuditOutcome
+from backend.models.activity import AccountActivityLog
+
+__all__ = [
+    "Base",
+    "TimestampMixin",
+    "Account",
+    "AccountKind",
+    "Patient",
+    "Medication",
+    "Condition",
+    "Allergy",
+    "VitalsEntry",
+    "SymptomLog",
+    "ChatMessage",
+    "CarePlan",
+    "ClinicalNote",
+    "Upload",
+    "DocumentSummary",
+    "TriageSummary",
+    "InteractionTrace",
+    "ConsentGrant",
+    "ConsentStatus",
+    "ConsentScope",
+    "AuditLogEntry",
+    "AuditAction",
+    "AuditOutcome",
+    "AccountActivityLog",
+]

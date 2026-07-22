@@ -30,6 +30,7 @@ from backend.clinical_context_guard import (
 from backend.clinical_trials import build_trial_search_profile, find_matching_trials
 from backend.email_service import send_clinical_note_email, send_urgent_care_alert
 from backend.feedback_store import save_feedback
+from backend.fhir.stub_client import fhir_integration_status
 from backend.image_analysis_agent import (
     ImageAnalysisError,
     MAX_IMAGE_BYTES,
@@ -376,6 +377,14 @@ class UrgentAlertPayload(BaseModel):
 @app.get("/api/health")
 def health() -> Dict:
     return {"ok": True, "product": PRODUCT_NAME}
+
+
+@app.get("/api/integrations/fhir/status")
+def fhir_status() -> Dict:
+    """Reports whether a real EHR connection is configured. Always
+    {"connected": false} in this phase -- see backend/fhir/ for the
+    interface-only SMART-on-FHIR adapter layer this will wire into later."""
+    return fhir_integration_status()
 
 
 @app.get("/api/config")
