@@ -11,6 +11,10 @@ def _configure_temp_user_store(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     upload_root = data_dir / "uploads"
     user_db_path = tmp_path / "users.json"
+    # This helper specifically exercises the legacy JSON store. CI provides a
+    # DATABASE_URL for the separate SQL integration tests, so remove it here
+    # before resetting the lazily selected backend.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setattr(user_store_module, "DATA_DIR", data_dir)
     monkeypatch.setattr(user_store_module, "UPLOAD_ROOT", upload_root)
     monkeypatch.setattr(user_store_module, "USER_DB_PATH", user_db_path)
